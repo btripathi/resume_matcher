@@ -22,6 +22,7 @@ if "lm_base_url" not in st.session_state: st.session_state.lm_base_url = "http:/
 if "lm_api_key" not in st.session_state: st.session_state.lm_api_key = "lm-studio"
 if "ocr_enabled" not in st.session_state: st.session_state.ocr_enabled = True
 if "processed_files" not in st.session_state: st.session_state.processed_files = set()
+if "is_running" not in st.session_state: st.session_state.is_running = False
 
 # Init DB
 db = database.DBManager()
@@ -68,7 +69,7 @@ def generate_candidate_list_html(df):
         score_color = "#0f5132" if score >= 80 else "#842029" if score < 50 else "black"
 
         name = str(row['candidate_name']).replace('<', '&lt;')
-        filename = str(row['res_name']).replace('<', '&lt;') # FIXED from 'filename'
+        filename = str(row['res_name']).replace('<', '&lt;')
         job_name = str(row['job_name']).replace('<', '&lt;')
 
         rows += f'<tr><td style="font-weight: 600;">{name}<br><span style="font-size: 11px; color: #666; font-weight: normal;">Resume: {filename}</span><br><span style="font-size: 11px; color: #0056b3; font-weight: normal;">Job: {job_name}</span></td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%</td><td><span class="status-badge" style="{color_style}">{decision}</span></td><td style="font-size: 13px; color: #444;">{str(row["reasoning"]).replace("<", "&lt;")}</td></tr>'
@@ -115,7 +116,6 @@ with tab1:
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
     c1, c2 = st.columns(2)
 
-    # Jobs Column
     with c1:
         st.subheader("📂 Jobs")
         jd_up = st.file_uploader("Upload JDs", accept_multiple_files=True, key="jd")
@@ -136,18 +136,13 @@ with tab1:
                 time.sleep(1)
                 st.rerun()
 
-        # Display Jobs
         jds = db.fetch_dataframe("SELECT id, filename, criteria, upload_date FROM jobs")
         if not jds.empty:
-            # FIXED: Changed width=None to width="stretch"
             st.dataframe(jds[['filename', 'upload_date']], hide_index=True, width="stretch")
-
-            # Editor
             st.divider()
             jd_choice = st.selectbox("Edit Criteria:", jds['filename'])
             row = jds[jds['filename'] == jd_choice].iloc[0]
             new_crit = st.text_area("JSON", value=row['criteria'], height=300, key=f"jd_ed_{row['id']}")
-
             c_sav, c_del = st.columns(2)
             if c_sav.button("Save JD", key=f"sav_jd_{row['id']}"):
                 db.execute_query("UPDATE jobs SET criteria = ? WHERE id = ?", (new_crit, int(row['id'])))
@@ -155,10 +150,8 @@ with tab1:
                 st.rerun()
             if c_del.button("Delete JD", key=f"del_jd_{row['id']}", type="primary"):
                 db.execute_query("DELETE FROM jobs WHERE id = ?", (int(row['id']),))
-                st.success("Deleted")
                 st.rerun()
 
-    # Resumes Column
     with c2:
         st.subheader("📄 Resumes")
         res_up = st.file_uploader("Upload Resumes", accept_multiple_files=True, key="res")
@@ -168,7 +161,7 @@ with tab1:
                 log_box = st.expander("Logs", expanded=True)
                 for i, f in enumerate(res_up):
                     if f.name in st.session_state.processed_files: continue
-                    text = document_utils.extract_text_from_pdf(f.read(), st.session_state.ocr_enabled, log_box.write) if f.name.endswith('.pdf') else str(f.read(), 'utf-8', errors='ignore')
+                    text = document_utils.extract_text_from_pdf(f.read(), st.session_state.ocr_enabled, log_callback=log_box.write) if f.name.endswith('.pdf') else str(f.read(), 'utf-8', errors='ignore')
                     if text:
                         data = client.analyze_resume(text)
                         db.add_resume(f.name, text, data)
@@ -179,18 +172,13 @@ with tab1:
                 time.sleep(1)
                 st.rerun()
 
-        # Display Resumes
         ress = db.fetch_dataframe("SELECT id, filename, profile, upload_date FROM resumes")
         if not ress.empty:
-            # FIXED: Changed width=None to width="stretch"
             st.dataframe(ress[['filename', 'upload_date']], hide_index=True, width="stretch")
-
-            # Editor
             st.divider()
             res_choice = st.selectbox("Edit Profile:", ress['filename'])
             row = ress[ress['filename'] == res_choice].iloc[0]
             new_prof = st.text_area("JSON", value=row['profile'], height=300, key=f"res_ed_{row['id']}")
-
             c_sav, c_del = st.columns(2)
             if c_sav.button("Save Profile", key=f"sav_res_{row['id']}"):
                 db.execute_query("UPDATE resumes SET profile = ? WHERE id = ?", (new_prof, int(row['id'])))
@@ -198,83 +186,91 @@ with tab1:
                 st.rerun()
             if c_del.button("Delete Resume", key=f"del_res_{row['id']}", type="primary"):
                 db.execute_query("DELETE FROM resumes WHERE id = ?", (int(row['id']),))
-                st.success("Deleted")
                 st.rerun()
 
 # --- TAB 2: RUN ANALYSIS ---
 with tab2:
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
 
-    jds = db.fetch_dataframe("SELECT id, filename, criteria FROM jobs")
-    ress = db.fetch_dataframe("SELECT id, filename, content, profile FROM resumes")
+    jds_data = db.fetch_dataframe("SELECT id, filename, criteria FROM jobs")
+    ress_data = db.fetch_dataframe("SELECT id, filename, content, profile FROM resumes")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("#### Select Jobs")
+    col_sel1, col_sel2 = st.columns(2)
+    with col_sel1:
+        st.markdown("#### Select Job Descriptions")
         use_all_jds = st.checkbox("All JDs", value=False)
-        if use_all_jds: sel_jds = jds
-        else:
-            sel_jds_names = st.multiselect("Jobs", jds['filename'])
-            sel_jds = jds[jds['filename'].isin(sel_jds_names)]
+        sel_jds = jds_data if use_all_jds else jds_data[jds_data['filename'].isin(st.multiselect("Choose Jobs", jds_data['filename']))]
 
-    with col2:
+    with col_sel2:
         st.markdown("#### Select Resumes")
         use_all_res = st.checkbox("All Resumes", value=True)
-        if use_all_res: sel_res = ress
-        else:
-            sel_res_names = st.multiselect("Resumes", ress['filename'])
-            sel_res = ress[ress['filename'].isin(sel_res_names)]
+        sel_res = ress_data if use_all_res else ress_data[ress_data['filename'].isin(st.multiselect("Choose Resumes", ress_data['filename']))]
+
+    st.divider()
 
     if not sel_jds.empty and not sel_res.empty:
-        st.divider()
-        c1, c2, c3 = st.columns([2, 1, 1])
-        run_name = c1.text_input("Run Name", value=f"Batch {datetime.datetime.now().strftime('%H:%M')}")
-        rerun = c2.checkbox("Overwrite Existing?")
+        with st.container(border=True):
+            st.markdown("#### Run Configuration")
+            c_p1, c_p2 = st.columns([3, 1])
+            run_name_input = c_p1.text_input("Batch Name", value=f"Batch {datetime.datetime.now().strftime('%H:%M')}")
+            rerun_toggle = c_p2.toggle("Overwrite existing?", value=False)
 
-        if c3.button("🚀 Analyze", type="primary", use_container_width=True):
-            run_id = db.create_run(run_name)
-            total = len(sel_jds) * len(sel_res)
+            c_act1, c_act2 = st.columns([1, 1])
+            btn_analyze = c_act1.button("🚀 START ANALYSIS", type="primary", use_container_width=True)
+            btn_stop = c_act2.button("🛑 STOP RUN", type="secondary", use_container_width=True)
 
-            with st.status("Analyzing...", expanded=True) as status:
+        # Handle explicit stop
+        if btn_stop:
+            st.session_state.is_running = False
+            st.warning("Run interrupted. Standing by.")
+            st.stop()
+
+        if btn_analyze:
+            st.session_state.is_running = True
+            run_id = db.create_run(run_name_input)
+            total_ops = len(sel_jds) * len(sel_res)
+            count = 0
+
+            with st.status("Analyzing matches...", expanded=True) as status:
                 bar = st.progress(0)
-                log_box = st.expander("Details", expanded=True)
-                count = 0
+                log_box = st.expander("Live Progress", expanded=True)
+
                 for _, job in sel_jds.iterrows():
                     for _, res in sel_res.iterrows():
+                        # Streamlit reruns on any interaction, btn_analyze will remain True
+                        # during this loop until complete or interrupted by a new rerun.
                         count += 1
-                        status.update(label=f"Processing {count}/{total}: {res['filename']}")
+                        status.update(label=f"Matching {count}/{total_ops}: {res['filename']}")
 
-                        # Check exist
                         match_id = db.get_match_if_exists(int(job['id']), int(res['id']))
-
-                        if not match_id or rerun:
+                        if not match_id or rerun_toggle:
                             resp = client.evaluate_candidate(res['content'], job['criteria'], res['profile'])
                             data = document_utils.clean_json_response(resp)
                             if data:
                                 match_id = db.save_match(int(job['id']), int(res['id']), data, match_id)
-                                with log_box: st.write(f"✅ Matched {res['filename']} with {job['filename']}")
+                                with log_box: st.write(f"✅ Matched **{res['filename']}**")
                         else:
-                            with log_box: st.write(f"⏭️ Skipped {res['filename']}")
+                            with log_box: st.write(f"⏭️ Skipping cached: {res['filename']}")
 
                         if match_id:
                             db.link_run_match(run_id, match_id)
-                        bar.progress(count/total)
+
+                        bar.progress(count/total_ops)
+
+                st.session_state.is_running = False
                 status.update(label="Analysis Complete!", state="complete", expanded=False)
-            st.success("Run Finished! Check Results Tab.")
+                st.success("Batch Finished! View results in the Match Results tab.")
 
 # --- TAB 3: RESULTS ---
 with tab3:
     runs = db.fetch_dataframe("SELECT * FROM runs ORDER BY id DESC")
     if not runs.empty:
         runs['label'] = runs['name'] + " (" + runs['created_at'] + ")"
-
         c_sel, c_btn1, c_btn2 = st.columns([3, 1, 1])
         sel_run_lbl = c_sel.selectbox("Select Run", runs['label'])
         run_id = int(runs[runs['label'] == sel_run_lbl].iloc[0]['id'])
 
-        # Run Actions
         if c_btn1.button("🔄 Rerun Batch"):
-            client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
             matches_in_run = db.fetch_dataframe(f"""
                 SELECT m.id, r.content as resume_text, r.profile as resume_profile, j.criteria as job_criteria, r.filename, j.id as job_id, r.id as resume_id
                 FROM matches m
@@ -284,28 +280,22 @@ with tab3:
                 WHERE rm.run_id = {run_id}
             """)
             if not matches_in_run.empty:
-                with st.status("Re-analyzing Batch...", expanded=True) as status:
+                with st.status("Re-analyzing...") as status:
                     bar = st.progress(0)
-                    log = st.expander("Logs", expanded=True)
                     for i, row in matches_in_run.iterrows():
-                        status.update(label=f"Redoing {i+1}/{len(matches_in_run)}: {row['filename']}")
                         resp = client.evaluate_candidate(row['resume_text'], row['job_criteria'], row['resume_profile'])
                         data = document_utils.clean_json_response(resp)
                         if data:
                             db.save_match(row['job_id'], row['resume_id'], data, int(row['id']))
-                            with log: st.write(f"✅ Updated {row['filename']}")
                         bar.progress((i+1)/len(matches_in_run))
-                    status.update(label="Complete!", state="complete")
                 st.rerun()
 
         if c_btn2.button("🗑️ Delete Run", type="primary"):
             db.execute_query("DELETE FROM runs WHERE id=?", (run_id,))
             db.execute_query("DELETE FROM run_matches WHERE run_id=?", (run_id,))
-            st.success("Run Deleted")
-            time.sleep(0.5)
             st.rerun()
 
-        # Load Results
+        st.divider()
         results = db.fetch_dataframe(f"""
             SELECT m.*, r.filename as res_name, j.filename as job_name, r.content as res_text, j.criteria as job_crit, r.profile as res_prof
             FROM matches m
@@ -317,73 +307,45 @@ with tab3:
         """)
 
         if not results.empty:
-            # Heatmap
             if len(results['job_name'].unique()) > 1:
                 st.write("### 🌡️ Heatmap")
                 matrix = results.pivot_table(index='res_name', columns='job_name', values='match_score', aggfunc='max').fillna(0).astype(int)
                 try:
-                    # FIXED: Changed use_container_width=True to width="stretch"
                     st.dataframe(matrix.style.background_gradient(cmap='RdYlGn'), width="stretch")
                 except:
                     st.dataframe(matrix, width="stretch")
-                st.divider()
 
-            # Detailed List
             st.write("### 📝 Match List")
             st.markdown(generate_candidate_list_html(results), unsafe_allow_html=True)
 
             st.divider()
             st.write("### 🔎 Deep Dive")
-
-            # Selector
             results['display'] = results['candidate_name'] + " -> " + results['job_name'] + " (" + results['match_score'].astype(str) + "%)"
             sel_match_lbl = st.selectbox("Inspect Match:", results['display'])
 
             if sel_match_lbl:
                 row = results[results['display'] == sel_match_lbl].iloc[0]
-
-                # Single Match Actions
                 ac1, ac2 = st.columns([1, 4])
-                if ac1.button("🔄 Rerun This Match", key=f"re_s_{row['id']}"):
-                    with st.status("Re-evaluating...") as status:
-                        client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
-                        resp = client.evaluate_candidate(row['res_text'], row['job_crit'], row['res_prof'])
-                        data = document_utils.clean_json_response(resp)
-                        if data:
-                            db.save_match(row['job_id'], row['resume_id'], data, row['id'])
-                            status.update(label="Updated!", state="complete")
-                            st.success("Updated!")
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error("Failed")
-
-                if ac2.button("🗑️ Delete Match", key=f"del_s_{row['id']}", type="primary"):
+                if ac1.button("🔄 Rerun", key=f"re_s_{row['id']}"):
+                    resp = client.evaluate_candidate(row['res_text'], row['job_crit'], row['res_prof'])
+                    data = document_utils.clean_json_response(resp)
+                    if data:
+                        db.save_match(row['job_id'], row['resume_id'], data, row['id'])
+                        st.rerun()
+                if ac2.button("🗑️ Delete", key=f"del_s_{row['id']}", type="primary"):
                     db.execute_query("DELETE FROM matches WHERE id=?", (int(row['id']),))
-                    db.execute_query("DELETE FROM run_matches WHERE match_id=?", (int(row['id']),))
-                    st.success("Deleted")
                     st.rerun()
 
-                # Card
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
                     c1.title(row['candidate_name'])
-                    c1.markdown(f"**Role:** {row['job_name']}")
                     c2.metric("Score", f"{row['match_score']}%")
-
-                    color = "green" if "Move" in row['decision'] else "red" if "Reject" in row['decision'] else "orange"
-                    st.markdown(f"**Decision:** :{color}[{row['decision']}]")
                     st.info(row['reasoning'])
-
-                    # HTML Table
-                    st.subheader("Criteria Analysis")
                     try:
                         details = json.loads(row['match_details'])
                         if details:
                             st.markdown(generate_criteria_html(details), unsafe_allow_html=True)
-                        else:
-                            st.info("No detailed breakdown available.")
                     except:
-                        st.warning("Could not parse details.")
+                        st.warning("Details unavailable.")
     else:
         st.info("No runs found.")
