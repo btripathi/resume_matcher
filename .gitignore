@@ -1,0 +1,22 @@
+#Python / Streamlit
+
+pycache/
+*.pyc
+.streamlit/secrets.toml
+.venv
+venv/
+env/
+
+#Database (Keep your resume data private!)
+
+*.db
+resume_matcher.db
+
+#System
+
+.DS_Store
+
+#IDE
+
+.vscode/
+.idea/
