@@ -19,22 +19,19 @@ if "lm_api_key" not in st.session_state: st.session_state.lm_api_key = "lm-studi
 if "ocr_enabled" not in st.session_state: st.session_state.ocr_enabled = True
 if "processed_files" not in st.session_state: st.session_state.processed_files = set()
 
-# Init DB
 db = database.DBManager()
 
 # --- UI HELPERS ---
 def generate_criteria_html(details):
     rows = ""
-    # Sort: Must Haves -> Experience -> Nice to Haves -> Others
-    cat_order = ["must_have_skills", "experience", "nice_to_have_skills", "education_requirements", "domain_knowledge", "soft_skills"]
+    cat_order = ["must_have_skills", "experience", "domain_knowledge", "nice_to_have_skills", "education_requirements", "soft_skills"]
     sorted_details = sorted(details, key=lambda x: cat_order.index(x.get('category')) if x.get('category') in cat_order else 99)
 
     for item in sorted_details:
-        if not item: continue # Safety check
+        if not item: continue
         status = item.get('status', 'Unknown')
         cat = item.get('category', '').replace('_', ' ').upper()
 
-        # Color coding
         color = "color: #333; background-color: #e0e0e0;"
         if "Met" in status: color = "color: #0f5132; background-color: #d1e7dd;"
         elif "Missing" in status: color = "color: #842029; background-color: #f8d7da;"
@@ -57,35 +54,15 @@ def generate_criteria_html(details):
     """
 
 def generate_candidate_list_html(df):
-    if df.empty: return "<p style='color: #666;'>No results found in this category.</p>"
+    if df.empty: return "<p style='color: #666;'>No results found.</p>"
     rows = ""
     for idx, row in df.iterrows():
         decision = row['decision']
-
-        # Color coding
-        color = "color: #333; background-color: #e0e0e0;"
-        if "Move Forward" in decision: color = "color: #0f5132; background-color: #d1e7dd;"
-        elif "Reject" in decision: color = "color: #842029; background-color: #f8d7da;"
-        elif "Review" in decision: color = "color: #664d03; background-color: #fff3cd;"
-
+        color = "color: #0f5132; background-color: #d1e7dd;" if "Move Forward" in decision else "color: #842029; background-color: #f8d7da;" if "Reject" in decision else "color: #664d03; background-color: #fff3cd;"
         score = row['match_score']
         score_color = "#0f5132" if score >= 70 else "#842029" if score < 40 else "black"
-
         rows += f'<tr><td style="font-weight: 600;">{row["candidate_name"]}<br><span style="font-size: 11px; color: #666;">{row["res_name"]}</span></td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%</td><td><span class="status-badge" style="{color}">{decision}</span></td><td style="font-size: 13px; color: #444;">{row["reasoning"]}</td></tr>'
-
-    return f"""
-    <style>
-        .candidate-table {{width: 100%; border-collapse: collapse; font-family: sans-serif; margin-bottom: 20px;}}
-        .candidate-table th {{background-color: #f8f9fa; padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6; color: #495057;}}
-        .candidate-table td {{padding: 12px; border-bottom: 1px solid #dee2e6; vertical-align: top;}}
-        .candidate-table tr:hover {{background-color: #f8f9fa;}}
-        .status-badge {{padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; display: inline-block; white-space: nowrap;}}
-    </style>
-    <table class="candidate-table">
-        <thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th></tr></thead>
-        <tbody>{rows}</tbody>
-    </table>
-    """
+    return f"""<style>.candidate-table {{width: 100%; border-collapse: collapse; margin-bottom: 20px;}}.candidate-table th {{background-color: #f8f9fa; padding: 12px; text-align: left;}}.candidate-table td {{padding: 12px; border-bottom: 1px solid #dee2e6; vertical-align: top;}}.status-badge {{padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px;}}</style><table class="candidate-table"><thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th></tr></thead><tbody>{rows}</tbody></table>"""
 
 # --- HEADER & SETTINGS ---
 col_head, col_set = st.columns([6, 1])
@@ -143,7 +120,6 @@ with tab1:
                 st.rerun()
             if c_del.button("Delete JD", key=f"del_jd_{row['id']}", type="primary"):
                 db.execute_query("DELETE FROM matches WHERE job_id = ?", (int(row['id']),))
-                db.execute_query("DELETE FROM runs WHERE job_id = ?", (int(row['id']),))
                 db.execute_query("DELETE FROM jobs WHERE id = ?", (int(row['id']),))
                 st.rerun()
 
@@ -256,30 +232,50 @@ with tab2:
                                     score = data['match_score']
                                     add_log(f"Standard Match Score: {score}%")
 
-                            # 2. Deep Weighted Pass (STRICT JSON ALIGNMENT)
+                            # 2. Deep Weighted Pass (Optimized)
                             if strat == "Deep Match (Automated 2-Pass)" and score >= pass1_thresh:
                                 if exist and exist['strategy'] == 'Deep' and not f_rerun:
                                     add_log("Deep match already exists. Skipping.")
                                 else:
                                     add_log(f"Threshold met ({score}%). Triggering Deep Scan...")
                                     jd_c = json.loads(job['criteria'])
-                                    reqs = []
-                                    # Collect all requirements from structured JSON categories
-                                    for k in ['must_have_skills', 'nice_to_have_skills', 'domain_knowledge', 'soft_skills', 'education_requirements', 'key_responsibilities']:
-                                        if k in jd_c and isinstance(jd_c[k], list):
-                                            reqs.extend([(k, v) for v in jd_c[k]])
+
+                                    # OPTIMIZATION: SPLIT CRITERIA
+                                    # High Priority (Individual Calls)
+                                    priority_reqs = []
+                                    if 'must_have_skills' in jd_c and isinstance(jd_c['must_have_skills'], list):
+                                        priority_reqs.extend([('must_have_skills', v) for v in jd_c['must_have_skills']])
+                                    if 'domain_knowledge' in jd_c and isinstance(jd_c['domain_knowledge'], list):
+                                        priority_reqs.extend([('domain_knowledge', v) for v in jd_c['domain_knowledge']])
                                     if jd_c.get('min_years_experience', 0) > 0:
-                                        reqs.append(('experience', f"Minimum {jd_c['min_years_experience']} years relevant experience"))
+                                        priority_reqs.append(('experience', f"Minimum {jd_c['min_years_experience']} years relevant experience"))
+
+                                    # Low Priority (Bulk Call)
+                                    bulk_reqs = []
+                                    for k in ['nice_to_have_skills', 'soft_skills', 'education_requirements', 'key_responsibilities']:
+                                        if k in jd_c and isinstance(jd_c[k], list):
+                                            bulk_reqs.extend([(k, v) for v in jd_c[k]])
 
                                     details = []
-                                    num_reqs = len(reqs)
-                                    for idx, (rt, rv) in enumerate(reqs):
-                                        task_display.warning(f"🔬 Deep Scan: Checking criterion {idx+1}/{num_reqs}\n\n**[{rt.upper()}]** {rv[:100]}...")
-                                        sub_bar.progress((idx+1)/num_reqs)
-                                        # Pass the category type to evaluate_criterion for context
+
+                                    # Process High Priority
+                                    num_reqs = len(priority_reqs) + (1 if bulk_reqs else 0)
+                                    processed_count = 0
+
+                                    for rt, rv in priority_reqs:
+                                        processed_count += 1
+                                        task_display.warning(f"🔬 Deep Scan: Checking {rt.upper()} (Priority)...")
+                                        sub_bar.progress(processed_count/num_reqs)
                                         res_crit = client.evaluate_criterion(res['content'], rt, rv)
-                                        if res_crit:
-                                            details.append(res_crit)
+                                        if res_crit: details.append(res_crit)
+
+                                    # Process Low Priority (Bulk)
+                                    if bulk_reqs:
+                                        processed_count += 1
+                                        task_display.info(f"⚡ Bulk Scan: Checking {len(bulk_reqs)} secondary criteria...")
+                                        sub_bar.progress(processed_count/num_reqs)
+                                        bulk_results = client.evaluate_bulk_criteria(res['content'], bulk_reqs)
+                                        if bulk_results: details.extend(bulk_results)
 
                                     sub_bar.empty()
                                     sf, df, rf = client.generate_final_decision(res['filename'], details, strategy="Deep")
@@ -307,8 +303,8 @@ with tab3:
         c_act1, c_act2, _ = st.columns([1, 1, 3])
         with c_act1:
             if st.button("🔄 Rerun Batch"):
-                 # Batch Rerun Logic (Same as above loop but scoped to run)
-                 pass # Placeholder to keep file focused
+                # Placeholder for batch rerun if needed, or user can just use Tab 2
+                st.info("Please use Tab 2 to rerun full batches with new settings.")
         with c_act2:
             if st.button("🗑️ Delete Run", type="primary"):
                 db.execute_query("DELETE FROM runs WHERE id=?", (run_id,))
