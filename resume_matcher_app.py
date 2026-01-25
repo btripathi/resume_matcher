@@ -17,40 +17,41 @@ st.set_page_config(
     layout="wide"
 )
 
-# Init Session State
+# Init Session State FIRST to prevent AttributeErrors
 if "lm_base_url" not in st.session_state: st.session_state.lm_base_url = "http://localhost:1234/v1"
 if "lm_api_key" not in st.session_state: st.session_state.lm_api_key = "lm-studio"
 if "ocr_enabled" not in st.session_state: st.session_state.ocr_enabled = True
 if "processed_files" not in st.session_state: st.session_state.processed_files = set()
 
-# Init DB
 db = database.DBManager()
 
 # --- UI HELPERS ---
 def generate_criteria_html(details):
     rows = ""
-    for item in details:
+    # Sort details by category weight (Must-haves first)
+    cat_order = ["must_have_skills", "experience", "education_requirements", "domain_knowledge", "soft_skills", "nice_to_have_skills"]
+    sorted_details = sorted(details, key=lambda x: cat_order.index(x.get('category')) if x.get('category') in cat_order else 99)
+
+    for item in sorted_details:
         status = item.get('status', 'Unknown')
-        color_style = "color: #333; background-color: #e0e0e0;"
-        if "Met" in status: color_style = "color: #0f5132; background-color: #d1e7dd;"
-        elif "Missing" in status: color_style = "color: #842029; background-color: #f8d7da;"
-        elif "Partial" in status: color_style = "color: #664d03; background-color: #fff3cd;"
+        cat = item.get('category', '').replace('_', ' ').upper()
+        color_style = "color: #0f5132; background-color: #d1e7dd;" if "Met" in status else "color: #842029; background-color: #f8d7da;" if "Missing" in status else "color: #664d03; background-color: #fff3cd;"
 
         req = str(item.get('requirement', '')).replace('<', '&lt;')
         evi = str(item.get('evidence', '')).replace('<', '&lt;')
 
-        rows += f'<tr><td>{req}</td><td>{evi}</td><td><span class="status-badge" style="{color_style}">{status}</span></td></tr>'
+        rows += f'<tr><td style="font-size:10px; font-weight:bold; color:#666;">{cat}</td><td>{req}</td><td>{evi}</td><td><span class="status-badge" style="{color_style}">{status}</span></td></tr>'
 
     return f"""
     <style>
         .match-table {{width: 100%; border-collapse: collapse; font-family: sans-serif; margin-top: 10px;}}
         .match-table th {{background-color: #f0f2f6; padding: 12px 15px; text-align: left; border-bottom: 2px solid #e0e0e0; font-weight: 600; color: #31333F;}}
-        .match-table td {{padding: 10px 15px; border-bottom: 1px solid #e0e0e0; vertical-align: top; font-size: 14px; color: #31333F;}}
+        .match-table td {{padding: 10px 15px; border-bottom: 1px solid #e0e0e0; vertical-align: top; font-size: 13px; color: #31333F;}}
         .match-table tr:hover {{background-color: #f9f9f9;}}
-        .status-badge {{padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; display: inline-block;}}
+        .status-badge {{padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; display: inline-block;}}
     </style>
     <table class="match-table">
-        <thead><tr><th style="width: 30%">Requirement</th><th style="width: 55%">Evidence Found</th><th style="width: 15%">Status</th></tr></thead>
+        <thead><tr><th>Category</th><th>Requirement</th><th>Evidence Found</th><th>Status</th></tr></thead>
         <tbody>{rows}</tbody>
     </table>
     """
@@ -61,10 +62,7 @@ def generate_candidate_list_html(df):
     rows = ""
     for idx, row in df.iterrows():
         decision = row['decision']
-        color_style = "color: #333; background-color: #e0e0e0;"
-        if "Move Forward" in decision: color_style = "color: #0f5132; background-color: #d1e7dd;"
-        elif "Reject" in decision: color_style = "color: #842029; background-color: #f8d7da;"
-        elif "Review" in decision: color_style = "color: #664d03; background-color: #fff3cd;"
+        color_style = "color: #0f5132; background-color: #d1e7dd;" if "Move Forward" in decision else "color: #842029; background-color: #f8d7da;" if "Reject" in decision else "color: #664d03; background-color: #fff3cd;"
 
         score = row['match_score']
         score_color = "#0f5132" if score >= 70 else "#842029" if score < 40 else "black"
@@ -151,7 +149,7 @@ with tab1:
                 db.execute_query("DELETE FROM resumes WHERE id=?", (int(row['id']),))
                 st.rerun()
 
-# --- TAB 2: ANALYSIS ---
+# --- TAB 2: RUN ANALYSIS ---
 with tab2:
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
     j_data = db.fetch_dataframe("SELECT * FROM jobs")
@@ -168,13 +166,13 @@ with tab2:
         f_mode = st.radio("Selection Mode", ["Manual / All", "Target High-Scorers (Pass 2)"], horizontal=True)
 
         target_ids = None
-        s_thresh = 50
+        pass1_thresh = 50
 
         if f_mode == "Target High-Scorers (Pass 2)":
-            s_thresh = st.slider("Min score from previous standard run", 0, 100, 50)
+            pass1_thresh = st.slider("Min score from previous standard run", 0, 100, 50, key="pass1_slider")
             if not sel_j.empty:
                 j_ids = f"({','.join(map(str, sel_j['id'].tolist()))})"
-                matches = db.fetch_dataframe(f"SELECT DISTINCT resume_id FROM matches WHERE match_score >= {s_thresh} AND job_id IN {j_ids}")
+                matches = db.fetch_dataframe(f"SELECT DISTINCT resume_id FROM matches WHERE match_score >= {pass1_thresh} AND job_id IN {j_ids}")
                 target_ids = matches['resume_id'].tolist() if not matches.empty else []
                 st.success(f"🎯 {len(target_ids)} candidates meet threshold.")
             else: st.info("Select Jobs first.")
@@ -194,7 +192,8 @@ with tab2:
             run_name = c2.text_input("Run Name", value=f"{strategy.split()[0]} {datetime.datetime.now().strftime('%H:%M')}")
 
             if strategy == "Deep Match (Automated 2-Pass)":
-                s_thresh = st.slider("Deep Match Threshold (%)", 0, 100, 50, help="Pass 2 is skipped if Pass 1 score is lower than this.")
+                st.info("💡 **2-Pass Logic:** If a Fast scan hasn't run, it runs first. Deep scan follows only for those meeting the threshold below.")
+                pass1_thresh = st.slider("Deep Match Entry Threshold (%)", 0, 100, 50, key="deep_thresh_slider")
 
             c3, c4, c5 = st.columns([1, 2, 2])
             f_rerun = c3.toggle("Rerun All")
@@ -206,8 +205,6 @@ with tab2:
 
                 with st.status(f"Executing {strategy}...", expanded=True) as status:
                     master_bar = st.progress(0)
-
-                    # --- IMPROVED LIVE LOGGING UI ---
                     task_display = st.empty()
                     sub_bar = st.empty()
                     log_history = st.expander("Detailed Activity Log", expanded=True)
@@ -222,15 +219,15 @@ with tab2:
                         for _, res in sel_r.iterrows():
                             count += 1
                             current_resume_name = res['filename']
-                            status.update(label=f"Resume {count}/{total}: {current_resume_name}")
+                            status.update(label=f"Analysis {count}/{total}: {current_resume_name}")
                             add_log(f"Starting analysis for {current_resume_name}", bold=True)
 
                             exist = db.get_match_if_exists(int(job['id']), int(res['id']))
                             mid = exist['id'] if exist else None
                             score = exist['match_score'] if exist else 0
 
-                            # Standard Pass 1
-                            if not exist or (exist['strategy'] != 'Deep' and score < s_thresh) or f_rerun:
+                            # 1. Standard Pass (Fast holistic pass)
+                            if not exist or (exist['strategy'] != 'Deep' and score < pass1_thresh) or f_rerun:
                                 task_display.info(f"🧠 Pass 1: Holistic scan for **{current_resume_name}**...")
                                 data = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
                                 if data:
@@ -238,24 +235,25 @@ with tab2:
                                     score = data['match_score']
                                     add_log(f"Standard Match Score: {score}%")
 
-                            # Deep Pass 2
-                            if strategy == "Deep Match (Automated 2-Pass)" and score >= s_thresh:
+                            # 2. Deep Weighted Pass (STRICT JSON ALIGNMENT)
+                            if strategy == "Deep Match (Automated 2-Pass)" and score >= pass1_thresh:
                                 if exist and exist['strategy'] == 'Deep' and not f_rerun:
                                     add_log("Deep match already exists. Skipping.")
                                 else:
                                     add_log(f"Threshold met ({score}%). Triggering Deep Scan...")
                                     jd_c = json.loads(job['criteria'])
                                     reqs = []
-                                    # Collect all requirements
-                                    for k in ['must_have_skills', 'nice_to_have_skills', 'domain_knowledge']:
+                                    # Collect all requirements from structured JSON categories
+                                    for k in ['must_have_skills', 'nice_to_have_skills', 'domain_knowledge', 'soft_skills', 'education_requirements']:
                                         if k in jd_c and isinstance(jd_c[k], list): reqs.extend([(k, v) for v in jd_c[k]])
+                                    if jd_c.get('min_years_experience', 0) > 0:
+                                        reqs.append(('experience', f"Minimum {jd_c['min_years_experience']} years relevant experience"))
 
                                     details = []
                                     num_reqs = len(reqs)
 
-                                    # Granular loop for logging
                                     for idx, (rt, rv) in enumerate(reqs):
-                                        task_display.warning(f"🔬 Deep Scan: Checking criterion {idx+1}/{num_reqs}\n\n**Requirement:** {rv[:100]}...")
+                                        task_display.warning(f"🔬 Deep Scan: Checking criterion {idx+1}/{num_reqs}\n\n**[{rt.upper()}]** {rv[:100]}...")
                                         sub_bar.progress((idx+1)/num_reqs)
                                         details.append(client.evaluate_criterion(res['content'], rt, rv))
 
@@ -295,22 +293,16 @@ with tab3:
             standard_df = results[results['strategy'] != 'Deep']
 
             st.markdown("### ✨ High-Precision Deep Scans")
-            if not deep_df.empty:
-                st.markdown(generate_candidate_list_html(deep_df), unsafe_allow_html=True)
-            else:
-                st.info("No deep match results in this run batch.")
+            st.markdown(generate_candidate_list_html(deep_df), unsafe_allow_html=True)
 
             st.divider()
             st.markdown("### 🧠 Standard Fast Scans")
-            if not standard_df.empty:
-                st.markdown(generate_candidate_list_html(standard_df), unsafe_allow_html=True)
-            else:
-                st.info("No standard match results in this run batch.")
+            st.markdown(generate_candidate_list_html(standard_df), unsafe_allow_html=True)
 
             st.divider()
-            st.write("### 🔎 Candidate Evidence Inspector")
+            st.write("### 🔎 Match Evidence Investigator")
             results['d'] = results['candidate_name'] + " -> " + results['job_name'] + " (" + results['match_score'].astype(str) + "%)"
-            s_match = st.selectbox("Select Candidate for Deep Dive:", results['d'])
+            s_match = st.selectbox("Select Candidate to Inspect Details:", results['d'])
 
             if s_match:
                 row = results[results['d'] == s_match].iloc[0]
@@ -320,7 +312,7 @@ with tab3:
                     c2.metric("Weighted Score", f"{row['match_score']}%")
 
                     if row['strategy'] == 'Deep':
-                        st.caption("✨ Evaluated with High-Precision Multi-Pass Criterion Matching")
+                        st.caption("✨ Evaluated with High-Precision Multi-Pass Tiered Weighting")
 
                     st.info(row['reasoning'])
                     try:
