@@ -57,7 +57,7 @@ def generate_criteria_html(details):
 
 def generate_candidate_list_html(df):
     if df.empty:
-        return "<p style='color: #666; font-style: italic;'>No results in this category.</p>"
+        return "<p style='color: #666; font-style: italic;'>No results found in this category.</p>"
     rows = ""
     for idx, row in df.iterrows():
         decision = row['decision']
@@ -67,7 +67,7 @@ def generate_candidate_list_html(df):
         elif "Review" in decision: color_style = "color: #664d03; background-color: #fff3cd;"
 
         score = row['match_score']
-        score_color = "#0f5132" if score >= 80 else "#842029" if score < 50 else "black"
+        score_color = "#0f5132" if score >= 70 else "#842029" if score < 40 else "black"
 
         name = str(row['candidate_name']).replace('<', '&lt;')
         filename = str(row['res_name']).replace('<', '&lt;')
@@ -194,60 +194,92 @@ with tab2:
             run_name = c2.text_input("Run Name", value=f"{strategy.split()[0]} {datetime.datetime.now().strftime('%H:%M')}")
 
             if strategy == "Deep Match (Automated 2-Pass)":
-                s_thresh = st.slider("Deep Match Threshold (%)", 0, 100, 50, help="If a candidate scores below this in Pass 1, Pass 2 is skipped.")
+                s_thresh = st.slider("Deep Match Threshold (%)", 0, 100, 50, help="Pass 2 is skipped if Pass 1 score is lower than this.")
 
             c3, c4, c5 = st.columns([1, 2, 2])
             f_rerun = c3.toggle("Rerun All")
-            if c4.button("🚀 START", type="primary", use_container_width=True):
+
+            if c4.button("🚀 START ANALYSIS", type="primary", use_container_width=True):
                 rid = db.create_run(run_name)
                 total = len(sel_j) * len(sel_r)
                 count = 0
-                with st.status("Executing...", expanded=True) as status:
-                    bar = st.progress(0)
-                    log = st.empty()
+
+                with st.status(f"Executing {strategy}...", expanded=True) as status:
+                    master_bar = st.progress(0)
+
+                    # --- IMPROVED LIVE LOGGING UI ---
+                    task_display = st.empty()
+                    sub_bar = st.empty()
+                    log_history = st.expander("Detailed Activity Log", expanded=True)
+
+                    def add_log(msg, bold=False):
+                        ts = datetime.datetime.now().strftime("%H:%M:%S")
+                        with log_history:
+                            if bold: st.markdown(f"**[{ts}] {msg}**")
+                            else: st.text(f"[{ts}] {msg}")
+
                     for _, job in sel_j.iterrows():
                         for _, res in sel_r.iterrows():
                             count += 1
-                            status.update(label=f"Match {count}/{total}: {res['filename']}")
+                            current_resume_name = res['filename']
+                            status.update(label=f"Resume {count}/{total}: {current_resume_name}")
+                            add_log(f"Starting analysis for {current_resume_name}", bold=True)
+
                             exist = db.get_match_if_exists(int(job['id']), int(res['id']))
                             mid = exist['id'] if exist else None
                             score = exist['match_score'] if exist else 0
 
-                            # Standard Pass 1 (If needed)
+                            # Standard Pass 1
                             if not exist or (exist['strategy'] != 'Deep' and score < s_thresh) or f_rerun:
+                                task_display.info(f"🧠 Pass 1: Holistic scan for **{current_resume_name}**...")
                                 data = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
                                 if data:
                                     mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard")
                                     score = data['match_score']
+                                    add_log(f"Standard Match Score: {score}%")
 
                             # Deep Pass 2
                             if strategy == "Deep Match (Automated 2-Pass)" and score >= s_thresh:
                                 if exist and exist['strategy'] == 'Deep' and not f_rerun:
-                                    pass # Already deep
+                                    add_log("Deep match already exists. Skipping.")
                                 else:
+                                    add_log(f"Threshold met ({score}%). Triggering Deep Scan...")
                                     jd_c = json.loads(job['criteria'])
                                     reqs = []
+                                    # Collect all requirements
                                     for k in ['must_have_skills', 'nice_to_have_skills', 'domain_knowledge']:
                                         if k in jd_c and isinstance(jd_c[k], list): reqs.extend([(k, v) for v in jd_c[k]])
+
                                     details = []
+                                    num_reqs = len(reqs)
+
+                                    # Granular loop for logging
                                     for idx, (rt, rv) in enumerate(reqs):
+                                        task_display.warning(f"🔬 Deep Scan: Checking criterion {idx+1}/{num_reqs}\n\n**Requirement:** {rv[:100]}...")
+                                        sub_bar.progress((idx+1)/num_reqs)
                                         details.append(client.evaluate_criterion(res['content'], rt, rv))
-                                    # Leniency applied here
+
+                                    sub_bar.empty()
                                     sf, df, rf = client.generate_final_decision(res['filename'], details, strategy="Deep")
                                     mid = db.save_match(int(job['id']), int(res['id']), {"candidate_name": res['filename'], "match_score": sf, "decision": df, "reasoning": rf, "match_details": details}, mid, strategy="Deep")
+                                    add_log(f"Deep Match Final Score: {sf}% ({df})", bold=True)
 
                             if mid: db.link_run_match(rid, mid)
-                            bar.progress(count/total)
-                    status.update(label="Done!", state="complete")
+                            master_bar.progress(count/total)
+
+                    task_display.success("✅ All selected resumes processed successfully.")
+                    status.update(label="Analysis Complete!", state="complete")
                 st.rerun()
-            if c5.button("🛑 STOP", type="secondary", use_container_width=True): st.stop()
+
+            if c5.button("🛑 STOP", type="secondary", use_container_width=True):
+                st.stop()
 
 # --- TAB 3: MATCH RESULTS ---
 with tab3:
     runs = db.fetch_dataframe("SELECT * FROM runs ORDER BY id DESC")
     if not runs.empty:
         runs['label'] = runs['name'] + " (" + runs['created_at'] + ")"
-        sel_run = st.selectbox("Select Run", runs['label'])
+        sel_run = st.selectbox("Select Run Batch", runs['label'])
         run_id = int(runs[runs['label'] == sel_run].iloc[0]['id'])
 
         results = db.fetch_dataframe(f"""
@@ -258,25 +290,41 @@ with tab3:
         """)
 
         if not results.empty:
+            # --- SPLIT TABLES: DEEP vs STANDARD ---
+            deep_df = results[results['strategy'] == 'Deep']
+            standard_df = results[results['strategy'] != 'Deep']
+
             st.markdown("### ✨ High-Precision Deep Scans")
-            st.markdown(generate_candidate_list_html(results[results['strategy'] == 'Deep']), unsafe_allow_html=True)
-            st.divider()
-            st.markdown("### 🧠 Standard Fast Scans")
-            st.markdown(generate_candidate_list_html(results[results['strategy'] != 'Deep']), unsafe_allow_html=True)
+            if not deep_df.empty:
+                st.markdown(generate_candidate_list_html(deep_df), unsafe_allow_html=True)
+            else:
+                st.info("No deep match results in this run batch.")
 
             st.divider()
-            st.write("### 🔎 Investigation")
+            st.markdown("### 🧠 Standard Fast Scans")
+            if not standard_df.empty:
+                st.markdown(generate_candidate_list_html(standard_df), unsafe_allow_html=True)
+            else:
+                st.info("No standard match results in this run batch.")
+
+            st.divider()
+            st.write("### 🔎 Candidate Evidence Inspector")
             results['d'] = results['candidate_name'] + " -> " + results['job_name'] + " (" + results['match_score'].astype(str) + "%)"
-            s_match = st.selectbox("Inspect Candidate:", results['d'])
+            s_match = st.selectbox("Select Candidate for Deep Dive:", results['d'])
+
             if s_match:
                 row = results[results['d'] == s_match].iloc[0]
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
                     c1.title(row['candidate_name'])
-                    c2.metric("Score", f"{row['match_score']}%")
+                    c2.metric("Weighted Score", f"{row['match_score']}%")
+
+                    if row['strategy'] == 'Deep':
+                        st.caption("✨ Evaluated with High-Precision Multi-Pass Criterion Matching")
+
                     st.info(row['reasoning'])
                     try:
                         dets = json.loads(row['match_details'])
                         if dets: st.markdown(generate_criteria_html(dets), unsafe_allow_html=True)
-                    except: st.warning("Details unavailable.")
-    else: st.info("No runs found.")
+                    except: st.warning("Detailed requirement breakdown unavailable for this match.")
+    else: st.info("No run history found. Run an analysis in Tab 2 first.")
