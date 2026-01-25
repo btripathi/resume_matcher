@@ -1,13 +1,116 @@
-📄 AI Resume Matcher (Local & Privacy-Focused)A powerful, local recruiting tool that runs entirely on your Mac (M1/M2/M3/M4). It uses Local LLMs (via LM Studio) to match resumes against Job Descriptions, ensuring 100% data privacy. No data leaves your machine.🚀 FeaturesUniversal File Support: Upload PDFs (native & scanned/OCR), DOCX, and Text files.Privacy First: Uses local LLMs (Llama 3, Mistral, etc.) via LM Studio. Zero data upload to cloud clouds.Batch Processing: Match hundreds of resumes against multiple JDs in one go ("All x All" matrix).Intelligent Scoring:0-49 (Reject): Missing mandatory skills.50-79 (Review): Good fit with minor gaps.80-100 (Move Forward): Strong match.Deep Dive Analysis: Visual heatmap matrix and detailed criterion-by-criterion breakdown.🛠️ PrerequisitesMac with Apple Silicon (M1/M2/M3/M4 recommended for speed).LM Studio installed.Homebrew installed (for installing OCR tools).⚡️ Quick Start (1-Click Setup)We have included an automated script that installs all dependencies (OCR tools, Python libraries) and launches the app.Clone this repository:git clone [https://github.com/your-username/resume-matcher.git](https://github.com/your-username/resume-matcher.git)
+📄 AI Resume Matcher (Local & Privacy-Focused)
+
+A powerful, local recruiting tool that runs entirely on your Mac (M1/M2/M3/M4). It uses Local LLMs (via LM Studio) to match resumes against Job Descriptions, ensuring 100% data privacy. No data leaves your machine.
+
+🚀 Features
+
+Universal File Support: Upload PDFs (native & scanned/OCR), DOCX, and Text files.
+
+Privacy First: Uses local LLMs (Llama 3, Mistral, etc.) via LM Studio. Zero data upload to cloud clouds.
+
+Batch Processing: Match hundreds of resumes against multiple JDs in one go ("All x All" matrix).
+
+Intelligent Scoring:
+
+0-49 (Reject): Missing mandatory skills.
+
+50-79 (Review): Good fit with minor gaps.
+
+80-100 (Move Forward): Strong match.
+
+Deep Dive Analysis: Visual heatmap matrix and detailed criterion-by-criterion breakdown.
+
+🛠️ Prerequisites
+
+Mac with Apple Silicon (M1/M2/M3/M4 recommended for speed).
+
+LM Studio installed.
+
+Homebrew installed (for installing OCR tools).
+
+⚡️ Quick Start (1-Click Setup)
+
+We have included an automated script that installs all dependencies (OCR tools, Python libraries) and launches the app.
+
+Clone this repository:
+
+git clone [https://github.com/your-username/resume-matcher.git](https://github.com/your-username/resume-matcher.git)
 cd resume-matcher
 
-Prepare LM Studio:Open LM Studio.Load a model (Recommended: Llama 3 or Mistral Instruct).Go to the Local Server tab (double arrow icon <->) on the left.Click Start Server.Run the Installer:chmod +x install_and_run.sh
+
+Prepare LM Studio:
+
+Open LM Studio.
+
+Load a model (Recommended: Llama 3 or Mistral Instruct).
+
+Go to the Local Server tab (double arrow icon <->) on the left.
+
+Click Start Server.
+
+Run the Installer:
+
+chmod +x install_and_run.sh
 ./install_and_run.sh
 
-The app will open in your browser at http://localhost:8501.📖 How to Use1. Manage DataGo to the Manage Data tab.Drag & Drop your Job Descriptions (JDs) and Resumes.The system acts as a "Database" — files are processed once and saved. You can re-run matches anytime without re-uploading.2. Run AnalysisGo to the Run Analysis tab.Select one (or all) Job Descriptions.Select the Resumes you want to screen.Click 🚀 Analyze.Tip: Use the "Run Name" field to tag batch runs (e.g., "Senior Dev Q1 Hiring").3. Match ResultsView the Correlation Matrix heatmap to spot top candidates across multiple roles.Select a specific match to see the Deep Dive:Match Score & Decision.Missing Skills list.Criteria Table: See exactly which resume text matched which JD requirement.Use the Rerun or Delete buttons to fix specific entries.🔧 Manual Installation (Alternative)If you prefer not to use the script:Install System Tools:brew install tesseract poppler
 
-Install Python Deps:pip install streamlit openai pypdf python-docx pytesseract pillow pandas pdf2image matplotlib
+The app will open in your browser at http://localhost:8501.
 
-Run App:streamlit run resume_matcher_app.py
+📖 How to Use
 
-🔒 Data Privacy NoteThis application uses a local SQLite database (resume_matcher.db) stored in the root folder. Do not commit this file to GitHub if it contains real candidate data (it is already added to .gitignore).
+1. Manage Data
+
+Go to the Manage Data tab.
+
+Drag & Drop your Job Descriptions (JDs) and Resumes.
+
+The system acts as a "Database" — files are processed once and saved. You can re-run matches anytime without re-uploading.
+
+2. Run Analysis
+
+Go to the Run Analysis tab.
+
+Select one (or all) Job Descriptions.
+
+Select the Resumes you want to screen.
+
+Click 🚀 Analyze.
+
+Tip: Use the "Run Name" field to tag batch runs (e.g., "Senior Dev Q1 Hiring").
+
+3. Match Results
+
+View the Correlation Matrix heatmap to spot top candidates across multiple roles.
+
+Select a specific match to see the Deep Dive:
+
+Match Score & Decision.
+
+Missing Skills list.
+
+Criteria Table: See exactly which resume text matched which JD requirement.
+
+Use the Rerun or Delete buttons to fix specific entries.
+
+🔧 Manual Installation (Alternative)
+
+If you prefer not to use the script:
+
+Install System Tools:
+
+brew install tesseract poppler
+
+
+Install Python Deps:
+
+pip install streamlit openai pypdf python-docx pytesseract pillow pandas pdf2image matplotlib
+
+
+Run App:
+
+streamlit run resume_matcher_app.py
+
+
+🔒 Data Privacy Note
+
+This application uses a local SQLite database (resume_matcher.db) stored in the root folder. Do not commit this file to GitHub if it contains real candidate data (it is already added to .gitignore).
