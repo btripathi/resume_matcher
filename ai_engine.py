@@ -7,6 +7,7 @@ class AIEngine:
         self.client = OpenAI(base_url=base_url, api_key=api_key)
 
     def analyze_jd(self, text):
+        """Extracts structured JSON criteria from a raw Job Description."""
         prompt = f"""
         You are an expert Technical Recruiter. Analyze this Job Description and extract EXTENSIVE criteria.
 
@@ -31,6 +32,7 @@ class AIEngine:
             return {"error": str(e)}
 
     def analyze_resume(self, text):
+        """Extracts a structured profile from a raw Resume."""
         prompt = f"""
         You are an expert HR Tech AI. Analyze this Resume and extract a RICH profile.
 
@@ -54,6 +56,7 @@ class AIEngine:
             return {"candidate_name": "Error", "error_flag": True}
 
     def evaluate_standard(self, resume_text, jd_criteria, resume_profile):
+        """Pass 1: Holistic single-pass evaluation."""
         system_prompt = """
         You are a technical recruiter. Evaluate the candidate against the JD in a single pass.
 
@@ -83,6 +86,7 @@ class AIEngine:
             return None
 
     def evaluate_criterion(self, resume_text, criterion_type, criterion_value):
+        """Pass 2: Granular check for a single requirement."""
         system_prompt = """
         You are a strict QA Auditor for technical resumes.
         Your task is to check if a resume meets ONE specific requirement.
@@ -111,7 +115,7 @@ class AIEngine:
     def generate_final_decision(self, candidate_name, match_details, strategy="Deep"):
         """
         Aggregates per-criterion results into a final score.
-        Strategy "Deep" uses lower thresholds to be more lenient with granular requirements.
+        Uses lower (more lenient) thresholds for Deep matches.
         """
         total_items = len(match_details)
         if total_items == 0: return 0, "Reject", "No criteria analyzed."
@@ -119,10 +123,11 @@ class AIEngine:
         met_count = sum(1 for d in match_details if d.get('status') == 'Met')
         partial_count = sum(1 for d in match_details if d.get('status') == 'Partial')
 
+        # Weighted calculation
         score = int(((met_count * 1.0) + (partial_count * 0.5)) / total_items * 100)
 
-        # Set thresholds based on strategy
-        # Deep scans are harder, so we lower the bar for Proceed/Review
+        # Strategy-based thresholds
+        # Deep scans are more rigorous, so we lower the bar for Proceed/Review
         p_thresh = 70 if strategy == "Deep" else 80
         r_thresh = 40 if strategy == "Deep" else 50
 
