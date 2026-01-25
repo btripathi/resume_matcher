@@ -12,7 +12,7 @@ import ai_engine
 
 # --- CONFIGURATION ---
 st.set_page_config(
-    page_title="AI Resume Matcher (Pro)",
+    page_title="AI Recruiting Workbench (Pro)",
     page_icon="🚀",
     layout="wide"
 )
@@ -22,7 +22,6 @@ if "lm_base_url" not in st.session_state: st.session_state.lm_base_url = "http:/
 if "lm_api_key" not in st.session_state: st.session_state.lm_api_key = "lm-studio"
 if "ocr_enabled" not in st.session_state: st.session_state.ocr_enabled = True
 if "processed_files" not in st.session_state: st.session_state.processed_files = set()
-if "is_running" not in st.session_state: st.session_state.is_running = False
 
 # Init DB
 db = database.DBManager()
@@ -68,11 +67,15 @@ def generate_candidate_list_html(df):
         score = row['match_score']
         score_color = "#0f5132" if score >= 80 else "#842029" if score < 50 else "black"
 
+        # Strategy Badge
+        strat = row.get('strategy', 'Standard')
+        strategy_badge = f'<span style="background: #6366f1; color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-left: 8px; font-weight: bold;">{strat.upper()} SCAN</span>'
+
         name = str(row['candidate_name']).replace('<', '&lt;')
         filename = str(row['res_name']).replace('<', '&lt;')
         job_name = str(row['job_name']).replace('<', '&lt;')
 
-        rows += f'<tr><td style="font-weight: 600;">{name}<br><span style="font-size: 11px; color: #666; font-weight: normal;">Resume: {filename}</span><br><span style="font-size: 11px; color: #0056b3; font-weight: normal;">Job: {job_name}</span></td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%</td><td><span class="status-badge" style="{color_style}">{decision}</span></td><td style="font-size: 13px; color: #444;">{str(row["reasoning"]).replace("<", "&lt;")}</td></tr>'
+        rows += f'<tr><td style="font-weight: 600;">{name} {strategy_badge}<br><span style="font-size: 11px; color: #666; font-weight: normal;">Resume: {filename}</span><br><span style="font-size: 11px; color: #0056b3; font-weight: normal;">Job: {job_name}</span></td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%</td><td><span class="status-badge" style="{color_style}">{decision}</span></td><td style="font-size: 13px; color: #444;">{str(row["reasoning"]).replace("<", "&lt;")}</td></tr>'
 
     return f"""
     <style>
@@ -88,279 +91,249 @@ def generate_candidate_list_html(df):
     </table>
     """
 
-# --- HEADER & SETTINGS ---
-col_head, col_set = st.columns([6, 1])
-with col_head: st.title("📄 AI Recruiting Workbench")
-with col_set:
-    with st.popover("⚙️ Settings"):
-        st.write("### Configuration")
-        st.text_input("LM URL", key="lm_base_url")
-        st.text_input("API Key", key="lm_api_key")
-        st.checkbox("Enable OCR", key="ocr_enabled")
-        if st.button("🗑️ Reset DB", type="primary"):
-            db.execute_query("DELETE FROM matches")
-            db.execute_query("DELETE FROM runs")
-            db.execute_query("DELETE FROM run_matches")
-            db.execute_query("DELETE FROM jobs")
-            db.execute_query("DELETE FROM resumes")
-            st.session_state.processed_files = set()
-            st.success("Reset Complete")
-            time.sleep(1)
-            st.rerun()
+# --- HEADER ---
+st.title("📄 AI Recruiting Workbench")
 
-# --- TABS ---
 tab1, tab2, tab3 = st.tabs(["1. Manage Data", "2. Run Analysis", "3. Match Results"])
 
 # --- TAB 1: MANAGE DATA ---
 with tab1:
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
     c1, c2 = st.columns(2)
-
     with c1:
         st.subheader("📂 Jobs")
         jd_up = st.file_uploader("Upload JDs", accept_multiple_files=True, key="jd")
         if jd_up and st.button(f"Process {len(jd_up)} JDs", type="primary"):
             with st.status("Processing JDs...") as status:
-                bar = st.progress(0)
-                log_box = st.expander("Logs", expanded=True)
-                for i, f in enumerate(jd_up):
-                    if f.name in st.session_state.processed_files: continue
-                    text = document_utils.extract_text_from_pdf(f.read(), st.session_state.ocr_enabled, log_box.write) if f.name.endswith('.pdf') else str(f.read(), 'utf-8', errors='ignore')
-                    if text:
-                        data = client.analyze_jd(text)
-                        db.add_job(f.name, text, data)
-                        st.session_state.processed_files.add(f.name)
-                        log_box.write(f"✅ Saved {f.name}")
-                    bar.progress((i+1)/len(jd_up))
-                status.update(label="Complete!", state="complete", expanded=False)
-                time.sleep(1)
+                for f in jd_up:
+                    text = document_utils.extract_text_from_pdf(f.read()) if f.name.endswith('.pdf') else str(f.read(), 'utf-8', errors='ignore')
+                    db.add_job(f.name, text, client.analyze_jd(text))
                 st.rerun()
-
-        jds = db.fetch_dataframe("SELECT id, filename, criteria, upload_date FROM jobs")
-        if not jds.empty:
-            st.dataframe(jds[['filename', 'upload_date']], hide_index=True, width="stretch")
-            st.divider()
-            jd_choice = st.selectbox("Edit Criteria:", jds['filename'])
-            row = jds[jds['filename'] == jd_choice].iloc[0]
-            new_crit = st.text_area("JSON", value=row['criteria'], height=300, key=f"jd_ed_{row['id']}")
-            c_sav, c_del = st.columns(2)
-            if c_sav.button("Save JD", key=f"sav_jd_{row['id']}"):
-                db.execute_query("UPDATE jobs SET criteria = ? WHERE id = ?", (new_crit, int(row['id'])))
-                st.success("Saved!")
-                st.rerun()
-            if c_del.button("Delete JD", key=f"del_jd_{row['id']}", type="primary"):
-                db.execute_query("DELETE FROM jobs WHERE id = ?", (int(row['id']),))
-                st.rerun()
+        jds = db.fetch_dataframe("SELECT id, filename FROM jobs")
+        st.dataframe(jds, hide_index=True, width="stretch")
 
     with c2:
         st.subheader("📄 Resumes")
         res_up = st.file_uploader("Upload Resumes", accept_multiple_files=True, key="res")
         if res_up and st.button(f"Process {len(res_up)} Resumes", type="primary"):
             with st.status("Processing Resumes...") as status:
-                bar = st.progress(0)
-                log_box = st.expander("Logs", expanded=True)
-                for i, f in enumerate(res_up):
-                    if f.name in st.session_state.processed_files: continue
-                    text = document_utils.extract_text_from_pdf(f.read(), st.session_state.ocr_enabled, log_callback=log_box.write) if f.name.endswith('.pdf') else str(f.read(), 'utf-8', errors='ignore')
-                    if text:
-                        data = client.analyze_resume(text)
-                        db.add_resume(f.name, text, data)
-                        st.session_state.processed_files.add(f.name)
-                        log_box.write(f"✅ Saved {f.name}")
-                    bar.progress((i+1)/len(res_up))
-                status.update(label="Complete!", state="complete", expanded=False)
-                time.sleep(1)
+                for f in res_up:
+                    text = document_utils.extract_text_from_pdf(f.read()) if f.name.endswith('.pdf') else str(f.read(), 'utf-8', errors='ignore')
+                    db.add_resume(f.name, text, client.analyze_resume(text))
                 st.rerun()
+        ress = db.fetch_dataframe("SELECT id, filename FROM resumes")
+        st.dataframe(ress, hide_index=True, width="stretch")
 
-        ress = db.fetch_dataframe("SELECT id, filename, profile, upload_date FROM resumes")
-        if not ress.empty:
-            st.dataframe(ress[['filename', 'upload_date']], hide_index=True, width="stretch")
-            st.divider()
-            res_choice = st.selectbox("Edit Profile:", ress['filename'])
-            row = ress[ress['filename'] == res_choice].iloc[0]
-            new_prof = st.text_area("JSON", value=row['profile'], height=300, key=f"res_ed_{row['id']}")
-            c_sav, c_del = st.columns(2)
-            if c_sav.button("Save Profile", key=f"sav_res_{row['id']}"):
-                db.execute_query("UPDATE resumes SET profile = ? WHERE id = ?", (new_prof, int(row['id'])))
-                st.success("Saved!")
-                st.rerun()
-            if c_del.button("Delete Resume", key=f"del_res_{row['id']}", type="primary"):
-                db.execute_query("DELETE FROM resumes WHERE id = ?", (int(row['id']),))
-                st.rerun()
-
-# --- TAB 2: RUN ANALYSIS ---
+# --- TAB 2: ANALYSIS ---
 with tab2:
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
+    jds_list = db.fetch_dataframe("SELECT * FROM jobs")
+    res_list = db.fetch_dataframe("SELECT * FROM resumes")
 
-    jds_data = db.fetch_dataframe("SELECT id, filename, criteria FROM jobs")
-    ress_data = db.fetch_dataframe("SELECT id, filename, content, profile FROM resumes")
+    col_j, col_r = st.columns(2)
 
-    col_sel1, col_sel2 = st.columns(2)
-    with col_sel1:
-        st.markdown("#### Select Job Descriptions")
-        use_all_jds = st.checkbox("All JDs", value=False)
-        sel_jds = jds_data if use_all_jds else jds_data[jds_data['filename'].isin(st.multiselect("Choose Jobs", jds_data['filename']))]
+    with col_j:
+        st.markdown("#### 1. Select Job(s)")
+        use_all_jds = st.checkbox("Select All JDs", value=False)
+        sel_jds = jds_list if use_all_jds else jds_list[jds_list['filename'].isin(col_j.multiselect("Choose Jobs", jds_list['filename']))]
 
-    with col_sel2:
-        st.markdown("#### Select Resumes")
-        use_all_res = st.checkbox("All Resumes", value=True)
-        sel_res = ress_data if use_all_res else ress_data[ress_data['filename'].isin(st.multiselect("Choose Resumes", ress_data['filename']))]
+    with col_r:
+        st.markdown("#### 2. Select Resumes")
+        # Global threshold initialization
+        score_threshold = 50
 
-    st.divider()
+        filter_mode = st.radio("Selection Mode", ["Manual / All", "Target Candidates (From Previous Run)"], horizontal=True)
+
+        target_res_ids = None
+
+        if filter_mode == "Target Candidates (From Previous Run)":
+            # Temporary local slider to filter the list view
+            temp_threshold = st.slider("Min previous score to show in list", 0, 100, 50, key="filter_slider")
+            if not sel_jds.empty:
+                job_ids_raw = sel_jds['id'].tolist()
+                job_ids_sql = f"({','.join(map(str, job_ids_raw))})"
+                query = f"SELECT DISTINCT resume_id FROM matches WHERE match_score >= {temp_threshold} AND job_id IN {job_ids_sql}"
+                matching_res_ids = db.fetch_dataframe(query)
+                if not matching_res_ids.empty:
+                    target_res_ids = matching_res_ids['resume_id'].tolist()
+                    st.success(f"🎯 {len(target_res_ids)} candidates meet criteria.")
+                else:
+                    st.warning("No existing matches found above threshold.")
+                    target_res_ids = []
+            else:
+                st.info("Select Jobs first to filter candidates.")
+
+        if filter_mode == "Manual / All":
+            use_all_res = st.checkbox("Select All Resumes", value=True)
+            sel_res = res_list if use_all_res else res_list[res_list['filename'].isin(st.multiselect("Choose Resumes", res_list['filename']))]
+        else:
+            sel_res = res_list[res_list['id'].isin(target_res_ids)] if target_res_ids is not None else pd.DataFrame()
 
     if not sel_jds.empty and not sel_res.empty:
+        st.divider()
         with st.container(border=True):
-            st.markdown("#### High-Precision Run Configuration")
-            st.info("💡 Analysis will run per individual criterion for maximum accuracy.")
-            c_p1, c_p2 = st.columns([3, 1])
-            run_name_input = c_p1.text_input("Batch Name", value=f"Deep Match {datetime.datetime.now().strftime('%H:%M')}")
-            rerun_toggle = c_p2.toggle("Overwrite existing?", value=False)
+            st.markdown("#### ⚙️ Analysis Workflow")
+            c_cfg1, c_cfg2 = st.columns([2, 2])
 
-            c_act1, c_act2 = st.columns([1, 1])
-            btn_analyze = c_act1.button("🚀 START DEEP ANALYSIS", type="primary", use_container_width=True)
-            btn_stop = c_act2.button("🛑 STOP RUN", type="secondary", use_container_width=True)
+            strategy = c_cfg1.radio(
+                "Matching Strategy",
+                ["Standard (Fast)", "Deep Match (Automated 2-Pass)"],
+                index=1 if filter_mode == "Target Candidates (From Previous Run)" else 0,
+                help="Standard: Single pass. Deep Match: Auto-runs Fast Pass (if needed), then Deep Pass if threshold met."
+            )
 
-        if btn_stop:
-            st.session_state.is_running = False
-            st.warning("Analysis Stopped.")
-            st.stop()
+            run_name = c_cfg2.text_input("Run Batch Name", value=f"{strategy.split()[0]} {datetime.datetime.now().strftime('%H:%M')}")
 
-        if btn_analyze:
-            st.session_state.is_running = True
-            run_id = db.create_run(run_name_input)
-            total_matches = len(sel_jds) * len(sel_res)
-            match_count = 0
+            # Show threshold slider specifically for Deep Match configuration
+            if strategy == "Deep Match (Automated 2-Pass)":
+                st.info("💡 **2-Pass Logic:** If a candidate hasn't been scanned or is below the threshold, a Fast Scan runs first. The Deep Scan only executes if the Fast Scan score meets the threshold below.")
+                score_threshold = st.slider("Deep Match Entry Threshold (%)", 0, 100, 50, help="Candidates must score at least this much in Pass 1 to trigger the expensive Pass 2.")
 
-            with st.status("Performing Deep Criterion-by-Criterion Analysis...", expanded=True) as status:
+            c_cfg3, c_act1, c_act2 = st.columns([1, 2, 2])
+            rerun = c_cfg3.toggle("Force Rerun", value=False)
+            btn_start = c_act1.button("🚀 START WORKFLOW", type="primary", use_container_width=True)
+            if c_act2.button("🛑 STOP", type="secondary", use_container_width=True):
+                st.stop()
+
+        if btn_start:
+            run_id = db.create_run(run_name)
+            total_pairs = len(sel_jds) * len(sel_res)
+            count = 0
+
+            with st.status(f"Executing Workflow: {strategy}...", expanded=True) as status:
                 master_bar = st.progress(0)
-                log_box = st.expander("Live Deep Scan Logs", expanded=True)
+                log_container = st.empty()
+                log_lines = []
+
+                def update_logs(msg):
+                    log_lines.append(f"{datetime.datetime.now().strftime('%H:%M:%S')} - {msg}")
+                    log_container.code("\n".join(log_lines[-8:]))
 
                 for _, job in sel_jds.iterrows():
                     for _, res in sel_res.iterrows():
-                        match_count += 1
+                        count += 1
+                        status.update(label=f"Analysis {count}/{total_pairs}: {res['filename']}")
 
-                        # Check existence
-                        match_id = db.get_match_if_exists(int(job['id']), int(res['id']))
-                        if match_id and not rerun_toggle:
-                            with log_box: st.write(f"⏭️ Using cached deep-scan for: **{res['filename']}**")
-                            db.link_run_match(run_id, match_id)
-                            master_bar.progress(match_count / total_matches)
-                            continue
+                        existing = db.get_match_if_exists(int(job['id']), int(res['id']))
+                        match_id = existing['id'] if existing else None
 
-                        # 1. Flatten all criteria from the JD JSON
-                        try:
-                            jd_criteria = json.loads(job['criteria'])
-                            requirements = []
-                            # Collect from all lists in JSON
-                            for key in ['must_have_skills', 'nice_to_have_skills', 'domain_knowledge', 'soft_skills']:
-                                if key in jd_criteria and isinstance(jd_criteria[key], list):
-                                    requirements.extend([(key, val) for val in jd_criteria[key]])
+                        if strategy == "Deep Match (Automated 2-Pass)":
+                            current_score = existing['match_score'] if existing else 0
 
-                            # Add education/experience
-                            if 'min_years_experience' in jd_criteria:
-                                requirements.append(("experience", f"Min {jd_criteria['min_years_experience']} years experience"))
-                            if 'education_requirements' in jd_criteria:
-                                requirements.append(("education", jd_criteria['education_requirements']))
-                        except:
-                            requirements = [("raw", "General fit against JD text")]
+                            # Step 1: Ensure Fast Pass exists
+                            if not existing or (existing['strategy'] != 'Deep' and current_score < score_threshold) or rerun:
+                                update_logs(f"🕒 Pass 1 (Standard) needed for {res['filename']}...")
+                                data_fast = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
+                                if data_fast:
+                                    match_id = db.save_match(int(job['id']), int(res['id']), data_fast, match_id, strategy="Standard")
+                                    current_score = data_fast['match_score']
+                                    update_logs(f"  ↳ Pass 1 Result: {current_score}%")
 
-                        # 2. Loop through individual requirements
-                        match_details = []
-                        total_reqs = len(requirements)
+                            # Step 2: Run Deep Pass if threshold met
+                            if current_score >= score_threshold:
+                                if existing and existing['strategy'] == 'Deep' and not rerun:
+                                    update_logs(f"⏭️ Deep Match already exists for {res['filename']}")
+                                else:
+                                    update_logs(f"🔬 Pass 2 (Deep Scan) starting for {res['filename']}...")
+                                    try:
+                                        jd_c = json.loads(job['criteria'])
+                                        reqs = []
+                                        for k in ['must_have_skills', 'nice_to_have_skills', 'domain_knowledge', 'soft_skills']:
+                                            if k in jd_c and isinstance(jd_c[k], list):
+                                                reqs.extend([(k, v) for v in jd_c[k]])
+                                        if 'min_years_experience' in jd_c:
+                                            reqs.append(('experience', f"Min {jd_c['min_years_experience']} years"))
+                                    except:
+                                        reqs = [("raw", "JD Criteria")]
 
-                        status.update(label=f"Scanning {res['filename']} (0/{total_reqs} criteria)")
+                                    details = []
+                                    sub_bar = st.progress(0, text="Criterion Detail")
+                                    for idx, (r_type, r_val) in enumerate(reqs):
+                                        update_logs(f"  ↳ Verifying: {r_val[:30]}...")
+                                        details.append(client.evaluate_criterion(res['content'], r_type, r_val))
+                                        sub_bar.progress((idx+1)/len(reqs))
+                                    sub_bar.empty()
 
-                        for idx, (req_type, req_val) in enumerate(requirements):
-                            status.update(label=f"Scanning {res['filename']} ({idx+1}/{total_reqs}: {req_val})")
-                            crit_result = client.evaluate_criterion(res['content'], req_type, req_val)
-                            if crit_result:
-                                match_details.append(crit_result)
+                                    score_f, dec_f, reas_f = client.generate_final_decision(res['filename'], details)
+                                    final_data = {
+                                        "candidate_name": res['filename'], "match_score": score_f,
+                                        "decision": dec_f, "reasoning": reas_f, "match_details": details
+                                    }
+                                    match_id = db.save_match(int(job['id']), int(res['id']), final_data, match_id, strategy="Deep")
+                                    update_logs(f"✅ Deep Scan Complete: {score_f}%")
+                            else:
+                                update_logs(f"⏭️ Skipping Deep Scan (Below {score_threshold}%)")
 
-                        # 3. Generate final score/decision based on aggregated deep dive
-                        try:
-                            prof = json.loads(res['profile'])
-                            name = prof.get('candidate_name', 'Unknown')
-                        except:
-                            name = "Unknown"
+                        else:
+                            # Standard Strategy
+                            if match_id and not rerun:
+                                update_logs(f"⏭️ Skipping cached: {res['filename']}")
+                            else:
+                                update_logs(f"🧠 Fast Scan: {res['filename']}...")
+                                data = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
+                                if data:
+                                    match_id = db.save_match(int(job['id']), int(res['id']), data, match_id, strategy="Standard")
+                                    update_logs(f"✅ Result: {data.get('match_score')}%")
 
-                        score, decision, reasoning = client.generate_final_decision(name, match_details)
+                        if match_id: db.link_run_match(run_id, match_id)
+                        master_bar.progress(count/total_pairs)
 
-                        # 4. Save to DB
-                        final_data = {
-                            "candidate_name": name,
-                            "match_score": score,
-                            "decision": decision,
-                            "reasoning": reasoning,
-                            "match_details": match_details,
-                            "missing_skills": [d['requirement'] for d in match_details if d['status'] == 'Missing']
-                        }
+                status.update(label="Workflow Complete!", state="complete", expanded=False)
+            st.success("Batch Finished.")
 
-                        match_id = db.save_match(int(job['id']), int(res['id']), final_data, match_id)
-                        db.link_run_match(run_id, match_id)
-
-                        with log_box: st.write(f"✅ Deep Scan Complete: **{res['filename']}** (Score: {score}%)")
-                        master_bar.progress(match_count / total_matches)
-
-                st.session_state.is_running = False
-                status.update(label="Deep Analysis Complete!", state="complete", expanded=False)
-                st.success("Batch Finished! View the precision results in the Match Results tab.")
-
-# --- TAB 3: RESULTS ---
+# --- TAB 3: MATCH RESULTS ---
 with tab3:
     runs = db.fetch_dataframe("SELECT * FROM runs ORDER BY id DESC")
     if not runs.empty:
         runs['label'] = runs['name'] + " (" + runs['created_at'] + ")"
-        c_sel, c_btn1, c_btn2 = st.columns([3, 1, 1])
-        sel_run_lbl = c_sel.selectbox("Select Run", runs['label'])
-        run_id = int(runs[runs['label'] == sel_run_lbl].iloc[0]['id'])
+        sel_run_lbl = st.selectbox("Select Run", runs['label'])
+        selected_run = runs[runs['label'] == sel_run_lbl].iloc[0]
+        run_id = int(selected_run['id'])
 
-        if c_btn2.button("🗑️ Delete Run", type="primary"):
-            db.execute_query("DELETE FROM runs WHERE id=?", (run_id,))
-            db.execute_query("DELETE FROM run_matches WHERE run_id=?", (run_id,))
-            st.rerun()
-
-        st.divider()
         results = db.fetch_dataframe(f"""
-            SELECT m.*, r.filename as res_name, j.filename as job_name, r.content as res_text, j.criteria as job_crit, r.profile as res_prof
-            FROM matches m
-            JOIN run_matches rm ON m.id = rm.match_id
-            JOIN resumes r ON m.resume_id = r.id
-            JOIN jobs j ON m.job_id = j.id
+            SELECT m.*, r.filename as res_name, j.filename as job_name
+            FROM matches m JOIN run_matches rm ON m.id = rm.match_id
+            JOIN resumes r ON m.resume_id = r.id JOIN jobs j ON m.job_id = j.id
             WHERE rm.run_id = {run_id}
             ORDER BY m.match_score DESC
         """)
 
         if not results.empty:
-            if len(results['job_name'].unique()) > 1:
-                st.write("### 🌡️ Correlation Heatmap")
-                matrix = results.pivot_table(index='res_name', columns='job_name', values='match_score', aggfunc='max').fillna(0).astype(int)
-                st.dataframe(matrix.style.background_gradient(cmap='RdYlGn', vmin=0, vmax=100), width="stretch")
-
-            st.write("### 📝 High-Precision Match List")
+            st.write("### 📝 Match List")
             st.markdown(generate_candidate_list_html(results), unsafe_allow_html=True)
 
             st.divider()
-            st.write("### 🔎 Deep Dive Criterion Analysis")
+            st.write("### 🔎 Deep Dive Investigation")
             results['display'] = results['candidate_name'] + " -> " + results['job_name'] + " (" + results['match_score'].astype(str) + "%)"
-            sel_match_lbl = st.selectbox("Inspect Candidate Precision Scan:", results['display'])
+            sel_match_lbl = st.selectbox("Select Candidate to Inspect:", results['display'])
 
             if sel_match_lbl:
                 row = results[results['display'] == sel_match_lbl].iloc[0]
 
+                if row['strategy'] == 'Deep':
+                    st.markdown("""
+                        <div style="background-color: #f0f4ff; border-left: 5px solid #6366f1; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                            <span style="color: #4338ca; font-weight: bold; font-size: 1.2em;">✨ High-Precision Deep Match</span><br>
+                            <span style="color: #6366f1;">This candidate was evaluated using the 2-pass criterion scan.</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.info("💡 Standard Match Result (Single-pass analysis).")
+
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
                     c1.title(row['candidate_name'])
-                    c2.metric("Calculated Score", f"{row['match_score']}%")
+                    c2.metric("Final Score", f"{row['match_score']}%")
                     st.info(row['reasoning'])
 
-                    st.subheader("JD Requirement Validation")
+                    st.subheader("Requirement Validation Table")
                     try:
                         details = json.loads(row['match_details'])
                         if details:
                             st.markdown(generate_criteria_html(details), unsafe_allow_html=True)
                         else:
-                            st.info("No detailed breakdown available.")
+                            st.info("No detailed breakdown available for standard match.")
                     except:
-                        st.warning("Could not parse precision scan details.")
+                        st.warning("Details unavailable.")
     else:
         st.info("No runs found.")

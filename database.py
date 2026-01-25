@@ -15,36 +15,38 @@ class DBManager:
         conn = self.get_connection()
         c = conn.cursor()
 
-        # Jobs
         c.execute('''CREATE TABLE IF NOT EXISTS jobs
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       filename TEXT, content TEXT, criteria TEXT, upload_date TIMESTAMP)''')
 
-        # Resumes
         c.execute('''CREATE TABLE IF NOT EXISTS resumes
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       filename TEXT, content TEXT, profile TEXT, upload_date TIMESTAMP)''')
 
-        # Matches (Added match_details)
+        # Ensure strategy column exists
+        try:
+            c.execute("ALTER TABLE matches ADD COLUMN strategy TEXT DEFAULT 'Standard'")
+        except:
+            pass # Column already exists
+
         try:
             c.execute("ALTER TABLE matches ADD COLUMN match_details TEXT")
         except:
-            pass # Column exists
+            pass
 
         c.execute('''CREATE TABLE IF NOT EXISTS matches
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       job_id INTEGER, resume_id INTEGER,
                       candidate_name TEXT, match_score INTEGER, decision TEXT,
                       reasoning TEXT, missing_skills TEXT, match_details TEXT,
+                      strategy TEXT,
                       FOREIGN KEY(job_id) REFERENCES jobs(id),
                       FOREIGN KEY(resume_id) REFERENCES resumes(id))''')
 
-        # Runs
         c.execute('''CREATE TABLE IF NOT EXISTS runs
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       name TEXT, job_id INTEGER, created_at TIMESTAMP)''')
 
-        # Run-Matches Link
         c.execute('''CREATE TABLE IF NOT EXISTS run_matches
                      (run_id INTEGER, match_id INTEGER,
                       PRIMARY KEY (run_id, match_id))''')
@@ -52,74 +54,39 @@ class DBManager:
         conn.commit()
         conn.close()
 
-    def _safe_str(self, val):
-        """Ensure value is a string, handling lists/dicts gracefully."""
-        if val is None:
-            return ""
-        if isinstance(val, list):
-            return "; ".join([str(v) for v in val])
-        if isinstance(val, dict):
-            return json.dumps(val)
-        return str(val)
-
-    def _safe_int(self, val):
-        """Ensure value is an integer."""
-        try:
-            return int(float(val))
-        except (ValueError, TypeError):
-            return 0
-
     def add_job(self, filename, content, criteria):
         conn = self.get_connection()
         c = conn.cursor()
-        # Check duplicate
-        c.execute("SELECT id FROM jobs WHERE filename = ?", (filename,))
-        if c.fetchone():
-            conn.close()
-            return False
-
         c.execute("INSERT INTO jobs (filename, content, criteria, upload_date) VALUES (?, ?, ?, ?)",
                   (filename, content, json.dumps(criteria, indent=2), datetime.datetime.now().isoformat()))
         conn.commit()
         conn.close()
-        return True
 
     def add_resume(self, filename, content, profile):
         conn = self.get_connection()
         c = conn.cursor()
-        c.execute("SELECT id FROM resumes WHERE filename = ?", (filename,))
-        if c.fetchone():
-            conn.close()
-            return False
-
         c.execute("INSERT INTO resumes (filename, content, profile, upload_date) VALUES (?, ?, ?, ?)",
                   (filename, content, json.dumps(profile, indent=2), datetime.datetime.now().isoformat()))
         conn.commit()
         conn.close()
-        return True
 
-    def save_match(self, job_id, resume_id, data, match_id=None):
+    def save_match(self, job_id, resume_id, data, match_id=None, strategy="Standard"):
         conn = self.get_connection()
         c = conn.cursor()
 
-        match_details_json = json.dumps(data.get('match_details', []))
-        missing_skills_json = json.dumps(data.get('missing_skills', []))
-
-        candidate_name = self._safe_str(data.get('candidate_name', 'Unknown'))
-        match_score = self._safe_int(data.get('match_score', 0))
-        decision = self._safe_str(data.get('decision', 'Review'))
-        reasoning = self._safe_str(data.get('reasoning', ''))
+        details = json.dumps(data.get('match_details', []))
+        missing = json.dumps(data.get('missing_skills', []))
 
         if match_id:
             c.execute('''UPDATE matches SET
-                         candidate_name=?, match_score=?, decision=?, reasoning=?, missing_skills=?, match_details=?
+                         candidate_name=?, match_score=?, decision=?, reasoning=?, missing_skills=?, match_details=?, strategy=?
                          WHERE id=?''',
-                      (candidate_name, match_score, decision, reasoning, missing_skills_json, match_details_json, match_id))
+                      (data['candidate_name'], data['match_score'], data['decision'], data['reasoning'], missing, details, strategy, match_id))
             new_id = match_id
         else:
-            c.execute('''INSERT INTO matches (job_id, resume_id, candidate_name, match_score, decision, reasoning, missing_skills, match_details)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                      (job_id, resume_id, candidate_name, match_score, decision, reasoning, missing_skills_json, match_details_json))
+            c.execute('''INSERT INTO matches (job_id, resume_id, candidate_name, match_score, decision, reasoning, missing_skills, match_details, strategy)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                      (job_id, resume_id, data['candidate_name'], data['match_score'], data['decision'], data['reasoning'], missing, details, strategy))
             new_id = c.lastrowid
 
         conn.commit()
@@ -146,10 +113,12 @@ class DBManager:
     def get_match_if_exists(self, job_id, resume_id):
         conn = self.get_connection()
         c = conn.cursor()
-        c.execute("SELECT id FROM matches WHERE job_id = ? AND resume_id = ?", (job_id, resume_id))
+        c.execute("SELECT id, match_score, strategy FROM matches WHERE job_id = ? AND resume_id = ?", (job_id, resume_id))
         res = c.fetchone()
         conn.close()
-        return res[0] if res else None
+        if res:
+            return {"id": res[0], "match_score": res[1], "strategy": res[2]}
+        return None
 
     def fetch_dataframe(self, query):
         conn = self.get_connection()

@@ -53,10 +53,42 @@ class AIEngine:
         except Exception as e:
             return {"candidate_name": "Error", "error_flag": True}
 
+    def evaluate_standard(self, resume_text, jd_criteria, resume_profile):
+        """
+        Performs a holistic match in a single pass (Pass 1).
+        Fast but slightly less precise than Deep Match.
+        """
+        system_prompt = """
+        You are a technical recruiter. Evaluate the candidate against the JD in a single pass.
+
+        Return ONLY a JSON object:
+        {
+            "candidate_name": "Name",
+            "match_score": 0-100,
+            "decision": "Move Forward" | "Review" | "Reject",
+            "reasoning": "High level summary",
+            "match_details": [
+                { "requirement": "General fit", "evidence": "Summary of match", "status": "Met" }
+            ],
+            "missing_skills": ["skill1", "skill2"]
+        }
+        """
+        user_prompt = f"JD CRITERIA:\n{jd_criteria}\n\nRESUME PROFILE:\n{resume_profile}\n\nRAW TEXT:\n{resume_text[:15000]}"
+
+        try:
+            resp = self.client.chat.completions.create(
+                model="local-model",
+                messages=[{"role": "system", "content": system_prompt},
+                          {"role": "user", "content": user_prompt}],
+                temperature=0.1
+            )
+            return document_utils.clean_json_response(resp.choices[0].message.content)
+        except Exception as e:
+            return None
+
     def evaluate_criterion(self, resume_text, criterion_type, criterion_value):
         """
-        Matches a single specific requirement against the resume.
-        This ensures the AI doesn't overlook individual JD items.
+        Matches a single specific requirement against the resume (Pass 2).
         """
         system_prompt = """
         You are a strict QA Auditor for technical resumes.
@@ -67,18 +99,10 @@ class AIEngine:
             "requirement": "the requirement text",
             "status": "Met" | "Partial" | "Missing",
             "evidence": "specific text from resume or 'None found'",
-            "score_impact": 0-10 (how well they meet this specific item)
+            "score_impact": 0-10
         }
         """
-
-        user_prompt = f"""
-        CHECK THIS REQUIREMENT:
-        Type: {criterion_type}
-        Requirement: {criterion_value}
-
-        AGAINST THIS RESUME TEXT:
-        {resume_text[:20000]}
-        """
+        user_prompt = f"REQUIREMENT: {criterion_value}\n\nTEXT:\n{resume_text[:20000]}"
 
         try:
             resp = self.client.chat.completions.create(
@@ -87,21 +111,19 @@ class AIEngine:
                           {"role": "user", "content": user_prompt}],
                 temperature=0.0
             )
-            data = document_utils.clean_json_response(resp.choices[0].message.content)
-            return data
+            return document_utils.clean_json_response(resp.choices[0].message.content)
         except Exception as e:
-            return {"requirement": str(criterion_value), "status": "Error", "evidence": str(e), "score_impact": 0}
+            return {"requirement": str(criterion_value), "status": "Error", "evidence": str(e)}
 
     def generate_final_decision(self, candidate_name, match_details):
         """
-        After per-criterion matching, use the results to make a final decision.
+        Aggregates per-criterion results into a final score.
         """
-        # Calculate a weighted score
         total_items = len(match_details)
         if total_items == 0: return 0, "Reject", "No criteria analyzed."
 
-        met_count = sum(1 for d in match_details if d['status'] == 'Met')
-        partial_count = sum(1 for d in match_details if d['status'] == 'Partial')
+        met_count = sum(1 for d in match_details if d.get('status') == 'Met')
+        partial_count = sum(1 for d in match_details if d.get('status') == 'Partial')
 
         score = int(((met_count * 1.0) + (partial_count * 0.5)) / total_items * 100)
 
@@ -109,6 +131,5 @@ class AIEngine:
         if score >= 80: decision = "Move Forward"
         elif score >= 50: decision = "Review"
 
-        reasoning = f"Candidate met {met_count} and partially met {partial_count} out of {total_items} identified requirements."
-
+        reasoning = f"Deep Scan: Met {met_count} and partially met {partial_count} out of {total_items} requirements."
         return score, decision, reasoning
