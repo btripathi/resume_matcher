@@ -55,7 +55,10 @@ def generate_criteria_html(details):
     </table>
     """
 
-def generate_candidate_list_html(df):
+def generate_candidate_list_html(df, title_badge=None):
+    if df.empty:
+        return "<p style='color: #666; font-style: italic;'>No results in this category.</p>"
+
     rows = ""
     for idx, row in df.iterrows():
         decision = row['decision']
@@ -67,19 +70,15 @@ def generate_candidate_list_html(df):
         score = row['match_score']
         score_color = "#0f5132" if score >= 80 else "#842029" if score < 50 else "black"
 
-        # Strategy Badge
-        strat = row.get('strategy', 'Standard')
-        strategy_badge = f'<span style="background: #6366f1; color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-left: 8px; font-weight: bold;">{strat.upper()} SCAN</span>'
-
         name = str(row['candidate_name']).replace('<', '&lt;')
         filename = str(row['res_name']).replace('<', '&lt;')
         job_name = str(row['job_name']).replace('<', '&lt;')
 
-        rows += f'<tr><td style="font-weight: 600;">{name} {strategy_badge}<br><span style="font-size: 11px; color: #666; font-weight: normal;">Resume: {filename}</span><br><span style="font-size: 11px; color: #0056b3; font-weight: normal;">Job: {job_name}</span></td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%</td><td><span class="status-badge" style="{color_style}">{decision}</span></td><td style="font-size: 13px; color: #444;">{str(row["reasoning"]).replace("<", "&lt;")}</td></tr>'
+        rows += f'<tr><td style="font-weight: 600;">{name}<br><span style="font-size: 11px; color: #666; font-weight: normal;">Resume: {filename}</span><br><span style="font-size: 11px; color: #0056b3; font-weight: normal;">Job: {job_name}</span></td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%</td><td><span class="status-badge" style="{color_style}">{decision}</span></td><td style="font-size: 13px; color: #444;">{str(row["reasoning"]).replace("<", "&lt;")}</td></tr>'
 
     return f"""
     <style>
-        .candidate-table {{width: 100%; border-collapse: collapse; font-family: sans-serif;}}
+        .candidate-table {{width: 100%; border-collapse: collapse; font-family: sans-serif; margin-bottom: 20px;}}
         .candidate-table th {{background-color: #f8f9fa; padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6; color: #495057;}}
         .candidate-table td {{padding: 12px; border-bottom: 1px solid #dee2e6; vertical-align: top;}}
         .candidate-table tr:hover {{background-color: #f8f9fa;}}
@@ -139,15 +138,11 @@ with tab2:
 
     with col_r:
         st.markdown("#### 2. Select Resumes")
-        # Global threshold initialization
         score_threshold = 50
-
         filter_mode = st.radio("Selection Mode", ["Manual / All", "Target Candidates (From Previous Run)"], horizontal=True)
 
         target_res_ids = None
-
         if filter_mode == "Target Candidates (From Previous Run)":
-            # Temporary local slider to filter the list view
             temp_threshold = st.slider("Min previous score to show in list", 0, 100, 50, key="filter_slider")
             if not sel_jds.empty:
                 job_ids_raw = sel_jds['id'].tolist()
@@ -178,16 +173,14 @@ with tab2:
             strategy = c_cfg1.radio(
                 "Matching Strategy",
                 ["Standard (Fast)", "Deep Match (Automated 2-Pass)"],
-                index=1 if filter_mode == "Target Candidates (From Previous Run)" else 0,
-                help="Standard: Single pass. Deep Match: Auto-runs Fast Pass (if needed), then Deep Pass if threshold met."
+                index=1 if filter_mode == "Target Candidates (From Previous Run)" else 0
             )
 
             run_name = c_cfg2.text_input("Run Batch Name", value=f"{strategy.split()[0]} {datetime.datetime.now().strftime('%H:%M')}")
 
-            # Show threshold slider specifically for Deep Match configuration
             if strategy == "Deep Match (Automated 2-Pass)":
-                st.info("💡 **2-Pass Logic:** If a candidate hasn't been scanned or is below the threshold, a Fast Scan runs first. The Deep Scan only executes if the Fast Scan score meets the threshold below.")
-                score_threshold = st.slider("Deep Match Entry Threshold (%)", 0, 100, 50, help="Candidates must score at least this much in Pass 1 to trigger the expensive Pass 2.")
+                st.info("💡 **2-Pass Logic:** Lowers Proceed/Review thresholds for Deep scans to ensure precise talent isn't filtered out.")
+                score_threshold = st.slider("Deep Match Entry Threshold (%)", 0, 100, 50)
 
             c_cfg3, c_act1, c_act2 = st.columns([1, 2, 2])
             rerun = c_cfg3.toggle("Force Rerun", value=False)
@@ -220,31 +213,26 @@ with tab2:
                         if strategy == "Deep Match (Automated 2-Pass)":
                             current_score = existing['match_score'] if existing else 0
 
-                            # Step 1: Ensure Fast Pass exists
                             if not existing or (existing['strategy'] != 'Deep' and current_score < score_threshold) or rerun:
-                                update_logs(f"🕒 Pass 1 (Standard) needed for {res['filename']}...")
+                                update_logs(f"🕒 Pass 1 needed for {res['filename']}...")
                                 data_fast = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
                                 if data_fast:
                                     match_id = db.save_match(int(job['id']), int(res['id']), data_fast, match_id, strategy="Standard")
                                     current_score = data_fast['match_score']
                                     update_logs(f"  ↳ Pass 1 Result: {current_score}%")
 
-                            # Step 2: Run Deep Pass if threshold met
                             if current_score >= score_threshold:
                                 if existing and existing['strategy'] == 'Deep' and not rerun:
                                     update_logs(f"⏭️ Deep Match already exists for {res['filename']}")
                                 else:
                                     update_logs(f"🔬 Pass 2 (Deep Scan) starting for {res['filename']}...")
-                                    try:
-                                        jd_c = json.loads(job['criteria'])
-                                        reqs = []
-                                        for k in ['must_have_skills', 'nice_to_have_skills', 'domain_knowledge', 'soft_skills']:
-                                            if k in jd_c and isinstance(jd_c[k], list):
-                                                reqs.extend([(k, v) for v in jd_c[k]])
-                                        if 'min_years_experience' in jd_c:
-                                            reqs.append(('experience', f"Min {jd_c['min_years_experience']} years"))
-                                    except:
-                                        reqs = [("raw", "JD Criteria")]
+                                    jd_c = json.loads(job['criteria'])
+                                    reqs = []
+                                    for k in ['must_have_skills', 'nice_to_have_skills', 'domain_knowledge', 'soft_skills']:
+                                        if k in jd_c and isinstance(jd_c[k], list):
+                                            reqs.extend([(k, v) for v in jd_c[k]])
+                                    if 'min_years_experience' in jd_c:
+                                        reqs.append(('experience', f"Min {jd_c['min_years_experience']} years"))
 
                                     details = []
                                     sub_bar = st.progress(0, text="Criterion Detail")
@@ -254,7 +242,8 @@ with tab2:
                                         sub_bar.progress((idx+1)/len(reqs))
                                     sub_bar.empty()
 
-                                    score_f, dec_f, reas_f = client.generate_final_decision(res['filename'], details)
+                                    # LOWER THRESHOLDS APPLIED HERE in generate_final_decision
+                                    score_f, dec_f, reas_f = client.generate_final_decision(res['filename'], details, strategy="Deep")
                                     final_data = {
                                         "candidate_name": res['filename'], "match_score": score_f,
                                         "decision": dec_f, "reasoning": reas_f, "match_details": details
@@ -265,7 +254,6 @@ with tab2:
                                 update_logs(f"⏭️ Skipping Deep Scan (Below {score_threshold}%)")
 
                         else:
-                            # Standard Strategy
                             if match_id and not rerun:
                                 update_logs(f"⏭️ Skipping cached: {res['filename']}")
                             else:
@@ -299,41 +287,44 @@ with tab3:
         """)
 
         if not results.empty:
-            st.write("### 📝 Match List")
-            st.markdown(generate_candidate_list_html(results), unsafe_allow_html=True)
+            # Separate results by strategy
+            deep_results = results[results['strategy'] == 'Deep']
+            standard_results = results[results['strategy'] != 'Deep']
+
+            # Display Deep Results Table
+            st.markdown("### ✨ High-Precision Deep Scans")
+            if not deep_results.empty:
+                st.markdown(generate_candidate_list_html(deep_results), unsafe_allow_html=True)
+            else:
+                st.info("No deep match results found for this run.")
 
             st.divider()
-            st.write("### 🔎 Deep Dive Investigation")
+
+            # Display Standard Results Table
+            st.markdown("### 🧠 Standard Fast Scans")
+            if not standard_results.empty:
+                st.markdown(generate_candidate_list_html(standard_results), unsafe_allow_html=True)
+            else:
+                st.info("No standard match results found for this run.")
+
+            st.divider()
+            st.write("### 🔎 Match Investigation")
             results['display'] = results['candidate_name'] + " -> " + results['job_name'] + " (" + results['match_score'].astype(str) + "%)"
             sel_match_lbl = st.selectbox("Select Candidate to Inspect:", results['display'])
 
             if sel_match_lbl:
                 row = results[results['display'] == sel_match_lbl].iloc[0]
-
                 if row['strategy'] == 'Deep':
-                    st.markdown("""
-                        <div style="background-color: #f0f4ff; border-left: 5px solid #6366f1; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-                            <span style="color: #4338ca; font-weight: bold; font-size: 1.2em;">✨ High-Precision Deep Match</span><br>
-                            <span style="color: #6366f1;">This candidate was evaluated using the 2-pass criterion scan.</span>
-                        </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    st.info("💡 Standard Match Result (Single-pass analysis).")
+                    st.markdown("""<div style="background-color: #f0f4ff; border-left: 5px solid #6366f1; padding: 15px; border-radius: 5px; margin-bottom: 20px;"><span style="color: #4338ca; font-weight: bold; font-size: 1.2em;">✨ High-Precision Deep Match</span></div>""", unsafe_allow_html=True)
 
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
                     c1.title(row['candidate_name'])
                     c2.metric("Final Score", f"{row['match_score']}%")
                     st.info(row['reasoning'])
-
-                    st.subheader("Requirement Validation Table")
                     try:
                         details = json.loads(row['match_details'])
-                        if details:
-                            st.markdown(generate_criteria_html(details), unsafe_allow_html=True)
-                        else:
-                            st.info("No detailed breakdown available for standard match.")
-                    except:
-                        st.warning("Details unavailable.")
+                        if details: st.markdown(generate_criteria_html(details), unsafe_allow_html=True)
+                    except: st.warning("Details unavailable.")
     else:
         st.info("No runs found.")

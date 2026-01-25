@@ -54,10 +54,6 @@ class AIEngine:
             return {"candidate_name": "Error", "error_flag": True}
 
     def evaluate_standard(self, resume_text, jd_criteria, resume_profile):
-        """
-        Performs a holistic match in a single pass (Pass 1).
-        Fast but slightly less precise than Deep Match.
-        """
         system_prompt = """
         You are a technical recruiter. Evaluate the candidate against the JD in a single pass.
 
@@ -87,9 +83,6 @@ class AIEngine:
             return None
 
     def evaluate_criterion(self, resume_text, criterion_type, criterion_value):
-        """
-        Matches a single specific requirement against the resume (Pass 2).
-        """
         system_prompt = """
         You are a strict QA Auditor for technical resumes.
         Your task is to check if a resume meets ONE specific requirement.
@@ -115,9 +108,10 @@ class AIEngine:
         except Exception as e:
             return {"requirement": str(criterion_value), "status": "Error", "evidence": str(e)}
 
-    def generate_final_decision(self, candidate_name, match_details):
+    def generate_final_decision(self, candidate_name, match_details, strategy="Deep"):
         """
         Aggregates per-criterion results into a final score.
+        Strategy "Deep" uses lower thresholds to be more lenient with granular requirements.
         """
         total_items = len(match_details)
         if total_items == 0: return 0, "Reject", "No criteria analyzed."
@@ -127,9 +121,14 @@ class AIEngine:
 
         score = int(((met_count * 1.0) + (partial_count * 0.5)) / total_items * 100)
 
-        decision = "Reject"
-        if score >= 80: decision = "Move Forward"
-        elif score >= 50: decision = "Review"
+        # Set thresholds based on strategy
+        # Deep scans are harder, so we lower the bar for Proceed/Review
+        p_thresh = 70 if strategy == "Deep" else 80
+        r_thresh = 40 if strategy == "Deep" else 50
 
-        reasoning = f"Deep Scan: Met {met_count} and partially met {partial_count} out of {total_items} requirements."
+        decision = "Reject"
+        if score >= p_thresh: decision = "Move Forward"
+        elif score >= r_thresh: decision = "Review"
+
+        reasoning = f"{strategy} Scan: Met {met_count} and partially met {partial_count} out of {total_items} requirements."
         return score, decision, reasoning
