@@ -210,56 +210,100 @@ with tab2:
 
     if not sel_jds.empty and not sel_res.empty:
         with st.container(border=True):
-            st.markdown("#### Run Configuration")
+            st.markdown("#### High-Precision Run Configuration")
+            st.info("💡 Analysis will run per individual criterion for maximum accuracy.")
             c_p1, c_p2 = st.columns([3, 1])
-            run_name_input = c_p1.text_input("Batch Name", value=f"Batch {datetime.datetime.now().strftime('%H:%M')}")
+            run_name_input = c_p1.text_input("Batch Name", value=f"Deep Match {datetime.datetime.now().strftime('%H:%M')}")
             rerun_toggle = c_p2.toggle("Overwrite existing?", value=False)
 
             c_act1, c_act2 = st.columns([1, 1])
-            btn_analyze = c_act1.button("🚀 START ANALYSIS", type="primary", use_container_width=True)
+            btn_analyze = c_act1.button("🚀 START DEEP ANALYSIS", type="primary", use_container_width=True)
             btn_stop = c_act2.button("🛑 STOP RUN", type="secondary", use_container_width=True)
 
-        # Handle explicit stop
         if btn_stop:
             st.session_state.is_running = False
-            st.warning("Run interrupted. Standing by.")
+            st.warning("Analysis Stopped.")
             st.stop()
 
         if btn_analyze:
             st.session_state.is_running = True
             run_id = db.create_run(run_name_input)
-            total_ops = len(sel_jds) * len(sel_res)
-            count = 0
+            total_matches = len(sel_jds) * len(sel_res)
+            match_count = 0
 
-            with st.status("Analyzing matches...", expanded=True) as status:
-                bar = st.progress(0)
-                log_box = st.expander("Live Progress", expanded=True)
+            with st.status("Performing Deep Criterion-by-Criterion Analysis...", expanded=True) as status:
+                master_bar = st.progress(0)
+                log_box = st.expander("Live Deep Scan Logs", expanded=True)
 
                 for _, job in sel_jds.iterrows():
                     for _, res in sel_res.iterrows():
-                        # Streamlit reruns on any interaction, btn_analyze will remain True
-                        # during this loop until complete or interrupted by a new rerun.
-                        count += 1
-                        status.update(label=f"Matching {count}/{total_ops}: {res['filename']}")
+                        match_count += 1
 
+                        # Check existence
                         match_id = db.get_match_if_exists(int(job['id']), int(res['id']))
-                        if not match_id or rerun_toggle:
-                            resp = client.evaluate_candidate(res['content'], job['criteria'], res['profile'])
-                            data = document_utils.clean_json_response(resp)
-                            if data:
-                                match_id = db.save_match(int(job['id']), int(res['id']), data, match_id)
-                                with log_box: st.write(f"✅ Matched **{res['filename']}**")
-                        else:
-                            with log_box: st.write(f"⏭️ Skipping cached: {res['filename']}")
-
-                        if match_id:
+                        if match_id and not rerun_toggle:
+                            with log_box: st.write(f"⏭️ Using cached deep-scan for: **{res['filename']}**")
                             db.link_run_match(run_id, match_id)
+                            master_bar.progress(match_count / total_matches)
+                            continue
 
-                        bar.progress(count/total_ops)
+                        # 1. Flatten all criteria from the JD JSON
+                        try:
+                            jd_criteria = json.loads(job['criteria'])
+                            requirements = []
+                            # Collect from all lists in JSON
+                            for key in ['must_have_skills', 'nice_to_have_skills', 'domain_knowledge', 'soft_skills']:
+                                if key in jd_criteria and isinstance(jd_criteria[key], list):
+                                    requirements.extend([(key, val) for val in jd_criteria[key]])
+
+                            # Add education/experience
+                            if 'min_years_experience' in jd_criteria:
+                                requirements.append(("experience", f"Min {jd_criteria['min_years_experience']} years experience"))
+                            if 'education_requirements' in jd_criteria:
+                                requirements.append(("education", jd_criteria['education_requirements']))
+                        except:
+                            requirements = [("raw", "General fit against JD text")]
+
+                        # 2. Loop through individual requirements
+                        match_details = []
+                        total_reqs = len(requirements)
+
+                        status.update(label=f"Scanning {res['filename']} (0/{total_reqs} criteria)")
+
+                        for idx, (req_type, req_val) in enumerate(requirements):
+                            status.update(label=f"Scanning {res['filename']} ({idx+1}/{total_reqs}: {req_val})")
+                            crit_result = client.evaluate_criterion(res['content'], req_type, req_val)
+                            if crit_result:
+                                match_details.append(crit_result)
+
+                        # 3. Generate final score/decision based on aggregated deep dive
+                        try:
+                            prof = json.loads(res['profile'])
+                            name = prof.get('candidate_name', 'Unknown')
+                        except:
+                            name = "Unknown"
+
+                        score, decision, reasoning = client.generate_final_decision(name, match_details)
+
+                        # 4. Save to DB
+                        final_data = {
+                            "candidate_name": name,
+                            "match_score": score,
+                            "decision": decision,
+                            "reasoning": reasoning,
+                            "match_details": match_details,
+                            "missing_skills": [d['requirement'] for d in match_details if d['status'] == 'Missing']
+                        }
+
+                        match_id = db.save_match(int(job['id']), int(res['id']), final_data, match_id)
+                        db.link_run_match(run_id, match_id)
+
+                        with log_box: st.write(f"✅ Deep Scan Complete: **{res['filename']}** (Score: {score}%)")
+                        master_bar.progress(match_count / total_matches)
 
                 st.session_state.is_running = False
-                status.update(label="Analysis Complete!", state="complete", expanded=False)
-                st.success("Batch Finished! View results in the Match Results tab.")
+                status.update(label="Deep Analysis Complete!", state="complete", expanded=False)
+                st.success("Batch Finished! View the precision results in the Match Results tab.")
 
 # --- TAB 3: RESULTS ---
 with tab3:
@@ -269,26 +313,6 @@ with tab3:
         c_sel, c_btn1, c_btn2 = st.columns([3, 1, 1])
         sel_run_lbl = c_sel.selectbox("Select Run", runs['label'])
         run_id = int(runs[runs['label'] == sel_run_lbl].iloc[0]['id'])
-
-        if c_btn1.button("🔄 Rerun Batch"):
-            matches_in_run = db.fetch_dataframe(f"""
-                SELECT m.id, r.content as resume_text, r.profile as resume_profile, j.criteria as job_criteria, r.filename, j.id as job_id, r.id as resume_id
-                FROM matches m
-                JOIN run_matches rm ON m.id = rm.match_id
-                JOIN resumes r ON m.resume_id = r.id
-                JOIN jobs j ON m.job_id = j.id
-                WHERE rm.run_id = {run_id}
-            """)
-            if not matches_in_run.empty:
-                with st.status("Re-analyzing...") as status:
-                    bar = st.progress(0)
-                    for i, row in matches_in_run.iterrows():
-                        resp = client.evaluate_candidate(row['resume_text'], row['job_criteria'], row['resume_profile'])
-                        data = document_utils.clean_json_response(resp)
-                        if data:
-                            db.save_match(row['job_id'], row['resume_id'], data, int(row['id']))
-                        bar.progress((i+1)/len(matches_in_run))
-                st.rerun()
 
         if c_btn2.button("🗑️ Delete Run", type="primary"):
             db.execute_query("DELETE FROM runs WHERE id=?", (run_id,))
@@ -308,44 +332,35 @@ with tab3:
 
         if not results.empty:
             if len(results['job_name'].unique()) > 1:
-                st.write("### 🌡️ Heatmap")
+                st.write("### 🌡️ Correlation Heatmap")
                 matrix = results.pivot_table(index='res_name', columns='job_name', values='match_score', aggfunc='max').fillna(0).astype(int)
-                try:
-                    st.dataframe(matrix.style.background_gradient(cmap='RdYlGn'), width="stretch")
-                except:
-                    st.dataframe(matrix, width="stretch")
+                st.dataframe(matrix.style.background_gradient(cmap='RdYlGn', vmin=0, vmax=100), width="stretch")
 
-            st.write("### 📝 Match List")
+            st.write("### 📝 High-Precision Match List")
             st.markdown(generate_candidate_list_html(results), unsafe_allow_html=True)
 
             st.divider()
-            st.write("### 🔎 Deep Dive")
+            st.write("### 🔎 Deep Dive Criterion Analysis")
             results['display'] = results['candidate_name'] + " -> " + results['job_name'] + " (" + results['match_score'].astype(str) + "%)"
-            sel_match_lbl = st.selectbox("Inspect Match:", results['display'])
+            sel_match_lbl = st.selectbox("Inspect Candidate Precision Scan:", results['display'])
 
             if sel_match_lbl:
                 row = results[results['display'] == sel_match_lbl].iloc[0]
-                ac1, ac2 = st.columns([1, 4])
-                if ac1.button("🔄 Rerun", key=f"re_s_{row['id']}"):
-                    resp = client.evaluate_candidate(row['res_text'], row['job_crit'], row['res_prof'])
-                    data = document_utils.clean_json_response(resp)
-                    if data:
-                        db.save_match(row['job_id'], row['resume_id'], data, row['id'])
-                        st.rerun()
-                if ac2.button("🗑️ Delete", key=f"del_s_{row['id']}", type="primary"):
-                    db.execute_query("DELETE FROM matches WHERE id=?", (int(row['id']),))
-                    st.rerun()
 
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
                     c1.title(row['candidate_name'])
-                    c2.metric("Score", f"{row['match_score']}%")
+                    c2.metric("Calculated Score", f"{row['match_score']}%")
                     st.info(row['reasoning'])
+
+                    st.subheader("JD Requirement Validation")
                     try:
                         details = json.loads(row['match_details'])
                         if details:
                             st.markdown(generate_criteria_html(details), unsafe_allow_html=True)
+                        else:
+                            st.info("No detailed breakdown available.")
                     except:
-                        st.warning("Details unavailable.")
+                        st.warning("Could not parse precision scan details.")
     else:
         st.info("No runs found.")
