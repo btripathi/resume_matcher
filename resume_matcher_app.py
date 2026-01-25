@@ -80,7 +80,6 @@ def init_db():
                   FOREIGN KEY(job_id) REFERENCES jobs(id),
                   FOREIGN KEY(resume_id) REFERENCES resumes(id))''')
 
-    # Note: job_id in runs is now optional/nullable for multi-job runs
     c.execute('''CREATE TABLE IF NOT EXISTS runs
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT,
@@ -271,20 +270,31 @@ def analyze_jd_criteria(client, jd_text):
         return {"error": "Text too short to analyze"}
 
     prompt = f"""
-    You are an expert HR Tech AI. Analyze this Job Description and extract key criteria into a JSON object.
-    IMPORTANT: If the text provided is empty or contains error messages, return a JSON with a single key "error".
+    You are an expert HR Tech AI. Analyze this Job Description and extract EXTENSIVE criteria into a JSON object.
+
+    INSTRUCTIONS:
+    1. Extract ALL technical skills mentioned, distinguishing between mandatory (must-have) and optional (nice-to-have).
+    2. Extract Education requirements in detail (Degree, Field).
+    3. Extract exact Years of Experience required.
+    4. Extract any specific Domain Knowledge (e.g. Finance, Healthcare, Automotive).
+    5. Extract Soft Skills mentioned.
+    6. Extract specific tool versions if mentioned (e.g. C++14, Python 3.8).
 
     JSON Format:
     {{
         "role_title": "Title",
-        "must_have_skills": ["skill1", "skill2"],
-        "nice_to_have_skills": ["skill1", "skill2"],
+        "must_have_skills": ["skill1", "skill2", "tool3", "framework4"],
+        "nice_to_have_skills": ["skill5", "skill6"],
         "min_years_experience": 5,
-        "key_responsibilities": "Summary string"
+        "experience_description": "Description of required experience",
+        "education_requirements": ["BS Computer Science", "Masters preferred"],
+        "domain_knowledge": ["Finance", "High Frequency Trading"],
+        "soft_skills": ["Leadership", "Communication"],
+        "key_responsibilities": ["Responsibility 1", "Responsibility 2"]
     }}
 
     Job Description:
-    {jd_text[:3000]}
+    {jd_text[:15000]}
     """
     try:
         response = client.chat.completions.create(
@@ -301,37 +311,40 @@ def analyze_resume_profile(client, resume_text):
     if len(resume_text) < 50 or "[OCR Needed" in resume_text or "[OCR Error" in resume_text:
         return {
             "candidate_name": "Extraction Failed",
-            "email": "N/A",
-            "phone": "N/A",
-            "extracted_skills": [],
-            "years_experience": 0,
-            "education_summary": "N/A",
-            "last_company": "N/A",
             "error_flag": True
         }
 
     prompt = f"""
-    You are an expert HR Tech AI. Analyze this Resume and extract key details into a JSON object.
+    You are an expert HR Tech AI. Analyze this Resume and extract a RICH and DETAILED profile into a JSON object.
 
     CRITICAL INSTRUCTIONS:
-    1. Extract ACTUAL data from the resume text below.
-    2. If fields like email or phone are missing, use "N/A".
-    3. DO NOT hallucinate or use example names like "John Doe".
-    4. If the resume is illegible, set "candidate_name" to "Unknown".
+    1. Extract ACTUAL data from the resume text below. Do NOT summarize too much; keep specific technologies and versions.
+    2. Extract ALL skills found (Technical, Tools, Languages, Frameworks).
+    3. Extract Total Years of Experience (estimate if not explicit).
+    4. Extract Education details including degree and university.
+    5. Extract a list of previous roles with company names, dates, and a summary of achievements.
+    6. Check for startup experience or leadership roles.
+    7. If fields are missing, use "N/A".
 
     JSON Format:
     {{
         "candidate_name": "Name",
         "email": "Email",
         "phone": "Phone",
-        "extracted_skills": ["skill1", "skill2"],
-        "years_experience": 3,
+        "location": "Location",
+        "extracted_skills": ["Python", "C++", "AWS", "Docker", "Kubernetes", "etc..."],
+        "years_experience": 5,
         "education_summary": "Degree, University",
-        "last_company": "Company Name"
+        "domain_experience": ["Fintech", "Healthcare"],
+        "startup_experience": false,
+        "leadership_experience": false,
+        "work_history": [
+            {{ "company": "Company A", "role": "Role", "duration": "2020-2022", "summary": "Key achievements..." }}
+        ]
     }}
 
     Resume Text:
-    {resume_text[:3000]}
+    {resume_text[:15000]}
     """
     try:
         response = client.chat.completions.create(
@@ -349,73 +362,71 @@ def process_and_save_files(uploaded_files, client, file_type="resume"):
     c = conn.cursor()
     count = 0
 
-    status_text = st.empty()
-    progress_bar = st.progress(0)
-    log_expander = st.expander(f"📝 {file_type.capitalize()} Processing Logs", expanded=False)
+    # Use st.status for spinner + collapsible logs
+    with st.status(f"Processing {len(uploaded_files)} {file_type}(s)...", expanded=True) as status:
+        progress_bar = st.progress(0)
+        log_expander = st.expander("📝 Processing Logs", expanded=True)
 
-    total_files = len(uploaded_files)
+        total_files = len(uploaded_files)
 
-    for i, file in enumerate(uploaded_files):
-        status_text.text(f"Processing {i+1}/{total_files}: {file.name}")
+        for i, file in enumerate(uploaded_files):
+            status.update(label=f"Processing {i+1}/{total_files}: {file.name}")
 
-        file_bytes = file.read()
-        filename = file.name
-        text = ""
+            file_bytes = file.read()
+            filename = file.name
+            text = ""
 
-        table = "resumes" if file_type == "resume" else "jobs"
-        c.execute(f"SELECT id FROM {table} WHERE filename = ?", (filename,))
-        if c.fetchone():
+            table = "resumes" if file_type == "resume" else "jobs"
+            c.execute(f"SELECT id FROM {table} WHERE filename = ?", (filename,))
+            if c.fetchone():
+                with log_expander:
+                    st.write(f"⏭️ Skipped {filename} (Already exists)")
+                progress_bar.progress((i + 1) / total_files)
+                continue
+
             with log_expander:
-                st.write(f"⏭️ Skipped {filename} (Already exists)")
-            progress_bar.progress((i + 1) / total_files)
-            continue
+                st.write(f"📄 Reading: {filename}")
 
-        with log_expander:
-            st.write(f"📄 Reading: {filename}")
+            ext = filename.split('.')[-1].lower()
+            if ext == 'pdf':
+                text = extract_text_from_pdf(file_bytes, st.session_state.ocr_enabled, log_container=log_expander)
+            elif ext in ['docx', 'doc']:
+                text = extract_text_from_docx(file_bytes)
+            elif ext == 'txt':
+                text = str(file_bytes, 'utf-8')
+            elif ext in ['jpg', 'jpeg', 'png']:
+                try:
+                    image = Image.open(io.BytesIO(file_bytes))
+                    text = pytesseract.image_to_string(image)
+                except:
+                    text = "[Image OCR Failed]"
 
-        ext = filename.split('.')[-1].lower()
-        if ext == 'pdf':
-            text = extract_text_from_pdf(file_bytes, st.session_state.ocr_enabled, log_container=log_expander)
-        elif ext in ['docx', 'doc']:
-            text = extract_text_from_docx(file_bytes)
-        elif ext == 'txt':
-            text = str(file_bytes, 'utf-8')
-        elif ext in ['jpg', 'jpeg', 'png']:
-            try:
-                image = Image.open(io.BytesIO(file_bytes))
-                text = pytesseract.image_to_string(image)
-            except:
-                text = "[Image OCR Failed]"
+            if text:
+                with log_expander:
+                    st.write(f"🧠 Analyzing {filename} with AI...")
 
-        if text:
-            with log_expander:
-                st.write(f"🧠 Analyzing {filename} with AI...")
+                if file_type == "resume":
+                    profile_json = analyze_resume_profile(client, text)
+                    c.execute("INSERT INTO resumes (filename, content, profile, upload_date) VALUES (?, ?, ?, ?)",
+                              (filename, text, json.dumps(profile_json, indent=2), datetime.datetime.now().isoformat()))
+                else:
+                    criteria_json = analyze_jd_criteria(client, text)
+                    c.execute("INSERT INTO jobs (filename, content, criteria, upload_date) VALUES (?, ?, ?, ?)",
+                              (filename, text, json.dumps(criteria_json, indent=2), datetime.datetime.now().isoformat()))
 
-            if file_type == "resume":
-                profile_json = analyze_resume_profile(client, text)
-                c.execute("INSERT INTO resumes (filename, content, profile, upload_date) VALUES (?, ?, ?, ?)",
-                          (filename, text, json.dumps(profile_json, indent=2), datetime.datetime.now().isoformat()))
+                with log_expander:
+                    st.write(f"✅ Saved {filename}")
+                count += 1
             else:
-                criteria_json = analyze_jd_criteria(client, text)
-                c.execute("INSERT INTO jobs (filename, content, criteria, upload_date) VALUES (?, ?, ?, ?)",
-                          (filename, text, json.dumps(criteria_json, indent=2), datetime.datetime.now().isoformat()))
+                with log_expander:
+                    st.error(f"❌ Could not extract text from {filename}")
 
-            with log_expander:
-                st.write(f"✅ Saved {filename}")
-            count += 1
-        else:
-            with log_expander:
-                st.error(f"❌ Could not extract text from {filename}")
+            progress_bar.progress((i + 1) / total_files)
 
-        progress_bar.progress((i + 1) / total_files)
+        status.update(label=f"Processing Complete! Added {count} new {file_type}(s).", state="complete", expanded=False)
 
     conn.commit()
     conn.close()
-
-    status_text.success(f"Processing Complete! Added {count} new {file_type}(s).")
-    time.sleep(1)
-    status_text.empty()
-    progress_bar.empty()
 
     return count
 
@@ -439,9 +450,11 @@ def evaluate_candidate(client, resume_text, jd_criteria, resume_profile_json):
     - Score 80-100: "Move Forward" (Strong match, meets all mandatory skills)
 
     INSTRUCTIONS:
-    1. Compare the Candidate Profile and Resume Text against the Job Criteria.
-    2. For "match_details", create a list of objects analyzing each key requirement found in the JD.
-    3. "status" in match_details must be one of: "Met", "Partial", "Missing".
+    1. Compare the Candidate Profile and RAW Resume Text against the Job Criteria.
+    2. USE THE RAW RESUME TEXT to find evidence that might be missing from the profile summary.
+    3. Look for "Start-up experience" or specific domain knowledge (Fintech, etc.) in the raw text.
+    4. For "match_details", create a list of objects analyzing each key requirement found in the JD.
+    5. "status" in match_details must be one of: "Met", "Partial", "Missing".
 
     Return JSON only:
     {
@@ -458,10 +471,12 @@ def evaluate_candidate(client, resume_text, jd_criteria, resume_profile_json):
     user_prompt = f"""
     JOB CRITERIA (JSON):
     {jd_criteria}
+
     CANDIDATE PROFILE (JSON):
     {resume_profile_json}
-    RAW RESUME TEXT (Snippet):
-    {resume_text[:2000]}
+
+    RAW RESUME TEXT (Truncated):
+    {resume_text[:15000]}
     """
     try:
         response = client.chat.completions.create(
@@ -492,6 +507,15 @@ with col_settings:
         st.checkbox("Enable OCR", key="ocr_enabled")
         if st.session_state.ocr_enabled and not PDF2IMAGE_AVAILABLE:
             st.warning("⚠️ pdf2image missing. OCR will fail.")
+        if st.button("🗑️ Reset Database", type="primary"):
+            try:
+                os.remove('resume_matcher.db')
+                st.session_state.processed_files = set() # Clear session state tracker
+                st.success("Database cleared!")
+                time.sleep(1)
+                st.rerun()
+            except:
+                st.error("Could not delete DB. It might be in use.")
 
 tab1, tab2, tab3 = st.tabs(["1. Manage Data", "2. Run Analysis", "3. Match Results"])
 
@@ -504,22 +528,20 @@ with tab1:
 
     col1, col2 = st.columns(2)
 
-    if 'processed_files' not in st.session_state:
-        st.session_state.processed_files = set()
-
     with col1:
         st.subheader("📂 Upload Job Descriptions")
         jd_files = st.file_uploader("Upload New JDs", accept_multiple_files=True, key="jd_upload")
 
+        # Explicit Process Button for JDs
         if jd_files:
-            new_jds = [f for f in jd_files if f.name not in st.session_state.processed_files]
-            if new_jds:
-                num = process_and_save_files(new_jds, client, "job")
-                for f in new_jds: st.session_state.processed_files.add(f.name)
+            if st.button(f"Process {len(jd_files)} JDs", key="proc_jds_btn", type="primary"):
+                num = process_and_save_files(jd_files, client, "job")
                 if num > 0:
-                    st.success(f"Processed {num} JDs.")
+                    st.success(f"Successfully added {num} Job Descriptions.")
                     time.sleep(1)
                     st.rerun()
+                else:
+                    st.warning("No new files processed (duplicates detected).")
 
         conn = get_db_connection()
         jds = pd.read_sql("SELECT id, filename, criteria, upload_date FROM jobs", conn)
@@ -542,6 +564,19 @@ with tab1:
 
         if not jds.empty:
             st.dataframe(jds[['filename', 'upload_date']], hide_index=True, width="stretch")
+
+            st.divider()
+            st.write("#### ✏️ Edit Job Criteria")
+            jd_choice = st.selectbox("Select JD to Edit", jds['filename'])
+            selected_row = jds[jds['filename'] == jd_choice].iloc[0]
+            new_criteria = st.text_area("Extracted Criteria (JSON)", value=selected_row['criteria'], height=300, key=f"jd_editor_{selected_row['id']}")
+            if st.button("Save JD Changes"):
+                c = conn.cursor()
+                c.execute("UPDATE jobs SET criteria = ? WHERE id = ?", (new_criteria, int(selected_row['id'])))
+                conn.commit()
+                st.success("Updated JD Criteria!")
+                st.rerun()
+
             st.divider()
             with st.expander("🗑️ Danger Zone", expanded=show_jd_errors):
                 st.markdown("**Delete Specific JD**")
@@ -586,15 +621,16 @@ with tab1:
         st.subheader("📄 Upload Resumes")
         res_files = st.file_uploader("Upload New Resumes", accept_multiple_files=True, key="res_upload")
 
+        # Explicit Process Button for Resumes
         if res_files:
-            new_res = [f for f in res_files if f.name not in st.session_state.processed_files]
-            if new_res:
-                num = process_and_save_files(new_res, client, "resume")
-                for f in new_res: st.session_state.processed_files.add(f.name)
+            if st.button(f"Process {len(res_files)} Resumes", key="proc_res_btn", type="primary"):
+                num = process_and_save_files(res_files, client, "resume")
                 if num > 0:
-                    st.success(f"Processed {num} Resumes.")
+                    st.success(f"Successfully added {num} Resumes.")
                     time.sleep(1)
                     st.rerun()
+                else:
+                    st.warning("No new files processed (duplicates detected).")
 
         conn = get_db_connection()
         res = pd.read_sql("SELECT id, filename, profile, upload_date FROM resumes", conn)
@@ -617,6 +653,19 @@ with tab1:
 
         if not res.empty:
             st.dataframe(res[['filename', 'upload_date']], hide_index=True, width="stretch")
+
+            st.divider()
+            st.write("#### ✏️ Edit Candidate Profile")
+            res_choice = st.selectbox("Select Resume to Edit", res['filename'])
+            selected_row = res[res['filename'] == res_choice].iloc[0]
+            new_profile = st.text_area("Extracted Profile (JSON)", value=selected_row['profile'], height=300, key=f"res_editor_{selected_row['id']}")
+            if st.button("Save Profile Changes"):
+                c = conn.cursor()
+                c.execute("UPDATE resumes SET profile = ? WHERE id = ?", (new_profile, int(selected_row['id'])))
+                conn.commit()
+                st.success("Updated Candidate Profile!")
+                st.rerun()
+
             st.divider()
             with st.expander("🗑️ Danger Zone", expanded=show_res_errors):
                 st.markdown("**Delete Specific Resume**")
@@ -662,8 +711,8 @@ with tab2:
 
     conn = get_db_connection()
     job_options = pd.read_sql("SELECT id, filename, criteria FROM jobs", conn)
+    selected_job_id = None
 
-    # NEW: Multi-Select JDs for All x All
     col_setup1, col_setup2 = st.columns([1, 1])
 
     with col_setup1:
@@ -679,12 +728,10 @@ with tab2:
                 selected_jd_names = st.multiselect("Choose JDs:", job_options['filename'])
                 target_jobs = job_options[job_options['filename'].isin(selected_jd_names)]
 
-        # Helper to preview criteria of the FIRST selected JD
         if not target_jobs.empty:
             with st.expander("Preview Criteria (First Selected JD)", expanded=False):
                 st.code(target_jobs.iloc[0]['criteria'], language="json")
 
-    # 2. Select Resumes
     all_resumes = pd.read_sql("SELECT id, filename, content, profile FROM resumes", conn)
     conn.close()
 
@@ -700,10 +747,8 @@ with tab2:
 
     st.write("---")
 
-    # 3. Run Configuration
     if not target_jobs.empty and not target_resumes.empty:
         st.markdown("#### 3. Run Configuration")
-
         c_run1, c_run2, c_run3 = st.columns([2, 1, 1])
         with c_run1:
             default_run_name = f"Run {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
@@ -721,106 +766,103 @@ with tab2:
             write_conn = get_db_connection()
             c = write_conn.cursor()
 
-            # Create Run Entry (job_id is NULL for multi-job runs, or store the first one/special ID)
-            # We'll store NULL if multiple, or the single ID if one.
             run_job_id = int(target_jobs.iloc[0]['id']) if len(target_jobs) == 1 else None
 
             c.execute("INSERT INTO runs (name, job_id, created_at) VALUES (?, ?, ?)",
                       (run_name, run_job_id, datetime.datetime.now().isoformat()))
             run_id = c.lastrowid
 
-            status_text = st.empty()
-            progress_bar = st.progress(0)
-            log_expander = st.expander("📝 Execution Logs", expanded=False)
+            with st.status("Starting Analysis...", expanded=True) as status:
+                progress_bar = st.progress(0)
+                log_expander = st.expander("📝 Execution Logs", expanded=True)
 
-            current_op = 0
+                current_op = 0
 
-            # --- MAIN LOOP (JD x Resume) ---
-            for j_idx, job_row in target_jobs.iterrows():
-                job_id = int(job_row['id'])
-                job_criteria = job_row['criteria']
+                for j_idx, job_row in target_jobs.iterrows():
+                    job_id = int(job_row['id'])
+                    job_criteria = job_row['criteria']
 
-                for r_idx, res_row in target_resumes.iterrows():
-                    current_op += 1
-                    resume_id = int(res_row['id'])
-                    log_prefix = f"[{job_row['filename']} x {res_row['filename']}]"
+                    for r_idx, res_row in target_resumes.iterrows():
+                        current_op += 1
+                        resume_id = int(res_row['id'])
+                        log_prefix = f"[{job_row['filename']} x {res_row['filename']}]"
 
-                    status_text.text(f"Processing {current_op}/{total_ops}: {log_prefix}")
-                    log_msg = ""
+                        status.update(label=f"Processing {current_op}/{total_ops}: {log_prefix}")
+                        log_msg = ""
 
-                    # Check exist
-                    c.execute("SELECT id FROM matches WHERE job_id = ? AND resume_id = ?", (job_id, resume_id))
-                    existing = c.fetchone()
+                        c.execute("SELECT id FROM matches WHERE job_id = ? AND resume_id = ?", (job_id, resume_id))
+                        existing = c.fetchone()
 
-                    should_run_ai = True
-                    match_id = None
+                        should_run_ai = True
+                        match_id = None
 
-                    if existing:
-                        match_id = existing[0]
-                        if not rerun_existing:
-                            should_run_ai = False
-                            log_msg = f"⏭️ Skipped {log_prefix} (Already matched)"
+                        if existing:
+                            match_id = existing[0]
+                            if not rerun_existing:
+                                should_run_ai = False
+                                log_msg = f"⏭️ Skipped {log_prefix} (Already matched)"
 
-                    if should_run_ai:
-                        max_retries = 3
-                        data = None
-                        for attempt in range(max_retries):
-                            try:
-                                time.sleep(0.2)
-                                llm_response = evaluate_candidate(client, res_row['content'], job_criteria, res_row['profile'])
-                                data = extract_json_from_text(llm_response)
-                                if data: break
-                            except Exception as e: pass
+                        if should_run_ai:
+                            max_retries = 3
+                            data = None
+                            for attempt in range(max_retries):
+                                try:
+                                    time.sleep(0.2)
+                                    llm_response = evaluate_candidate(client, res_row['content'], job_criteria, res_row['profile'])
+                                    data = extract_json_from_text(llm_response)
+                                    if data: break
+                                except Exception as e: pass
 
-                        if data:
-                            match_details_json = json.dumps(data.get('match_details', []))
-                            missing_skills_json = json.dumps(data.get('missing_skills', []))
+                            if data:
+                                match_details_json = json.dumps(data.get('match_details', []))
+                                missing_skills_json = json.dumps(data.get('missing_skills', []))
 
-                            if match_id:
-                                c.execute('''UPDATE matches SET
-                                             candidate_name=?, match_score=?, decision=?, reasoning=?, missing_skills=?, match_details=?
-                                             WHERE id=?''',
-                                          (data.get('candidate_name', 'Unknown'),
-                                           data.get('match_score', 0),
-                                           data.get('decision', 'Review'),
-                                           data.get('reasoning', ''),
-                                           missing_skills_json,
-                                           match_details_json,
-                                           match_id))
-                                log_msg = f"🔄 Updated {log_prefix}"
+                                if match_id:
+                                    c.execute('''UPDATE matches SET
+                                                 candidate_name=?, match_score=?, decision=?, reasoning=?, missing_skills=?, match_details=?
+                                                 WHERE id=?''',
+                                              (data.get('candidate_name', 'Unknown'),
+                                               data.get('match_score', 0),
+                                               data.get('decision', 'Review'),
+                                               data.get('reasoning', ''),
+                                               missing_skills_json,
+                                               match_details_json,
+                                               match_id))
+                                    log_msg = f"🔄 Updated {log_prefix}"
+                                else:
+                                    c.execute('''INSERT INTO matches (job_id, resume_id, candidate_name, match_score, decision, reasoning, missing_skills, match_details)
+                                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                                              (job_id, resume_id,
+                                               data.get('candidate_name', 'Unknown'),
+                                               data.get('match_score', 0),
+                                               data.get('decision', 'Review'),
+                                               data.get('reasoning', ''),
+                                               missing_skills_json,
+                                               match_details_json))
+                                    match_id = c.lastrowid
+                                    log_msg = f"✅ Matched {log_prefix}"
                             else:
-                                c.execute('''INSERT INTO matches (job_id, resume_id, candidate_name, match_score, decision, reasoning, missing_skills, match_details)
-                                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                                          (job_id, resume_id,
-                                           data.get('candidate_name', 'Unknown'),
-                                           data.get('match_score', 0),
-                                           data.get('decision', 'Review'),
-                                           data.get('reasoning', ''),
-                                           missing_skills_json,
-                                           match_details_json))
-                                match_id = c.lastrowid
-                                log_msg = f"✅ Matched {log_prefix}"
-                        else:
-                            error_reason = f"Parse Error after {max_retries} attempts."
-                            if match_id:
-                                c.execute('''UPDATE matches SET decision=?, reasoning=? WHERE id=?''', ("Error", error_reason, match_id))
-                            else:
-                                c.execute('''INSERT INTO matches (job_id, resume_id, candidate_name, match_score, decision, reasoning, missing_skills, match_details)
-                                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                                error_reason = f"Parse Error after {max_retries} attempts."
+                                if match_id:
+                                    c.execute('''UPDATE matches SET decision=?, reasoning=? WHERE id=?''', ("Error", error_reason, match_id))
+                                else:
+                                    c.execute('''INSERT INTO matches (job_id, resume_id, candidate_name, match_score, decision, reasoning, missing_skills, match_details)
+                                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                                           (job_id, resume_id, "AI Parse Error", 0, "Error", error_reason, "[]", "[]"))
-                                match_id = c.lastrowid
-                            log_msg = f"⚠️ Parse Fail {log_prefix}"
+                                    match_id = c.lastrowid
+                                log_msg = f"⚠️ Parse Fail {log_prefix}"
 
-                    if match_id:
-                        c.execute("INSERT OR IGNORE INTO run_matches (run_id, match_id) VALUES (?, ?)", (run_id, match_id))
+                        if match_id:
+                            c.execute("INSERT OR IGNORE INTO run_matches (run_id, match_id) VALUES (?, ?)", (run_id, match_id))
 
-                    if log_msg:
-                        with log_expander: st.write(log_msg)
+                        if log_msg:
+                            with log_expander: st.write(log_msg)
 
-                    write_conn.commit()
-                    progress_bar.progress(current_op / total_ops)
+                        write_conn.commit()
+                        progress_bar.progress(current_op / total_ops)
 
-            status_text.success("Batch Analysis Completed!")
+                status.update(label="Batch Analysis Completed!", state="complete", expanded=False)
+
             write_conn.close()
             st.toast(f"Run '{run_name}' Finished! Go to the 'Match Results' tab to view.")
 
@@ -841,7 +883,78 @@ with tab3:
             selected_run_row = runs[runs['label'] == selected_run_label].iloc[0]
             run_id = int(selected_run_row['id'])
 
-            # Fetch ALL results for this run
+            # --- RUN-LEVEL ACTIONS ---
+            c_run_act1, c_run_act2 = st.columns([1, 4])
+            with c_run_act1:
+                if st.button("🗑️ Delete Run", key=f"del_run_{run_id}", type="primary"):
+                    c = conn.cursor()
+                    c.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+                    c.execute("DELETE FROM run_matches WHERE run_id = ?", (run_id,))
+                    conn.commit()
+                    st.success("Run deleted!")
+                    time.sleep(0.5)
+                    st.rerun()
+
+            # Batch Rerun Button next to Delete Run
+            with c_run_act2:
+                if st.button("🔄 Rerun Batch", key=f"rerun_batch_{run_id}"):
+                    client = get_llm_client()
+                    if client:
+                        matches_in_run = pd.read_sql(f"""
+                            SELECT m.id, r.content as resume_text, r.profile as resume_profile, j.criteria as job_criteria, r.filename
+                            FROM matches m
+                            JOIN run_matches rm ON m.id = rm.match_id
+                            JOIN resumes r ON m.resume_id = r.id
+                            JOIN jobs j ON m.job_id = j.id
+                            WHERE rm.run_id = {run_id}
+                        """, conn)
+
+                        if not matches_in_run.empty:
+                            with st.status("Re-analyzing Batch...", expanded=True) as status:
+                                progress_bar = st.progress(0)
+                                log_expander = st.expander("📝 Batch Rerun Logs", expanded=True)
+
+                                total = len(matches_in_run)
+                                c = conn.cursor()
+
+                                for i, row in matches_in_run.iterrows():
+                                    status.update(label=f"Re-analyzing {i+1}/{total}: {row['filename']}")
+
+                                    try:
+                                        resp = evaluate_candidate(client, row['resume_text'], row['job_criteria'], row['resume_profile'])
+                                        new_data = extract_json_from_text(resp)
+
+                                        if new_data:
+                                            match_details_json = json.dumps(new_data.get('match_details', []))
+                                            missing_skills_json = json.dumps(new_data.get('missing_skills', []))
+
+                                            c.execute('''UPDATE matches SET
+                                                         candidate_name=?, match_score=?, decision=?, reasoning=?, missing_skills=?, match_details=?
+                                                         WHERE id=?''',
+                                                      (new_data.get('candidate_name', 'Unknown'),
+                                                       new_data.get('match_score', 0),
+                                                       new_data.get('decision', 'Review'),
+                                                       new_data.get('reasoning', ''),
+                                                       missing_skills_json,
+                                                       match_details_json,
+                                                       row['id']))
+                                            conn.commit()
+                                            with log_expander: st.write(f"✅ Updated {row['filename']}")
+                                        else:
+                                            with log_expander: st.error(f"❌ Failed to parse {row['filename']}")
+                                    except Exception as e:
+                                        with log_expander: st.error(f"❌ Error {row['filename']}: {e}")
+
+                                    progress_bar.progress((i + 1) / total)
+
+                                status.update(label="Batch Rerun Complete!", state="complete", expanded=False)
+
+                            st.success("Batch Rerun Complete!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.warning("No matches found in this run to rerun.")
+
             results = pd.read_sql(f"""
                 SELECT m.id, m.candidate_name, m.match_score, m.decision, m.reasoning, r.filename, j.filename as job_name, m.match_details
                 FROM matches m
@@ -885,7 +998,6 @@ with tab3:
                 st.markdown("---")
                 st.markdown("### 🔎 Match Analysis Details")
 
-                # Selection logic updated for All x All (Candidate + Job Name in label)
                 results['label'] = results['candidate_name'] + " applied to " + results['job_name'] + " (" + results['match_score'].astype(str) + "%)"
                 selected_candidate_label = st.selectbox("Select Match to Inspect:", results['label'])
 
@@ -906,52 +1018,37 @@ with tab3:
                     col_act1, col_act2, col_act3 = st.columns([1, 1, 3])
 
                     with col_act1:
-                        if st.button("🔄 Rerun Analysis", key=f"rerun_btn_{match_id}"):
+                        if st.button("🔄 Rerun Match", key=f"rerun_btn_{match_id}"):
                             client = get_llm_client()
                             if client:
-                                status_text = st.empty()
-                                progress_bar = st.progress(0)
-                                log_expander = st.expander("📝 Rerun Logs", expanded=True)
+                                # Using st.status for single match rerun
+                                with st.status(f"Re-analyzing {match_row['filename']}...", expanded=True) as status:
+                                    # Logic for single rerun...
+                                    resp = evaluate_candidate(client, action_data['resume_text'], action_data['job_criteria'], action_data['resume_profile'])
+                                    new_data = extract_json_from_text(resp)
 
-                                status_text.text(f"Processing: {match_row['filename']}...")
-                                with log_expander:
-                                    st.write(f"Sending {match_row['filename']} to LLM...")
+                                    if new_data:
+                                        match_details_json = json.dumps(new_data.get('match_details', []))
+                                        missing_skills_json = json.dumps(new_data.get('missing_skills', []))
 
-                                resp = evaluate_candidate(client, action_data['resume_text'], action_data['job_criteria'], action_data['resume_profile'])
-
-                                with log_expander:
-                                    st.write("Received response. Parsing JSON...")
-
-                                new_data = extract_json_from_text(resp)
-
-                                if new_data:
-                                    match_details_json = json.dumps(new_data.get('match_details', []))
-                                    missing_skills_json = json.dumps(new_data.get('missing_skills', []))
-
-                                    c = conn.cursor()
-                                    c.execute('''UPDATE matches SET
-                                                 candidate_name=?, match_score=?, decision=?, reasoning=?, missing_skills=?, match_details=?
-                                                 WHERE id=?''',
-                                              (new_data.get('candidate_name', 'Unknown'),
-                                               new_data.get('match_score', 0),
-                                               new_data.get('decision', 'Review'),
-                                               new_data.get('reasoning', ''),
-                                               missing_skills_json,
-                                               match_details_json,
-                                               match_id))
-                                    conn.commit()
-
-                                    with log_expander:
-                                        st.write("✅ Database updated successfully.")
-
-                                    progress_bar.progress(100)
-                                    status_text.success("Rerun Complete!")
-                                    time.sleep(1)
-                                    st.rerun()
-                                else:
-                                    status_text.error("Analysis Failed")
-                                    with log_expander:
-                                        st.error(f"AI Parse failed. Raw output: {resp[:500]}")
+                                        c = conn.cursor()
+                                        c.execute('''UPDATE matches SET
+                                                     candidate_name=?, match_score=?, decision=?, reasoning=?, missing_skills=?, match_details=?
+                                                     WHERE id=?''',
+                                                  (new_data.get('candidate_name', 'Unknown'),
+                                                   new_data.get('match_score', 0),
+                                                   new_data.get('decision', 'Review'),
+                                                   new_data.get('reasoning', ''),
+                                                   missing_skills_json,
+                                                   match_details_json,
+                                                   match_id))
+                                        conn.commit()
+                                        status.update(label="Rerun Complete!", state="complete", expanded=False)
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else:
+                                        status.update(label="Analysis Failed", state="error")
+                                        st.error("AI Parse failed.")
 
                     with col_act2:
                         if st.button("🗑️ Delete Match", key=f"del_btn_{match_id}", type="primary"):
