@@ -346,7 +346,7 @@ with tab3:
                     if st.button("🔄 Rerun This Match", key=f"re_s_{match_id}"):
                          with st.status("Re-evaluating...", expanded=True) as status:
                             action_data = db.fetch_dataframe(f"SELECT r.content as resume_text, r.profile as resume_profile, j.criteria as job_criteria FROM matches m JOIN resumes r ON m.resume_id = r.id JOIN jobs j ON m.job_id = j.id WHERE m.id = {match_id}").iloc[0]
-                            resp = client.evaluate_candidate(action_data['resume_text'], action_data['job_criteria'], action_data['resume_profile'])
+                            resp = client.evaluate_standard(action_data['resume_text'], action_data['job_criteria'], action_data['resume_profile'])
                             data = document_utils.clean_json_response(resp)
                             if data:
                                 db.save_match(None, None, data, match_id)

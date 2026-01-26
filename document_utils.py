@@ -3,9 +3,9 @@ import docx
 import io
 import pytesseract
 import json
+import re
+import ast
 from PIL import Image
-
-# Removed streamlit import to keep this module UI-agnostic
 
 try:
     from pdf2image import convert_from_bytes
@@ -73,13 +73,41 @@ def extract_text_from_pdf(file_bytes, use_ocr=False, log_callback=None):
         return f"Error reading PDF: {e}"
 
 def clean_json_response(text):
-    """Robust extraction of JSON from LLM markdown response."""
-    try:
+    """
+    Robust extraction of JSON from LLM markdown response.
+    Prioritizes markdown code blocks to avoid parsing chatty explanations.
+    """
+    # Step 1: Extract block between code markers or find outermost braces
+    # Look for code blocks first
+    block_match = re.search( r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
+
+    if block_match:
+        extracted = block_match.group(1).strip()
+    else:
+        # Fallback to finding the first { and last }
         start = text.find('{')
         end = text.rfind('}')
-        if start != -1 and end != -1 and end > start:
-            json_str = text[start:end+1]
-            return json.loads(json_str)
+        if start != -1 and end != -1:
+            extracted = text[start:end+1].strip()
+
+    if not extracted:
         return None
+
+    # Step 2: Try standard JSON parsing (double quotes)
+    try:
+        return json.loads(extracted)
     except json.JSONDecodeError:
-        return None
+        # Step 3: Fallback to AST (handles Python-style single quotes)
+        # Your local model (Qwen) often uses ' instead of "
+        try:
+            return ast.literal_eval(extracted)
+        except (ValueError, SyntaxError):
+            # Final attempt: Very basic single-to-double quote swap
+            try:
+                # Only attempt if the string looks like a dict
+                if extracted.startswith('{') and extracted.endswith('}'):
+                    return json.loads(extracted.replace("'", '"'))
+            except:
+                pass
+
+    return None
