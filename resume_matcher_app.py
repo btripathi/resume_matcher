@@ -57,21 +57,36 @@ def generate_criteria_html(details):
     </table>
     """
 
-def generate_candidate_list_html(df):
+def generate_candidate_list_html(df, threshold=75):
     if df.empty: return "<p style='color: #666;'>No results found.</p>"
     rows = ""
+
+    # Calculate review threshold (20 points below success threshold)
+    review_thresh = max(0, threshold - 20)
+
     for idx, row in df.iterrows():
-        decision = row['decision']
-        color = "color: #0f5132; background-color: #d1e7dd;" if "Move Forward" in decision else "color: #842029; background-color: #f8d7da;" if "Reject" in decision else "color: #664d03; background-color: #fff3cd;"
+        # --- UI DECISION LOGIC (OVERRIDES AI TEXT) ---
         score = row['match_score']
-        score_color = "#0f5132" if score >= 70 else "#842029" if score < 40 else "black"
+
+        if score >= threshold:
+            decision_label = "Move Forward"
+            badge_color = "color: #0f5132; background-color: #d1e7dd;" # Green
+            score_color = "#0f5132"
+        elif score >= review_thresh:
+            decision_label = "Review"
+            badge_color = "color: #664d03; background-color: #fff3cd;" # Yellow
+            score_color = "#856404"
+        else:
+            decision_label = "Reject"
+            badge_color = "color: #842029; background-color: #f8d7da;" # Red
+            score_color = "#842029"
 
         # Display Standard Score if it differs significantly or is available
         std_score_display = ""
         if 'standard_score' in row and pd.notna(row['standard_score']) and row['strategy'] == 'Deep':
             std_score_display = f"<br><span style='font-size: 10px; color: #666;'>Pass 1: {int(row['standard_score'])}%</span>"
 
-        rows += f'<tr><td style="font-weight: 600;">{row["candidate_name"]}<br><span style="font-size: 11px; color: #666;">{row["res_name"]}</span></td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%{std_score_display}</td><td><span class="status-badge" style="{color}">{decision}</span></td><td style="font-size: 13px; color: #444;">{row["reasoning"]}</td></tr>'
+        rows += f'<tr><td style="font-weight: 600;">{row["candidate_name"]}<br><span style="font-size: 11px; color: #666;">{row["res_name"]}</span></td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%{std_score_display}</td><td><span class="status-badge" style="{badge_color}">{decision_label}</span></td><td style="font-size: 13px; color: #444;">{row["reasoning"]}</td></tr>'
     return f"""<style>.candidate-table {{width: 100%; border-collapse: collapse; margin-bottom: 20px;}}.candidate-table th {{background-color: #f8f9fa; padding: 12px; text-align: left;}}.candidate-table td {{padding: 12px; border-bottom: 1px solid #dee2e6; vertical-align: top;}}.status-badge {{padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px;}}</style><table class="candidate-table"><thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th></tr></thead><tbody>{rows}</tbody></table>"""
 
 # --- HEADER & SETTINGS ---
@@ -324,7 +339,6 @@ with tab2:
                                 task_display.info(f"🧠 Pass 1: Holistic scan for **{current_resume_name}**...")
                                 data = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
                                 if data:
-                                    # Save with strategy="Standard". We also save the score as 'standard_score' for history.
                                     mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard", standard_score=data['match_score'], standard_reasoning=data['reasoning'])
                                     score = data['match_score']
                                     std_score_saved = score # Update local tracker
@@ -427,16 +441,21 @@ with tab3:
         """)
 
         if not results.empty:
+            # --- Dynamic Threshold Slider ---
+            c_thresh, _ = st.columns([2, 4])
+            with c_thresh:
+                display_thresh = st.slider("Decision Threshold (%)", 0, 100, 75, help="Scores above this are 'Move Forward'. Scores within 20% below are 'Review'.")
+
             # --- SPLIT TABLES: DEEP vs STANDARD ---
             deep_df = results[results['strategy'] == 'Deep']
             std_df = results[results['strategy'] != 'Deep']
 
             st.markdown("### ✨ Deep Matches (Passed Pass 1)")
-            st.markdown(generate_candidate_list_html(deep_df), unsafe_allow_html=True)
+            st.markdown(generate_candidate_list_html(deep_df, threshold=display_thresh), unsafe_allow_html=True)
 
             st.divider()
             st.markdown("### 🧠 Standard Matches (Did not qualify for Deep Scan)")
-            st.markdown(generate_candidate_list_html(std_df), unsafe_allow_html=True)
+            st.markdown(generate_candidate_list_html(std_df, threshold=display_thresh), unsafe_allow_html=True)
 
             st.divider()
             st.write("### 🔎 Match Evidence Investigator")
