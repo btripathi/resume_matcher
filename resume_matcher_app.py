@@ -19,6 +19,10 @@ if "lm_api_key" not in st.session_state: st.session_state.lm_api_key = "lm-studi
 if "ocr_enabled" not in st.session_state: st.session_state.ocr_enabled = True
 if "processed_files" not in st.session_state: st.session_state.processed_files = set()
 
+# Initialize dynamic keys for file uploaders to allow clearing them
+if "jd_uploader_key" not in st.session_state: st.session_state.jd_uploader_key = 0
+if "res_uploader_key" not in st.session_state: st.session_state.res_uploader_key = 0
+
 db = database.DBManager()
 
 # --- UI HELPERS ---
@@ -61,7 +65,13 @@ def generate_candidate_list_html(df):
         color = "color: #0f5132; background-color: #d1e7dd;" if "Move Forward" in decision else "color: #842029; background-color: #f8d7da;" if "Reject" in decision else "color: #664d03; background-color: #fff3cd;"
         score = row['match_score']
         score_color = "#0f5132" if score >= 70 else "#842029" if score < 40 else "black"
-        rows += f'<tr><td style="font-weight: 600;">{row["candidate_name"]}<br><span style="font-size: 11px; color: #666;">{row["res_name"]}</span></td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%</td><td><span class="status-badge" style="{color}">{decision}</span></td><td style="font-size: 13px; color: #444;">{row["reasoning"]}</td></tr>'
+
+        # Display Standard Score if it differs significantly or is available
+        std_score_display = ""
+        if 'standard_score' in row and pd.notna(row['standard_score']) and row['strategy'] == 'Deep':
+            std_score_display = f"<br><span style='font-size: 10px; color: #666;'>Pass 1: {int(row['standard_score'])}%</span>"
+
+        rows += f'<tr><td style="font-weight: 600;">{row["candidate_name"]}<br><span style="font-size: 11px; color: #666;">{row["res_name"]}</span></td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%{std_score_display}</td><td><span class="status-badge" style="{color}">{decision}</span></td><td style="font-size: 13px; color: #444;">{row["reasoning"]}</td></tr>'
     return f"""<style>.candidate-table {{width: 100%; border-collapse: collapse; margin-bottom: 20px;}}.candidate-table th {{background-color: #f8f9fa; padding: 12px; text-align: left;}}.candidate-table td {{padding: 12px; border-bottom: 1px solid #dee2e6; vertical-align: top;}}.status-badge {{padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px;}}</style><table class="candidate-table"><thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th></tr></thead><tbody>{rows}</tbody></table>"""
 
 # --- HEADER & SETTINGS ---
@@ -95,22 +105,55 @@ with tab1:
     # Jobs Column
     with c1:
         st.subheader("📂 Upload Job Descriptions")
-        jd_up = st.file_uploader("Upload JDs", accept_multiple_files=True, key="jd_up")
+        # Use dynamic key based on session state
+        jd_up = st.file_uploader("Upload JDs", accept_multiple_files=True, key=f"jd_up_{st.session_state.jd_uploader_key}")
+        force_reparse_jd = st.checkbox("Force Reparse Existing JDs", value=False)
 
         if jd_up and st.button("Process New JDs", type="primary"):
             with st.status("Processing JDs...") as status:
                 for f in jd_up:
-                    text = document_utils.extract_text_from_pdf(f.read()) if f.name.endswith('.pdf') else str(f.read(), 'utf-8', errors='ignore')
-                    db.add_job(f.name, text, client.analyze_jd(text))
+                    # Check duplication
+                    existing = db.get_job_by_filename(f.name)
+                    if existing and not force_reparse_jd:
+                        st.warning(f"Skipped {f.name} (Duplicate). Check 'Force Reparse' to overwrite.")
+                        continue
+
+                    file_bytes = f.read()
+                    file_name = f.name.lower()
+
+                    if file_name.endswith('.pdf'):
+                        text = document_utils.extract_text_from_pdf(file_bytes, use_ocr=st.session_state.ocr_enabled)
+                    elif file_name.endswith('.docx'):
+                        text = document_utils.extract_text_from_docx(file_bytes)
+                    else:
+                        text = str(file_bytes, 'utf-8', errors='ignore')
+
+                    analysis = client.analyze_jd(text)
+
+                    if existing:
+                        db.update_job_content(existing['id'], text, analysis)
+                        st.info(f"Updated {f.name}")
+                    else:
+                        db.add_job(f.name, text, analysis)
+
+                # Increment key to clear uploader
+                st.session_state.jd_uploader_key += 1
                 st.rerun()
 
-        jds = db.fetch_dataframe("SELECT id, filename, criteria, upload_date FROM jobs")
+        jds = db.fetch_dataframe("SELECT id, filename, criteria, content, upload_date FROM jobs")
         if not jds.empty:
             st.dataframe(jds[['filename', 'upload_date']], hide_index=True, width="stretch")
 
             st.divider()
             jd_choice = st.selectbox("Select JD to Edit:", jds['filename'])
             row = jds[jds['filename'] == jd_choice].iloc[0]
+
+            # --- RAW TEXT INSPECTOR FOR JD ---
+            with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
+                st.info("This is the exact text extracted from the file.")
+                st.text_area("Raw Text Content", value=row['content'], height=400, disabled=True, key=f"raw_jd_{row['id']}")
+            # ---------------------------------
+
             new_crit = st.text_area("JSON Criteria", value=row['criteria'], height=300, key=f"jd_ed_{row['id']}")
 
             c_sav, c_del = st.columns(2)
@@ -126,22 +169,55 @@ with tab1:
     # Resumes Column
     with c2:
         st.subheader("📄 Upload Resumes")
-        res_up = st.file_uploader("Upload Resumes", accept_multiple_files=True, key="res_up")
+        # Use dynamic key based on session state
+        res_up = st.file_uploader("Upload Resumes", accept_multiple_files=True, key=f"res_up_{st.session_state.res_uploader_key}")
+        force_reparse_res = st.checkbox("Force Reparse Existing Resumes", value=False)
 
         if res_up and st.button("Process New Resumes", type="primary"):
             with st.status("Processing Resumes...") as status:
                 for f in res_up:
-                    text = document_utils.extract_text_from_pdf(f.read()) if f.name.endswith('.pdf') else str(f.read(), 'utf-8', errors='ignore')
-                    db.add_resume(f.name, text, client.analyze_resume(text))
+                    # Check duplication
+                    existing = db.get_resume_by_filename(f.name)
+                    if existing and not force_reparse_res:
+                        st.warning(f"Skipped {f.name} (Duplicate). Check 'Force Reparse' to overwrite.")
+                        continue
+
+                    file_bytes = f.read()
+                    file_name = f.name.lower()
+
+                    if file_name.endswith('.pdf'):
+                        text = document_utils.extract_text_from_pdf(file_bytes, use_ocr=st.session_state.ocr_enabled)
+                    elif file_name.endswith('.docx'):
+                        text = document_utils.extract_text_from_docx(file_bytes)
+                    else:
+                        text = str(file_bytes, 'utf-8', errors='ignore')
+
+                    analysis = client.analyze_resume(text)
+
+                    if existing:
+                        db.update_resume_content(existing['id'], text, analysis)
+                        st.info(f"Updated {f.name}")
+                    else:
+                        db.add_resume(f.name, text, analysis)
+
+                # Increment key to clear uploader
+                st.session_state.res_uploader_key += 1
                 st.rerun()
 
-        ress = db.fetch_dataframe("SELECT id, filename, profile, upload_date FROM resumes")
+        ress = db.fetch_dataframe("SELECT id, filename, profile, content, upload_date FROM resumes")
         if not ress.empty:
             st.dataframe(ress[['filename', 'upload_date']], hide_index=True, width="stretch")
 
             st.divider()
             res_choice = st.selectbox("Select Resume to Edit:", ress['filename'])
             row = ress[ress['filename'] == res_choice].iloc[0]
+
+            # --- RAW TEXT INSPECTOR ---
+            with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
+                st.info("This is the exact text extracted from the file. If this is empty or gibberish, OCR failed or the file is unreadable.")
+                st.text_area("Raw Text Content", value=row['content'], height=400, disabled=True, key=f"raw_{row['id']}")
+            # ---------------------------
+
             new_prof = st.text_area("JSON Profile", value=row['profile'], height=300, key=f"res_ed_{row['id']}")
 
             c_sav, c_del = st.columns(2)
@@ -204,44 +280,66 @@ with tab2:
                     master_bar = st.progress(0)
                     task_display = st.empty()
                     sub_bar = st.empty()
-                    log_history = st.expander("Detailed Activity Log", expanded=True)
 
-                    def add_log(msg, bold=False):
+                    # --- SCROLLABLE LOG CONSOLE ---
+                    log_placeholder = st.empty()
+                    log_lines = []
+
+                    def add_log(message):
                         ts = datetime.datetime.now().strftime("%H:%M:%S")
-                        with log_history:
-                            if bold: st.markdown(f"**[{ts}] {msg}**")
-                            else: st.text(f"[{ts}] {msg}")
+                        # Add new message to top of list
+                        log_lines.insert(0, f"<div style='margin-bottom:2px;'><span style='color:#888; font-size:0.8em;'>[{ts}]</span> {message}</div>")
+
+                        html_content = f"""
+                        <div style="height:300px; overflow-y:auto; background-color:#f8f9fa; border:1px solid #dee2e6; padding:10px; border-radius:4px; font-family:monospace; font-size:0.9em; color:#212529;">
+                            {''.join(log_lines)}
+                        </div>
+                        """
+                        log_placeholder.markdown(html_content, unsafe_allow_html=True)
+                    # ------------------------------
 
                     for _, job in sel_j.iterrows():
                         for _, res in sel_r.iterrows():
                             count += 1
                             current_resume_name = res['filename']
-                            status.update(label=f"Match {count}/{total}: {current_resume_name}")
-                            add_log(f"Starting analysis for {current_resume_name}", bold=True)
+
+                            # Update Status Bar with X/Y
+                            status.update(label=f"Match {count}/{total}: {current_resume_name} vs {job['filename']}")
+                            add_log(f"<b>Starting analysis for {current_resume_name}</b> vs {job['filename']}")
 
                             exist = db.get_match_if_exists(int(job['id']), int(res['id']))
                             mid = exist['id'] if exist else None
                             score = exist['match_score'] if exist else 0
+
+                            # preserve standard score if it exists and we aren't rerunning standard
+                            std_score_saved = exist['standard_score'] if exist and exist['standard_score'] is not None else None
+                            std_reasoning_saved = exist['standard_reasoning'] if exist and exist['standard_reasoning'] else None
+
+                            # If we are upgrading from Standard to Deep, we might need to grab the 'reasoning' from the current Standard match to save it as 'standard_reasoning'
+                            if exist and exist['strategy'] == 'Standard' and not std_reasoning_saved:
+                                std_reasoning_saved = exist['reasoning']
 
                             # 1. Standard Pass
                             if not exist or (exist['strategy'] != 'Deep' and score < pass1_thresh) or f_rerun:
                                 task_display.info(f"🧠 Pass 1: Holistic scan for **{current_resume_name}**...")
                                 data = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
                                 if data:
-                                    mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard")
+                                    # Save with strategy="Standard". We also save the score as 'standard_score' for history.
+                                    mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard", standard_score=data['match_score'], standard_reasoning=data['reasoning'])
                                     score = data['match_score']
-                                    add_log(f"Standard Match Score: {score}%")
+                                    std_score_saved = score # Update local tracker
+                                    std_reasoning_saved = data['reasoning'] # Capture new reasoning
+                                    add_log(f"&nbsp;&nbsp;🧠 Standard Score: {score}%")
 
                             # 2. Deep Weighted Pass (Optimized)
                             if strat == "Deep Match (Automated 2-Pass)" and score >= pass1_thresh:
                                 if exist and exist['strategy'] == 'Deep' and not f_rerun:
-                                    add_log("Deep match already exists. Skipping.")
+                                    add_log("&nbsp;&nbsp;ℹ️ Deep match already exists. Skipping.")
                                 else:
-                                    add_log(f"Threshold met ({score}%). Triggering Deep Scan...")
+                                    add_log(f"&nbsp;&nbsp;🔬 Threshold met ({score}%). Triggering Deep Scan...")
                                     jd_c = json.loads(job['criteria'])
 
                                     # OPTIMIZATION: SPLIT CRITERIA
-                                    # High Priority (Individual Calls)
                                     priority_reqs = []
                                     if 'must_have_skills' in jd_c and isinstance(jd_c['must_have_skills'], list):
                                         priority_reqs.extend([('must_have_skills', v) for v in jd_c['must_have_skills']])
@@ -250,7 +348,6 @@ with tab2:
                                     if jd_c.get('min_years_experience', 0) > 0:
                                         priority_reqs.append(('experience', f"Minimum {jd_c['min_years_experience']} years relevant experience"))
 
-                                    # Low Priority (Bulk Call)
                                     bulk_reqs = []
                                     for k in ['nice_to_have_skills', 'soft_skills', 'education_requirements', 'key_responsibilities']:
                                         if k in jd_c and isinstance(jd_c[k], list):
@@ -264,23 +361,33 @@ with tab2:
 
                                     for rt, rv in priority_reqs:
                                         processed_count += 1
+                                        # Log the specific check
+                                        add_log(f"&nbsp;&nbsp;&nbsp;&nbsp;🔎 Checking {rt.replace('_', ' ').title()}: <i>{str(rv)[:40]}...</i>")
+
                                         task_display.warning(f"🔬 Deep Scan: Checking {rt.upper()} (Priority)...")
                                         sub_bar.progress(processed_count/num_reqs)
+
                                         res_crit = client.evaluate_criterion(res['content'], rt, rv)
-                                        if res_crit: details.append(res_crit)
+                                        if res_crit:
+                                            details.append(res_crit)
+                                            # Log result
+                                            icon = "✅" if res_crit['status'] == 'Met' else "⚠️" if res_crit['status'] == 'Partial' else "❌"
+                                            add_log(f"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↳ {icon} {res_crit['status']}")
 
                                     # Process Low Priority (Bulk)
                                     if bulk_reqs:
                                         processed_count += 1
                                         task_display.info(f"⚡ Bulk Scan: Checking {len(bulk_reqs)} secondary criteria...")
+                                        add_log(f"&nbsp;&nbsp;&nbsp;&nbsp;⚡ Bulk checking {len(bulk_reqs)} secondary items...")
                                         sub_bar.progress(processed_count/num_reqs)
                                         bulk_results = client.evaluate_bulk_criteria(res['content'], bulk_reqs)
                                         if bulk_results: details.extend(bulk_results)
 
                                     sub_bar.empty()
                                     sf, df, rf = client.generate_final_decision(res['filename'], details, strategy="Deep")
-                                    mid = db.save_match(int(job['id']), int(res['id']), {"candidate_name": res['filename'], "match_score": sf, "decision": df, "reasoning": rf, "match_details": details}, mid, strategy="Deep")
-                                    add_log(f"Deep Match Final Score: {sf}% ({df})", bold=True)
+                                    # SAVE with Strategy="Deep". IMPORTANT: Pass std_score_saved to preserve it.
+                                    mid = db.save_match(int(job['id']), int(res['id']), {"candidate_name": res['filename'], "match_score": sf, "decision": df, "reasoning": rf, "match_details": details}, mid, strategy="Deep", standard_score=std_score_saved, standard_reasoning=std_reasoning_saved)
+                                    add_log(f"&nbsp;&nbsp;🏁 <b>Deep Match Final: {sf}% ({df})</b>")
 
                             if mid: db.link_run_match(rid, mid)
                             master_bar.progress(count/total)
@@ -324,11 +431,11 @@ with tab3:
             deep_df = results[results['strategy'] == 'Deep']
             std_df = results[results['strategy'] != 'Deep']
 
-            st.markdown("### ✨ High-Precision Deep Matches")
+            st.markdown("### ✨ Deep Matches (Passed Pass 1)")
             st.markdown(generate_candidate_list_html(deep_df), unsafe_allow_html=True)
 
             st.divider()
-            st.markdown("### 🧠 Standard Matches (Pass 1)")
+            st.markdown("### 🧠 Standard Matches (Did not qualify for Deep Scan)")
             st.markdown(generate_candidate_list_html(std_df), unsafe_allow_html=True)
 
             st.divider()
@@ -346,6 +453,7 @@ with tab3:
                     if st.button("🔄 Rerun This Match", key=f"re_s_{match_id}"):
                          with st.status("Re-evaluating...", expanded=True) as status:
                             action_data = db.fetch_dataframe(f"SELECT r.content as resume_text, r.profile as resume_profile, j.criteria as job_criteria FROM matches m JOIN resumes r ON m.resume_id = r.id JOIN jobs j ON m.job_id = j.id WHERE m.id = {match_id}").iloc[0]
+                            # Corrected method call below from evaluate_candidate to evaluate_standard
                             resp = client.evaluate_standard(action_data['resume_text'], action_data['job_criteria'], action_data['resume_profile'])
                             data = document_utils.clean_json_response(resp)
                             if data:
@@ -365,10 +473,20 @@ with tab3:
                     c1.title(row['candidate_name'])
                     c2.metric("Weighted Score", f"{row['match_score']}%")
 
+                    if pd.notna(row.get('standard_score')) and row['strategy'] == 'Deep':
+                         st.caption(f"Pass 1 (Standard) Score: **{int(row['standard_score'])}%**")
+
                     if row['strategy'] == 'Deep':
                         st.caption("✨ Evaluated with High-Precision Multi-Pass Tiered Weighting")
 
-                    st.info(row['reasoning'])
+                    # Display reasoning
+                    st.info(f"**Final Decision:** {row['reasoning']}")
+
+                    # Display saved Standard Reasoning if available and different
+                    if pd.notna(row.get('standard_reasoning')) and row['strategy'] == 'Deep':
+                         with st.expander("📄 View Pass 1 (Standard) Analysis"):
+                             st.markdown(f"_{row['standard_reasoning']}_")
+
                     try:
                         dets = json.loads(row['match_details'])
                         if dets: st.markdown(generate_criteria_html(dets), unsafe_allow_html=True)

@@ -44,8 +44,9 @@ def extract_text_from_pdf(file_bytes, use_ocr=False, log_callback=None):
         log(f"Extracted {text_len} chars via native method.")
 
         # OCR Fallback
-        if text_len < 50 and use_ocr:
-            log("Text sparse (<50 chars). Triggering OCR fallback...")
+        # Increased threshold to 200 to catch PDFs that only have minimal metadata text
+        if text_len < 200 and use_ocr:
+            log("Text sparse (<200 chars). Triggering OCR fallback...")
 
             if PDF2IMAGE_AVAILABLE:
                 try:
@@ -54,11 +55,15 @@ def extract_text_from_pdf(file_bytes, use_ocr=False, log_callback=None):
 
                     ocr_text = ""
                     for i, img in enumerate(images):
-                        page_text = pytesseract.image_to_string(img)
+                        # Use simple config to handle layout analysis
+                        page_text = pytesseract.image_to_string(img, config='--psm 6')
                         ocr_text += page_text + "\n"
                         log(f"OCR Page {i+1} done ({len(page_text)} chars)")
 
-                    return ocr_text if ocr_text.strip() else "[OCR Failed: No text found]"
+                    if not ocr_text.strip():
+                         return "[OCR Failed: No text found in images]"
+
+                    return ocr_text
                 except Exception as e:
                     err = f"[OCR Error: {e}]"
                     log(err)

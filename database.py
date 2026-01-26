@@ -23,22 +23,34 @@ class DBManager:
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       filename TEXT, content TEXT, profile TEXT, upload_date TIMESTAMP)''')
 
-        # Ensure strategy column exists
+        # Ensure strategy column exists (migration for existing dbs)
         try:
             c.execute("ALTER TABLE matches ADD COLUMN strategy TEXT DEFAULT 'Standard'")
         except:
-            pass # Column already exists
+            pass
 
         try:
             c.execute("ALTER TABLE matches ADD COLUMN match_details TEXT")
         except:
             pass
 
+        # Ensure standard_score column exists for history
+        try:
+            c.execute("ALTER TABLE matches ADD COLUMN standard_score INTEGER")
+        except:
+            pass
+
+        # Ensure standard_reasoning column exists for history
+        try:
+            c.execute("ALTER TABLE matches ADD COLUMN standard_reasoning TEXT")
+        except:
+            pass
+
         c.execute('''CREATE TABLE IF NOT EXISTS matches
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       job_id INTEGER, resume_id INTEGER,
-                      candidate_name TEXT, match_score INTEGER, decision TEXT,
-                      reasoning TEXT, missing_skills TEXT, match_details TEXT,
+                      candidate_name TEXT, match_score INTEGER, standard_score INTEGER, decision TEXT,
+                      reasoning TEXT, standard_reasoning TEXT, missing_skills TEXT, match_details TEXT,
                       strategy TEXT,
                       FOREIGN KEY(job_id) REFERENCES jobs(id),
                       FOREIGN KEY(resume_id) REFERENCES resumes(id))''')
@@ -54,11 +66,35 @@ class DBManager:
         conn.commit()
         conn.close()
 
+    def get_job_by_filename(self, filename):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT id FROM jobs WHERE filename = ?", (filename,))
+        res = c.fetchone()
+        conn.close()
+        return {'id': res[0]} if res else None
+
+    def get_resume_by_filename(self, filename):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT id FROM resumes WHERE filename = ?", (filename,))
+        res = c.fetchone()
+        conn.close()
+        return {'id': res[0]} if res else None
+
     def add_job(self, filename, content, criteria):
         conn = self.get_connection()
         c = conn.cursor()
         c.execute("INSERT INTO jobs (filename, content, criteria, upload_date) VALUES (?, ?, ?, ?)",
                   (filename, content, json.dumps(criteria, indent=2), datetime.datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+
+    def update_job_content(self, job_id, content, criteria):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("UPDATE jobs SET content = ?, criteria = ?, upload_date = ? WHERE id = ?",
+                  (content, json.dumps(criteria, indent=2), datetime.datetime.now().isoformat(), job_id))
         conn.commit()
         conn.close()
 
@@ -70,23 +106,39 @@ class DBManager:
         conn.commit()
         conn.close()
 
-    def save_match(self, job_id, resume_id, data, match_id=None, strategy="Standard"):
+    def update_resume_content(self, resume_id, content, profile):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("UPDATE resumes SET content = ?, profile = ?, upload_date = ? WHERE id = ?",
+                  (content, json.dumps(profile, indent=2), datetime.datetime.now().isoformat(), resume_id))
+        conn.commit()
+        conn.close()
+
+    def save_match(self, job_id, resume_id, data, match_id=None, strategy="Standard", standard_score=None, standard_reasoning=None):
         conn = self.get_connection()
         c = conn.cursor()
 
         details = json.dumps(data.get('match_details', []))
         missing = json.dumps(data.get('missing_skills', []))
 
+        # Check if job_id or resume_id are None (case when re-running existing match)
         if match_id:
-            c.execute('''UPDATE matches SET
-                         candidate_name=?, match_score=?, decision=?, reasoning=?, missing_skills=?, match_details=?, strategy=?
-                         WHERE id=?''',
-                      (data['candidate_name'], data['match_score'], data['decision'], data['reasoning'], missing, details, strategy, match_id))
+            # Update
+            if standard_score is not None:
+                c.execute('''UPDATE matches SET
+                            candidate_name=?, match_score=?, standard_score=?, decision=?, reasoning=?, standard_reasoning=?, missing_skills=?, match_details=?, strategy=?
+                            WHERE id=?''',
+                        (data['candidate_name'], data['match_score'], standard_score, data['decision'], data['reasoning'], standard_reasoning, missing, details, strategy, match_id))
+            else:
+                 c.execute('''UPDATE matches SET
+                            candidate_name=?, match_score=?, decision=?, reasoning=?, missing_skills=?, match_details=?, strategy=?
+                            WHERE id=?''',
+                        (data['candidate_name'], data['match_score'], data['decision'], data['reasoning'], missing, details, strategy, match_id))
             new_id = match_id
         else:
-            c.execute('''INSERT INTO matches (job_id, resume_id, candidate_name, match_score, decision, reasoning, missing_skills, match_details, strategy)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                      (job_id, resume_id, data['candidate_name'], data['match_score'], data['decision'], data['reasoning'], missing, details, strategy))
+            c.execute('''INSERT INTO matches (job_id, resume_id, candidate_name, match_score, standard_score, decision, reasoning, standard_reasoning, missing_skills, match_details, strategy)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                      (job_id, resume_id, data['candidate_name'], data['match_score'], standard_score, data['decision'], data['reasoning'], standard_reasoning, missing, details, strategy))
             new_id = c.lastrowid
 
         conn.commit()
@@ -113,11 +165,18 @@ class DBManager:
     def get_match_if_exists(self, job_id, resume_id):
         conn = self.get_connection()
         c = conn.cursor()
-        c.execute("SELECT id, match_score, strategy FROM matches WHERE job_id = ? AND resume_id = ?", (job_id, resume_id))
+        c.execute("SELECT id, match_score, strategy, standard_score, reasoning, standard_reasoning FROM matches WHERE job_id = ? AND resume_id = ?", (job_id, resume_id))
         res = c.fetchone()
         conn.close()
         if res:
-            return {"id": res[0], "match_score": res[1], "strategy": res[2]}
+            return {
+                "id": res[0],
+                "match_score": res[1],
+                "strategy": res[2],
+                "standard_score": res[3],
+                "reasoning": res[4],
+                "standard_reasoning": res[5]
+            }
         return None
 
     def fetch_dataframe(self, query):
