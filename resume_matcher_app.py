@@ -187,6 +187,7 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                             add_log(f"&nbsp;&nbsp;🧠 Standard Score: {score}%")
                     else:
                         # Reuse existing score if we are skipping Pass 1 rerun
+                        # We might need to fetch the standard score if the current state is Deep
                         if exist.get('strategy') == 'Deep' and exist.get('standard_score'):
                              score = exist['standard_score']
                              add_log(f"&nbsp;&nbsp;ℹ️ Using existing Standard Score: {score}% (Pass 1 Skipped)")
@@ -280,6 +281,36 @@ def start_run_callback():
 
 def stop_run_callback():
     st.session_state.stop_requested = True
+
+# --- HEADER & SETTINGS ---
+col_head, col_set = st.columns([6, 1])
+with col_head: st.title("🚀 TalentScout: Intelligent Resume Screening")
+with col_set:
+    with st.popover("⚙️ Settings"):
+        st.write("### Configuration")
+        st.text_input("LM URL", key="lm_base_url")
+        st.text_input("API Key", key="lm_api_key")
+        st.checkbox("Enable OCR", key="ocr_enabled")
+
+        if st.button("🔌 Test Connection"):
+            try:
+                from openai import OpenAI
+                tmp_client = OpenAI(base_url=st.session_state.lm_base_url, api_key=st.session_state.lm_api_key)
+                models = tmp_client.models.list()
+                st.success(f"Connected to LM Studio! Found {len(models.data)} models.")
+            except Exception as e:
+                st.error(f"Connection failed. Error: {e}")
+
+        if st.button("🗑️ Reset DB", type="primary"):
+            db.execute_query("DELETE FROM matches")
+            db.execute_query("DELETE FROM runs")
+            db.execute_query("DELETE FROM run_matches")
+            db.execute_query("DELETE FROM jobs")
+            db.execute_query("DELETE FROM resumes")
+            st.session_state.processed_files = set()
+            st.success("Reset Complete")
+            time.sleep(1)
+            st.rerun()
 
 # --- TABS DEFINITION ---
 tab1, tab2, tab3 = st.tabs(["1. Manage Data", "2. Run Analysis", "3. Match Results"])
@@ -414,7 +445,17 @@ with tab2:
             st.markdown("#### ⚙️ Smart Match Configuration")
             c1, c2 = st.columns([2, 2])
             auto_deep = c1.checkbox("✨ Auto-Upgrade to Deep Match", value=True, help="Automatically run a Deep Scan if the Standard Match score is high enough.")
-            run_name = c2.text_input("Run Batch Name", value=f"Run {datetime.datetime.now().strftime('%H:%M')}")
+
+            # --- AUTO-NAMING IMPROVEMENT ---
+            default_run_name = f"Run {datetime.datetime.now().strftime('%H:%M')}"
+            if len(sel_j) == 1:
+                # Use first selected job filename (minus extension) as base
+                base_job = sel_j.iloc[0]['filename'].rsplit('.', 1)[0]
+                default_run_name = f"Run: {base_job}"
+            elif len(sel_j) > 1:
+                default_run_name = f"Batch Run: {len(sel_j)} Jobs"
+
+            run_name = c2.text_input("Run Batch Name", value=default_run_name)
 
             deep_match_thresh = 50
             if auto_deep:
@@ -439,6 +480,7 @@ with tab3:
         sel_run_label = st.selectbox("Select Run Batch:", runs['label'])
         run_row = runs[runs['label'] == sel_run_label].iloc[0]
         run_id = int(run_row['id'])
+        run_name_base = run_row['name']
 
         # Get threshold used for this run (handle legacy runs without threshold)
         run_threshold = int(run_row['threshold']) if 'threshold' in run_row and pd.notna(run_row['threshold']) else 50
@@ -450,7 +492,7 @@ with tab3:
             c_r1, c_r2 = st.columns(2)
 
             # 1. New Batch Name
-            rerun_name = c_r1.text_input("New Batch Name", value=f"Rerun of {run_row['name']}")
+            rerun_name = c_r1.text_input("New Batch Name", value=f"Rerun of {run_name_base}")
 
             # 2. Configs
             new_auto_deep = c_r1.checkbox("Auto-Upgrade to Deep Match", value=True, key="rerun_auto")
@@ -509,11 +551,11 @@ with tab3:
             deep_df = results[results['strategy'] == 'Deep']
             std_df = results[results['strategy'] != 'Deep']
 
-            st.markdown("### ✨ Deep Matches")
+            st.markdown(f"### ✨ Deep Matches for {run_name_base}")
             st.markdown(generate_candidate_list_html(deep_df, threshold=run_threshold, is_deep=True), unsafe_allow_html=True)
 
             st.divider()
-            st.markdown("### 🧠 Standard Matches (Pass 1 Only)")
+            st.markdown(f"### 🧠 Standard Matches (Pass 1 Only)")
             st.markdown(generate_candidate_list_html(std_df, threshold=run_threshold, is_deep=False), unsafe_allow_html=True)
 
             st.divider()
