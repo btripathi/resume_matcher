@@ -21,6 +21,9 @@ if "processed_files" not in st.session_state: st.session_state.processed_files =
 if "is_running" not in st.session_state: st.session_state.is_running = False  # Track run state
 if "stop_requested" not in st.session_state: st.session_state.stop_requested = False # Track stop request
 
+# State for Rerun Execution (to break out of expander)
+if "rerun_config" not in st.session_state: st.session_state.rerun_config = None
+
 # Initialize dynamic keys for file uploaders to allow clearing them
 if "jd_uploader_key" not in st.session_state: st.session_state.jd_uploader_key = 0
 if "res_uploader_key" not in st.session_state: st.session_state.res_uploader_key = 0
@@ -115,8 +118,6 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
 def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, force_rerun_pass1):
     """
     Reusable matching loop for both Tab 2 and Tab 3.
-    force_rerun_pass1: If True, re-evaluates Standard Match even if it exists.
-                       If False, reuses existing Standard Match and only checks for Deep Match upgrade.
     """
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
 
@@ -154,6 +155,8 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                         add_log("🛑 **Run stopped by user.**")
                         status.update(label="Stopped", state="error")
                         st.session_state.is_running = False
+                        # Clear rerun config if this was triggered from Tab 3
+                        st.session_state.rerun_config = None
                         st.stop() # Stops Streamlit execution
 
                     count += 1
@@ -165,19 +168,13 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                     mid = exist['id'] if exist else None
                     score = exist['match_score'] if exist else 0
 
-                    # Logic:
-                    # 1. Always ensure we have at least a Standard Match (Pass 1).
-                    # 2. If Auto-Deep is ON and Score >= Thresh, ensure we have a Deep Match.
-
-                    # Step 1: Standard Pass (Fast Scan)
-                    # Run if: No match exists OR we are forcing a rerun of Pass 1
+                    # Step 1: Standard Pass
                     should_run_standard = (not exist) or force_rerun_pass1
 
                     if should_run_standard:
                         task_display.info(f"🧠 Pass 1: Holistic scan for **{current_resume_name}**...")
                         data = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
                         if data:
-                            # FIX: Handle list-based reasoning by joining into string
                             raw_reasoning = data.get('reasoning', "No reasoning provided.")
                             std_reasoning = "\n".join(raw_reasoning) if isinstance(raw_reasoning, list) else str(raw_reasoning)
 
@@ -186,8 +183,6 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                             exist = db.get_match_if_exists(int(job['id']), int(res['id']))
                             add_log(f"&nbsp;&nbsp;🧠 Standard Score: {score}%")
                     else:
-                        # Reuse existing score if we are skipping Pass 1 rerun
-                        # We might need to fetch the standard score if the current state is Deep
                         if exist.get('strategy') == 'Deep' and exist.get('standard_score'):
                              score = exist['standard_score']
                              add_log(f"&nbsp;&nbsp;ℹ️ Using existing Standard Score: {score}% (Pass 1 Skipped)")
@@ -196,20 +191,17 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                              add_log(f"&nbsp;&nbsp;ℹ️ Using existing Match Score: {score}% (Pass 1 Skipped)")
 
                     # Step 2: Deep Match
-                    # Check based on the (potentially reused) score
                     is_already_deep = exist and exist['strategy'] == 'Deep'
                     qualifies_for_deep = score >= deep_match_thresh
 
                     if auto_deep and qualifies_for_deep:
                         if is_already_deep and not force_rerun_pass1:
-                             # Use existing deep match
                              mid = exist['id']
                              add_log("&nbsp;&nbsp;ℹ️ Deep match already exists. Skipping.")
                         else:
                             add_log(f"&nbsp;&nbsp;🔬 Threshold met ({score}%). Triggering Deep Scan...")
                             jd_c = json.loads(job['criteria'])
 
-                            # Build criteria lists
                             priority_reqs = []
                             if 'must_have_skills' in jd_c and isinstance(jd_c['must_have_skills'], list):
                                 priority_reqs.extend([('must_have_skills', v) for v in jd_c['must_have_skills']])
@@ -228,9 +220,7 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                             processed_count = 0
 
                             for rt, rv in priority_reqs:
-                                # Stop Check (Granular)
                                 if st.session_state.stop_requested: break
-
                                 processed_count += 1
                                 add_log(f"&nbsp;&nbsp;&nbsp;&nbsp;🔎 Checking {rt.replace('_', ' ').title()}: <i>{str(rv)[:40]}...</i>")
                                 task_display.warning(f"🔬 Deep Scan: Checking {rt.upper()} (Priority)...")
@@ -255,7 +245,6 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                             sf, df, rf = client.generate_final_decision(res['filename'], details, strategy="Deep")
 
                             std_score_saved = exist.get('standard_score', score)
-                            # Safe retrieval of standard_reasoning
                             std_reasoning_saved = exist.get('standard_reasoning', exist.get('reasoning'))
 
                             mid = db.save_match(int(job['id']), int(res['id']), {"candidate_name": res['filename'], "match_score": sf, "decision": df, "reasoning": rf, "match_details": details}, mid, strategy="Deep", standard_score=std_score_saved, standard_reasoning=std_reasoning_saved)
@@ -271,6 +260,7 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
 
     st.session_state.is_running = False
     st.session_state.stop_requested = False
+    st.session_state.rerun_config = None # Reset pending rerun config
     time.sleep(1)
     st.rerun()
 
@@ -281,6 +271,19 @@ def start_run_callback():
 
 def stop_run_callback():
     st.session_state.stop_requested = True
+
+def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_rerun):
+    """Stores config in session state to be picked up by the main loop."""
+    st.session_state.rerun_config = {
+        "run_name": name,
+        "jobs": jobs_df,
+        "resumes": resumes_df,
+        "thresh": thresh,
+        "auto": auto_deep,
+        "force": force_rerun
+    }
+    st.session_state.is_running = True
+    st.session_state.stop_requested = False
 
 # --- HEADER & SETTINGS ---
 col_head, col_set = st.columns([6, 1])
@@ -446,10 +449,9 @@ with tab2:
             c1, c2 = st.columns([2, 2])
             auto_deep = c1.checkbox("✨ Auto-Upgrade to Deep Match", value=True, help="Automatically run a Deep Scan if the Standard Match score is high enough.")
 
-            # --- AUTO-NAMING IMPROVEMENT ---
+            # Auto-Naming
             default_run_name = f"Run {datetime.datetime.now().strftime('%H:%M')}"
             if len(sel_j) == 1:
-                # Use first selected job filename (minus extension) as base
                 base_job = sel_j.iloc[0]['filename'].rsplit('.', 1)[0]
                 default_run_name = f"Run: {base_job}"
             elif len(sel_j) > 1:
@@ -465,11 +467,11 @@ with tab2:
             f_rerun = c3.toggle("Force Full Re-run (Overwrite Pass 1)", help="Check this to discard previous Fast Scan results and re-analyze everything from scratch.")
 
             # --- START / STOP LOGIC ---
-            if st.session_state.is_running:
+            if st.session_state.is_running and st.session_state.rerun_config is None: # Only show stop if running from Tab 2
                 c4.button("🛑 STOP ANALYSIS", type="primary", use_container_width=True, on_click=stop_run_callback)
-                # EXECUTE RUN LOGIC DIRECTLY IF STATE IS RUNNING
+                # EXECUTE LOGIC
                 run_analysis_batch(run_name, sel_j, sel_r, deep_match_thresh, auto_deep, force_rerun_pass1=f_rerun)
-            else:
+            elif not st.session_state.is_running:
                 c4.button("🚀 START ANALYSIS", type="primary", use_container_width=True, on_click=start_run_callback)
 
 # --- TAB 3: MATCH RESULTS ---
@@ -481,8 +483,6 @@ with tab3:
         run_row = runs[runs['label'] == sel_run_label].iloc[0]
         run_id = int(run_row['id'])
         run_name_base = run_row['name']
-
-        # Get threshold used for this run (handle legacy runs without threshold)
         run_threshold = int(run_row['threshold']) if 'threshold' in run_row and pd.notna(run_row['threshold']) else 50
 
         # --- RERUN SECTION ---
@@ -490,11 +490,7 @@ with tab3:
             st.info(f"Re-running will process the JDs and Resumes linked to this batch using new parameters.")
 
             c_r1, c_r2 = st.columns(2)
-
-            # 1. New Batch Name
-            rerun_name = c_r1.text_input("New Batch Name", value=f"Rerun of {run_name_base}")
-
-            # 2. Configs
+            rerun_name_input = c_r1.text_input("New Batch Name", value=f"Rerun of {run_name_base}")
             new_auto_deep = c_r1.checkbox("Auto-Upgrade to Deep Match", value=True, key="rerun_auto")
             new_thresh = 50
             if new_auto_deep:
@@ -502,7 +498,6 @@ with tab3:
 
             f_rerun_p1 = st.checkbox("Force Re-run Pass 1 (Standard Match)", value=False, help="If unchecked, existing standard match scores will be reused to save time.")
 
-            # Re-fetch the JDs and Resumes associated with this run
             linked_data = db.fetch_dataframe(f"""
                 SELECT DISTINCT m.job_id, m.resume_id
                 FROM run_matches rm JOIN matches m ON rm.match_id = m.id
@@ -510,10 +505,8 @@ with tab3:
             """)
 
             if not linked_data.empty:
-                # Fetch full objects
                 job_ids = list(linked_data['job_id'].unique())
                 res_ids = list(linked_data['resume_id'].unique())
-
                 j_ids_str = ",".join(map(str, job_ids))
                 r_ids_str = ",".join(map(str, res_ids))
 
@@ -521,12 +514,14 @@ with tab3:
                 rerun_r = db.fetch_dataframe(f"SELECT * FROM resumes WHERE id IN ({r_ids_str})")
 
                 # --- START / STOP LOGIC FOR RERUN ---
-                if st.session_state.is_running:
+                if st.session_state.is_running and st.session_state.rerun_config:
                     st.button("🛑 STOP RERUN", type="primary", on_click=stop_run_callback)
-                    # EXECUTE LOGIC
-                    run_analysis_batch(rerun_name, rerun_j, rerun_r, new_thresh, new_auto_deep, force_rerun_pass1=f_rerun_p1)
-                else:
-                    st.button("🚀 Rerun Batch", type="primary", on_click=start_run_callback)
+                    # EXECUTE LOGIC USING CONFIG
+                    cfg = st.session_state.rerun_config
+                    run_analysis_batch(cfg['run_name'], cfg['jobs'], cfg['resumes'], cfg['thresh'], cfg['auto'], cfg['force'])
+                elif not st.session_state.is_running:
+                    # Lambda/Partial replacement for callback to pass args
+                    st.button("🚀 Rerun Batch", type="primary", on_click=prepare_rerun_callback, args=(rerun_name_input, rerun_j, rerun_r, new_thresh, new_auto_deep, f_rerun_p1))
             else:
                 st.error("Could not find original JDs/Resumes for this run.")
 
@@ -576,7 +571,6 @@ with tab3:
                             resp = client.evaluate_standard(action_data['resume_text'], action_data['job_criteria'], action_data['resume_profile'])
                             data = document_utils.clean_json_response(resp)
                             if data:
-                                # FIX: Also ensure reasoning is string when re-running single match
                                 raw_reasoning = data.get('reasoning', "No reasoning provided.")
                                 std_reasoning = "\n".join(raw_reasoning) if isinstance(raw_reasoning, list) else str(raw_reasoning)
 
