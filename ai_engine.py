@@ -44,6 +44,20 @@ class AIEngine:
         Extracts structured profile from Resume.
         Enforces strict JSON formatting (Double Quotes).
         """
+        # --- SAFETY GUARD ---
+        # Prevent hallucination (John Doe) if OCR failed or text is empty
+        if not text or len(text.strip()) < 50 or text.startswith("[OCR Error") or text.startswith("Error"):
+            return {
+                "candidate_name": "Error: Unreadable Resume",
+                "email": "",
+                "phone": "",
+                "extracted_skills": [],
+                "years_experience": 0,
+                "education_summary": "Could not extract text. PDF might be an image without OCR support.",
+                "work_history": [],
+                "error_flag": True
+            }
+
         prompt = f"""
         You are an expert Technical Recruiter. Parse the resume text below into a structured JSON profile.
 
@@ -91,8 +105,22 @@ class AIEngine:
             return {"candidate_name": "Error", "error_flag": True}
 
     def evaluate_standard(self, resume_text, jd_criteria, resume_profile):
-        system_prompt = "Evaluate candidate in one pass. Return JSON: {candidate_name, match_score, decision, reasoning}"
-        user_prompt = f"JD: {jd_criteria}\nResume: {resume_text[:12000]}"
+        system_prompt = """
+        You are a very strict Technical Recruiter. Your job is to filter out candidates who do not strongly match the requirements.
+
+        STRICT SCORING RULES (0-100):
+        1. CRITICAL: If the candidate lacks "Must Have" skills, the score MUST be below 50.
+        2. EXPERIENCE: If the candidate has significantly fewer years of experience than required, deduct 20 points immediately.
+        3. DEPTH: Mentioning a keyword is not enough. Look for evidence of usage in Work History.
+
+        SCORING TIERS:
+        - 0-59: Reject. Missing key skills or experience.
+        - 60-79: Review. Has most skills, but maybe lacks depth or specific domain knowledge.
+        - 80-100: Strong Match. Exceeds requirements.
+
+        Return JSON: {candidate_name, match_score, decision, reasoning, missing_skills}
+        """
+        user_prompt = f"JD CRITERIA:\n{jd_criteria}\n\nRESUME PROFILE:\n{resume_profile}\n\nRESUME TEXT:\n{resume_text[:12000]}"
         try:
             resp = self.client.chat.completions.create(
                 model="local-model", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], temperature=0.1
