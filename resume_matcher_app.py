@@ -11,7 +11,7 @@ import document_utils
 import ai_engine
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="AI Recruiting Workbench (Pro)", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="TalentScout AI", page_icon="🚀", layout="wide")
 
 # Init Session State
 if "lm_base_url" not in st.session_state: st.session_state.lm_base_url = "http://localhost:1234/v1"
@@ -90,7 +90,6 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
                 score_color = "#842029"
 
             # Case 2: Good score, but below the specific run threshold
-            # This means the LLM liked it (score > 50), but it wasn't good enough for auto-deep scan
             elif score < threshold:
                 decision_label = "Potential (Below Threshold)"
                 badge_color = "color: #555; background-color: #e2e3e5;" # Grey/Neutral
@@ -181,13 +180,6 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                 qualifies_for_deep = score >= deep_match_thresh
 
                 if auto_deep and qualifies_for_deep:
-                    # We run Deep Match if:
-                    # A) It hasn't been run yet (is_already_deep is False)
-                    # B) OR We are forcing a rerun of Pass 1 (implies we should probably refresh Deep too,
-                    #    though user might just want Pass 1... but usually deep follows fresh standard)
-                    # For this specific request, let's say we only rerun Deep if it doesn't exist
-                    # OR if we just refreshed standard and it qualifies.
-
                     if is_already_deep and not force_rerun_pass1:
                          # Use existing deep match
                          mid = exist['id']
@@ -251,6 +243,26 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
         status.update(label="Complete!", state="complete")
         time.sleep(1)
         st.rerun()
+
+# --- HEADER & SETTINGS ---
+col_head, col_set = st.columns([6, 1])
+with col_head: st.title("🚀 TalentScout: Intelligent Resume Screening")
+with col_set:
+    with st.popover("⚙️ Settings"):
+        st.write("### Configuration")
+        st.text_input("LM URL", key="lm_base_url")
+        st.text_input("API Key", key="lm_api_key")
+        st.checkbox("Enable OCR", key="ocr_enabled")
+        if st.button("🗑️ Reset DB", type="primary"):
+            db.execute_query("DELETE FROM matches")
+            db.execute_query("DELETE FROM runs")
+            db.execute_query("DELETE FROM run_matches")
+            db.execute_query("DELETE FROM jobs")
+            db.execute_query("DELETE FROM resumes")
+            st.session_state.processed_files = set()
+            st.success("Reset Complete")
+            time.sleep(1)
+            st.rerun()
 
 # --- TABS DEFINITION ---
 tab1, tab2, tab3 = st.tabs(["1. Manage Data", "2. Run Analysis", "3. Match Results"])
