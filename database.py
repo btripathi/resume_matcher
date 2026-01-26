@@ -55,9 +55,15 @@ class DBManager:
                       FOREIGN KEY(job_id) REFERENCES jobs(id),
                       FOREIGN KEY(resume_id) REFERENCES resumes(id))''')
 
+        # NEW: threshold column for runs
+        try:
+            c.execute("ALTER TABLE runs ADD COLUMN threshold INTEGER DEFAULT 50")
+        except:
+            pass
+
         c.execute('''CREATE TABLE IF NOT EXISTS runs
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      name TEXT, job_id INTEGER, created_at TIMESTAMP)''')
+                      name TEXT, job_id INTEGER, threshold INTEGER, created_at TIMESTAMP)''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS run_matches
                      (run_id INTEGER, match_id INTEGER,
@@ -145,11 +151,11 @@ class DBManager:
         conn.close()
         return new_id
 
-    def create_run(self, name, job_id=None):
+    def create_run(self, name, job_id=None, threshold=50):
         conn = self.get_connection()
         c = conn.cursor()
-        c.execute("INSERT INTO runs (name, job_id, created_at) VALUES (?, ?, ?)",
-                  (name, job_id, datetime.datetime.now().isoformat()))
+        c.execute("INSERT INTO runs (name, job_id, threshold, created_at) VALUES (?, ?, ?, ?)",
+                  (name, job_id, threshold, datetime.datetime.now().isoformat()))
         run_id = c.lastrowid
         conn.commit()
         conn.close()
