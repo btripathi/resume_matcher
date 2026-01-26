@@ -259,32 +259,29 @@ with tab2:
 
     with col_r:
         st.markdown("#### 2. Select Resumes")
-        f_mode = st.radio("Selection Mode", ["Manual / All", "Target Candidates (Pass 2)"], horizontal=True)
-        pass1_thresh = st.slider("Pass 1 Min Score", 0, 100, 50)
-
-        target_ids = None
-        if f_mode == "Target Candidates (Pass 2)" and not sel_j.empty:
-            jids = f"({','.join(map(str, sel_j['id'].tolist()))})"
-            m_res = db.fetch_dataframe(f"SELECT DISTINCT resume_id FROM matches WHERE match_score >= {pass1_thresh} AND job_id IN {jids}")
-            target_ids = m_res['resume_id'].tolist() if not m_res.empty else []
-            st.success(f"🎯 {len(target_ids)} candidates meet criteria.")
-            sel_r = r_data[r_data['id'].isin(target_ids)] if target_ids else pd.DataFrame()
-        else:
-            sel_r = r_data if st.checkbox("Select All Resumes", value=True) else r_data[r_data['filename'].isin(st.multiselect("Choose Resumes", r_data['filename']))]
+        # Removed "Selection Mode" radio button.
+        # Simplified logic: User manually selects OR selects all.
+        # This removes the redundant slider confusion.
+        sel_r = r_data if st.checkbox("Select All Resumes", value=True) else r_data[r_data['filename'].isin(st.multiselect("Choose Resumes", r_data['filename']))]
 
     if not sel_j.empty and not sel_r.empty:
         st.divider()
         with st.container(border=True):
-            st.markdown("#### ⚙️ Matching Configuration")
-            c1, c2 = st.columns([2, 2])
-            strat = c1.radio("Matching Strategy", ["Standard (Fast)", "Deep Match (Automated 2-Pass)"])
-            run_name = c2.text_input("Run Batch Name", value=f"{strat.split()[0]} {datetime.datetime.now().strftime('%H:%M')}")
+            st.markdown("#### ⚙️ Smart Match Configuration")
 
-            if strat == "Deep Match (Automated 2-Pass)":
-                pass1_thresh = st.slider("Deep Match Entry Threshold (%)", 0, 100, 50, help="Pass 2 is skipped if Pass 1 score is lower than this.")
+            c1, c2 = st.columns([2, 2])
+
+            # Simplified Strategy Selection
+            auto_deep = c1.checkbox("✨ Auto-Upgrade to Deep Match", value=True, help="Automatically run a Deep Scan if the Standard Match score is high enough.")
+
+            run_name = c2.text_input("Run Batch Name", value=f"Run {datetime.datetime.now().strftime('%H:%M')}")
+
+            deep_match_thresh = 50
+            if auto_deep:
+                deep_match_thresh = st.slider("Deep Match Auto-Trigger Threshold (%)", 0, 100, 50, help="If Standard Match score >= this value, the system will automatically run the Deep Scan.")
 
             c3, c4, c5 = st.columns([1, 2, 2])
-            f_rerun = c3.toggle("Overwrite existing results?")
+            f_rerun = c3.toggle("Force Full Re-run", help="Ignore existing matches and re-analyze everything.")
 
             if c4.button("🚀 START ANALYSIS", type="primary", use_container_width=True):
                 rid = db.create_run(run_name)
@@ -302,7 +299,6 @@ with tab2:
 
                     def add_log(message):
                         ts = datetime.datetime.now().strftime("%H:%M:%S")
-                        # Add new message to top of list
                         log_lines.insert(0, f"<div style='margin-bottom:2px;'><span style='color:#888; font-size:0.8em;'>[{ts}]</span> {message}</div>")
 
                         html_content = f"""
@@ -326,28 +322,40 @@ with tab2:
                             mid = exist['id'] if exist else None
                             score = exist['match_score'] if exist else 0
 
-                            # preserve standard score if it exists and we aren't rerunning standard
-                            std_score_saved = exist['standard_score'] if exist and exist['standard_score'] is not None else None
-                            std_reasoning_saved = exist['standard_reasoning'] if exist and exist['standard_reasoning'] else None
+                            # Logic:
+                            # 1. Always ensure we have at least a Standard Match (Pass 1).
+                            # 2. If Auto-Deep is ON and Score >= Thresh, ensure we have a Deep Match.
 
-                            # If we are upgrading from Standard to Deep, we might need to grab the 'reasoning' from the current Standard match to save it as 'standard_reasoning'
-                            if exist and exist['strategy'] == 'Standard' and not std_reasoning_saved:
-                                std_reasoning_saved = exist['reasoning']
+                            # Step 1: Standard Pass (Fast Scan)
+                            # Run if: No match exists OR we are forcing a rerun
+                            should_run_standard = (not exist) or f_rerun
 
-                            # 1. Standard Pass
-                            if not exist or (exist['strategy'] != 'Deep' and score < pass1_thresh) or f_rerun:
+                            if should_run_standard:
                                 task_display.info(f"🧠 Pass 1: Holistic scan for **{current_resume_name}**...")
                                 data = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
                                 if data:
-                                    mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard", standard_score=data['match_score'], standard_reasoning=data['reasoning'])
-                                    score = data['match_score']
-                                    std_score_saved = score # Update local tracker
-                                    std_reasoning_saved = data['reasoning'] # Capture new reasoning
-                                    add_log(f"&nbsp;&nbsp;🧠 Standard Score: {score}%")
+                                    # Preserve reasoning if updating
+                                    std_reasoning = data.get('reasoning', "No reasoning provided.")
 
-                            # 2. Deep Weighted Pass (Optimized)
-                            if strat == "Deep Match (Automated 2-Pass)" and score >= pass1_thresh:
-                                if exist and exist['strategy'] == 'Deep' and not f_rerun:
+                                    # Save Pass 1
+                                    mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard", standard_score=data['match_score'], standard_reasoning=std_reasoning)
+                                    score = data['match_score']
+
+                                    # Update 'exist' so Deep Match logic knows the latest state
+                                    exist = db.get_match_if_exists(int(job['id']), int(res['id']))
+                                    add_log(f"&nbsp;&nbsp;🧠 Standard Score: {score}%")
+                            else:
+                                add_log(f"&nbsp;&nbsp;ℹ️ Using existing Standard Score: {score}%")
+
+                            # Step 2: Deep Match (Pass 2)
+                            # Run if: Auto-Deep is enabled AND Score >= Threshold
+                            # Skip if: We already have a Deep Match (unless forced rerun)
+
+                            is_already_deep = exist and exist['strategy'] == 'Deep'
+                            qualifies_for_deep = score >= deep_match_thresh
+
+                            if auto_deep and qualifies_for_deep:
+                                if is_already_deep and not f_rerun:
                                     add_log("&nbsp;&nbsp;ℹ️ Deep match already exists. Skipping.")
                                 else:
                                     add_log(f"&nbsp;&nbsp;🔬 Threshold met ({score}%). Triggering Deep Scan...")
@@ -399,9 +407,16 @@ with tab2:
 
                                     sub_bar.empty()
                                     sf, df, rf = client.generate_final_decision(res['filename'], details, strategy="Deep")
-                                    # SAVE with Strategy="Deep". IMPORTANT: Pass std_score_saved to preserve it.
+
+                                    # Important: Carry over the Standard Reasoning/Score from 'exist' record
+                                    std_score_saved = exist.get('standard_score', score)
+                                    std_reasoning_saved = exist.get('standard_reasoning', exist.get('reasoning'))
+
                                     mid = db.save_match(int(job['id']), int(res['id']), {"candidate_name": res['filename'], "match_score": sf, "decision": df, "reasoning": rf, "match_details": details}, mid, strategy="Deep", standard_score=std_score_saved, standard_reasoning=std_reasoning_saved)
                                     add_log(f"&nbsp;&nbsp;🏁 <b>Deep Match Final: {sf}% ({df})</b>")
+
+                            elif auto_deep and not qualifies_for_deep:
+                                add_log(f"&nbsp;&nbsp;⏭️ Score ({score}%) below threshold ({deep_match_thresh}%). Skipping Deep Match.")
 
                             if mid: db.link_run_match(rid, mid)
                             master_bar.progress(count/total)
