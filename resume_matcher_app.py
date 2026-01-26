@@ -414,6 +414,11 @@ with tab3:
             st.info(f"Re-running will process the JDs and Resumes linked to this batch using new parameters.")
 
             c_r1, c_r2 = st.columns(2)
+
+            # 1. New Batch Name
+            rerun_name = c_r1.text_input("New Batch Name", value=f"Rerun of {run_row['name']}")
+
+            # 2. Configs
             new_auto_deep = c_r1.checkbox("Auto-Upgrade to Deep Match", value=True, key="rerun_auto")
             new_thresh = 50
             if new_auto_deep:
@@ -442,7 +447,8 @@ with tab3:
                     rerun_j = db.fetch_dataframe(f"SELECT * FROM jobs WHERE id IN ({j_ids_str})")
                     rerun_r = db.fetch_dataframe(f"SELECT * FROM resumes WHERE id IN ({r_ids_str})")
 
-                    run_analysis_batch(f"Rerun of {run_row['name']}", rerun_j, rerun_r, new_thresh, new_auto_deep, force_rerun_pass1=f_rerun_p1)
+                    # Pass the CUSTOM name from the text input
+                    run_analysis_batch(rerun_name, rerun_j, rerun_r, new_thresh, new_auto_deep, force_rerun_pass1=f_rerun_p1)
                 else:
                     st.error("Could not find original JDs/Resumes for this run.")
 
