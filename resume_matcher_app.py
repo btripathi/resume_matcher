@@ -92,6 +92,7 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
                 score_color = "#842029"
 
             # Case 2: Good score, but below the specific run threshold
+            # This means the LLM liked it (score > 50), but it wasn't good enough for auto-deep scan
             elif score < threshold:
                 decision_label = "Potential (Below Threshold)"
                 badge_color = "color: #555; background-color: #e2e3e5;" # Grey/Neutral
@@ -268,8 +269,17 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
             status.update(label="Complete!", state="complete")
 
     st.session_state.is_running = False
+    st.session_state.stop_requested = False
     time.sleep(1)
     st.rerun()
+
+# --- CALLBACKS ---
+def start_run_callback():
+    st.session_state.is_running = True
+    st.session_state.stop_requested = False
+
+def stop_run_callback():
+    st.session_state.stop_requested = True
 
 # --- TABS DEFINITION ---
 tab1, tab2, tab3 = st.tabs(["1. Manage Data", "2. Run Analysis", "3. Match Results"])
@@ -415,12 +425,11 @@ with tab2:
 
             # --- START / STOP LOGIC ---
             if st.session_state.is_running:
-                if c4.button("🛑 STOP ANALYSIS", type="primary", use_container_width=True):
-                    st.session_state.stop_requested = True
-                    st.warning("Stopping at next checkpoint...")
+                c4.button("🛑 STOP ANALYSIS", type="primary", use_container_width=True, on_click=stop_run_callback)
+                # EXECUTE RUN LOGIC DIRECTLY IF STATE IS RUNNING
+                run_analysis_batch(run_name, sel_j, sel_r, deep_match_thresh, auto_deep, force_rerun_pass1=f_rerun)
             else:
-                if c4.button("🚀 START ANALYSIS", type="primary", use_container_width=True):
-                    run_analysis_batch(run_name, sel_j, sel_r, deep_match_thresh, auto_deep, force_rerun_pass1=f_rerun)
+                c4.button("🚀 START ANALYSIS", type="primary", use_container_width=True, on_click=start_run_callback)
 
 # --- TAB 3: MATCH RESULTS ---
 with tab3:
@@ -458,30 +467,26 @@ with tab3:
                 WHERE rm.run_id = {run_id}
             """)
 
-            # --- START / STOP LOGIC FOR RERUN ---
-            if st.session_state.is_running:
-                if st.button("🛑 STOP RERUN", type="primary"):
-                    st.session_state.stop_requested = True
-                    st.warning("Stopping at next checkpoint...")
+            if not linked_data.empty:
+                # Fetch full objects
+                job_ids = list(linked_data['job_id'].unique())
+                res_ids = list(linked_data['resume_id'].unique())
+
+                j_ids_str = ",".join(map(str, job_ids))
+                r_ids_str = ",".join(map(str, res_ids))
+
+                rerun_j = db.fetch_dataframe(f"SELECT * FROM jobs WHERE id IN ({j_ids_str})")
+                rerun_r = db.fetch_dataframe(f"SELECT * FROM resumes WHERE id IN ({r_ids_str})")
+
+                # --- START / STOP LOGIC FOR RERUN ---
+                if st.session_state.is_running:
+                    st.button("🛑 STOP RERUN", type="primary", on_click=stop_run_callback)
+                    # EXECUTE LOGIC
+                    run_analysis_batch(rerun_name, rerun_j, rerun_r, new_thresh, new_auto_deep, force_rerun_pass1=f_rerun_p1)
+                else:
+                    st.button("🚀 Rerun Batch", type="primary", on_click=start_run_callback)
             else:
-                if st.button("🚀 Rerun Batch", type="primary"):
-                    if not linked_data.empty:
-                        # Fetch full objects
-                        job_ids = list(linked_data['job_id'].unique())
-                        res_ids = list(linked_data['resume_id'].unique())
-
-                        # FIX: Handle tuple creation safely for 1 or more items to avoid SQL syntax errors
-                        # Convert to string manually to avoid numpy int64 issues
-                        j_ids_str = ",".join(map(str, job_ids))
-                        r_ids_str = ",".join(map(str, res_ids))
-
-                        rerun_j = db.fetch_dataframe(f"SELECT * FROM jobs WHERE id IN ({j_ids_str})")
-                        rerun_r = db.fetch_dataframe(f"SELECT * FROM resumes WHERE id IN ({r_ids_str})")
-
-                        # Pass the CUSTOM name from the text input
-                        run_analysis_batch(rerun_name, rerun_j, rerun_r, new_thresh, new_auto_deep, force_rerun_pass1=f_rerun_p1)
-                    else:
-                        st.error("Could not find original JDs/Resumes for this run.")
+                st.error("Could not find original JDs/Resumes for this run.")
 
         # --- DELETE RUN ---
         if st.button("🗑️ Delete Run History", type="secondary"):
