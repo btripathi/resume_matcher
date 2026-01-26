@@ -21,9 +21,6 @@ if "processed_files" not in st.session_state: st.session_state.processed_files =
 if "is_running" not in st.session_state: st.session_state.is_running = False  # Track run state
 if "stop_requested" not in st.session_state: st.session_state.stop_requested = False # Track stop request
 
-# State for Rerun Execution (to break out of expander)
-if "rerun_config" not in st.session_state: st.session_state.rerun_config = None
-
 # Initialize dynamic keys for file uploaders to allow clearing them
 if "jd_uploader_key" not in st.session_state: st.session_state.jd_uploader_key = 0
 if "res_uploader_key" not in st.session_state: st.session_state.res_uploader_key = 0
@@ -67,6 +64,7 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
     rows = ""
     for idx, row in df.iterrows():
         score = row['match_score']
+        job_name = row.get('job_name', 'Unknown Role')
 
         # --- DECISION LOGIC ---
         if is_deep:
@@ -87,21 +85,14 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
                 score_color = "#842029"
         else:
             # For Standard Matches (Pass 1 Only):
-
-            # Case 1: Really low score (Auto-Reject)
             if score < 50:
                 decision_label = "Reject (Low Fit)"
                 badge_color = "color: #842029; background-color: #f8d7da;" # Red
                 score_color = "#842029"
-
-            # Case 2: Good score, but below the specific run threshold
-            # This means the LLM liked it (score > 50), but it wasn't good enough for auto-deep scan
             elif score < threshold:
                 decision_label = "Potential (Below Threshold)"
                 badge_color = "color: #555; background-color: #e2e3e5;" # Grey/Neutral
                 score_color = "#555"
-
-            # Case 3: Score >= Threshold (but for some reason wasn't upgraded)
             else:
                 decision_label = "Ready for Deep Scan"
                 badge_color = "color: #084298; background-color: #cfe2ff;" # Blue
@@ -111,26 +102,35 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
         if 'standard_score' in row and pd.notna(row['standard_score']) and row['strategy'] == 'Deep':
             std_score_display = f"<br><span style='font-size: 10px; color: #666;'>Pass 1: {int(row['standard_score'])}%</span>"
 
-        rows += f'<tr><td style="font-weight: 600;">{row["candidate_name"]}<br><span style="font-size: 11px; color: #666;">{row["res_name"]}</span></td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%{std_score_display}</td><td><span class="status-badge" style="{badge_color}">{decision_label}</span></td><td style="font-size: 13px; color: #444;">{row["reasoning"]}</td></tr>'
+        # Only show Job Name if the dataframe has mixed jobs, otherwise it's redundant if grouped
+        job_display = f"<br><span style='font-size: 11px; color: #007bff; font-weight:bold;'>Job: {job_name}</span>" if 'job_name' in df.columns and df['job_name'].nunique() > 1 else ""
+
+        rows += f'<tr><td style="font-weight: 600;">{row["candidate_name"]}<br><span style="font-size: 11px; color: #666;">{row["res_name"]}</span>{job_display}</td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%{std_score_display}</td><td><span class="status-badge" style="{badge_color}">{decision_label}</span></td><td style="font-size: 13px; color: #444;">{row["reasoning"]}</td></tr>'
     return f"""<style>.candidate-table {{width: 100%; border-collapse: collapse; margin-bottom: 20px;}}.candidate-table th {{background-color: #f8f9fa; padding: 12px; text-align: left;}}.candidate-table td {{padding: 12px; border-bottom: 1px solid #dee2e6; vertical-align: top;}}.status-badge {{padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px;}}</style><table class="candidate-table"><thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th></tr></thead><tbody>{rows}</tbody></table>"""
+
+def generate_matrix_view(df):
+    """Generates a pivot table view for multi-job analysis."""
+    if df.empty: return
+
+    # Pivot: Resume (Index) x Job (Column) = Score (Value)
+    # Ensure duplicates are handled (though distinct matches shouldn't have dupes)
+    pivot_df = df.pivot_table(index='candidate_name', columns='job_name', values='match_score', aggfunc='max')
+
+    st.markdown("### 📊 Cross-Job Match Matrix")
+    st.caption("Quickly compare candidate scores across all jobs in this run.")
+    st.dataframe(pivot_df.style.background_gradient(cmap='RdYlGn', vmin=0, vmax=100).format("{:.0f}%"), use_container_width=True)
 
 # --- CORE MATCHING LOGIC ---
 def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, force_rerun_pass1):
-    """
-    Reusable matching loop for both Tab 2 and Tab 3.
-    """
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
 
-    # Create Run with Threshold
     rid = db.create_run(run_name, threshold=deep_match_thresh)
     total = len(jobs) * len(resumes)
     count = 0
 
-    # Set Running State
     st.session_state.is_running = True
     st.session_state.stop_requested = False
 
-    # Container for logs and progress to allow clearing/updating
     progress_container = st.container()
 
     with progress_container:
@@ -150,14 +150,12 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
 
             for _, job in jobs.iterrows():
                 for _, res in resumes.iterrows():
-                    # --- STOP CHECK ---
                     if st.session_state.stop_requested:
                         add_log("🛑 **Run stopped by user.**")
                         status.update(label="Stopped", state="error")
                         st.session_state.is_running = False
-                        # Clear rerun config if this was triggered from Tab 3
                         st.session_state.rerun_config = None
-                        st.stop() # Stops Streamlit execution
+                        st.stop()
 
                     count += 1
                     current_resume_name = res['filename']
@@ -177,7 +175,6 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                         if data:
                             raw_reasoning = data.get('reasoning', "No reasoning provided.")
                             std_reasoning = "\n".join(raw_reasoning) if isinstance(raw_reasoning, list) else str(raw_reasoning)
-
                             mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard", standard_score=data['match_score'], standard_reasoning=std_reasoning)
                             score = data['match_score']
                             exist = db.get_match_if_exists(int(job['id']), int(res['id']))
@@ -260,7 +257,7 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
 
     st.session_state.is_running = False
     st.session_state.stop_requested = False
-    st.session_state.rerun_config = None # Reset pending rerun config
+    st.session_state.rerun_config = None
     time.sleep(1)
     st.rerun()
 
@@ -273,7 +270,6 @@ def stop_run_callback():
     st.session_state.stop_requested = True
 
 def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_rerun):
-    """Stores config in session state to be picked up by the main loop."""
     st.session_state.rerun_config = {
         "run_name": name,
         "jobs": jobs_df,
@@ -449,7 +445,6 @@ with tab2:
             c1, c2 = st.columns([2, 2])
             auto_deep = c1.checkbox("✨ Auto-Upgrade to Deep Match", value=True, help="Automatically run a Deep Scan if the Standard Match score is high enough.")
 
-            # Auto-Naming
             default_run_name = f"Run {datetime.datetime.now().strftime('%H:%M')}"
             if len(sel_j) == 1:
                 base_job = sel_j.iloc[0]['filename'].rsplit('.', 1)[0]
@@ -466,10 +461,8 @@ with tab2:
             c3, c4, c5 = st.columns([1, 2, 2])
             f_rerun = c3.toggle("Force Full Re-run (Overwrite Pass 1)", help="Check this to discard previous Fast Scan results and re-analyze everything from scratch.")
 
-            # --- START / STOP LOGIC ---
-            if st.session_state.is_running and st.session_state.rerun_config is None: # Only show stop if running from Tab 2
+            if st.session_state.is_running and st.session_state.rerun_config is None:
                 c4.button("🛑 STOP ANALYSIS", type="primary", use_container_width=True, on_click=stop_run_callback)
-                # EXECUTE LOGIC
                 run_analysis_batch(run_name, sel_j, sel_r, deep_match_thresh, auto_deep, force_rerun_pass1=f_rerun)
             elif not st.session_state.is_running:
                 c4.button("🚀 START ANALYSIS", type="primary", use_container_width=True, on_click=start_run_callback)
@@ -513,14 +506,11 @@ with tab3:
                 rerun_j = db.fetch_dataframe(f"SELECT * FROM jobs WHERE id IN ({j_ids_str})")
                 rerun_r = db.fetch_dataframe(f"SELECT * FROM resumes WHERE id IN ({r_ids_str})")
 
-                # --- START / STOP LOGIC FOR RERUN ---
                 if st.session_state.is_running and st.session_state.rerun_config:
                     st.button("🛑 STOP RERUN", type="primary", on_click=stop_run_callback)
-                    # EXECUTE LOGIC USING CONFIG
                     cfg = st.session_state.rerun_config
                     run_analysis_batch(cfg['run_name'], cfg['jobs'], cfg['resumes'], cfg['thresh'], cfg['auto'], cfg['force'])
                 elif not st.session_state.is_running:
-                    # Lambda/Partial replacement for callback to pass args
                     st.button("🚀 Rerun Batch", type="primary", on_click=prepare_rerun_callback, args=(rerun_name_input, rerun_j, rerun_r, new_thresh, new_auto_deep, f_rerun_p1))
             else:
                 st.error("Could not find original JDs/Resumes for this run.")
@@ -542,25 +532,70 @@ with tab3:
         if not results.empty:
             st.caption(f"Results showing against Deep Match Threshold of **{run_threshold}%** used in this run.")
 
-            # --- SPLIT TABLES: DEEP vs STANDARD ---
+            # --- MATRIX VIEW ---
+            unique_jobs = results['job_id'].nunique()
+            if unique_jobs > 1:
+                generate_matrix_view(results)
+                st.divider()
+
+            # --- SPLIT TABLES: DEEP vs STANDARD (GROUPED BY JOB) ---
+            unique_job_names = results['job_name'].unique()
+
             deep_df = results[results['strategy'] == 'Deep']
             std_df = results[results['strategy'] != 'Deep']
 
             st.markdown(f"### ✨ Deep Matches for {run_name_base}")
-            st.markdown(generate_candidate_list_html(deep_df, threshold=run_threshold, is_deep=True), unsafe_allow_html=True)
+            if deep_df.empty:
+                st.info("No candidates qualified for Deep Match in this run.")
+            else:
+                if unique_jobs > 1:
+                    tabs = st.tabs(list(unique_job_names))
+                    for i, job in enumerate(unique_job_names):
+                        with tabs[i]:
+                            job_subset = deep_df[deep_df['job_name'] == job]
+                            st.markdown(generate_candidate_list_html(job_subset, threshold=run_threshold, is_deep=True), unsafe_allow_html=True)
+                else:
+                    st.markdown(generate_candidate_list_html(deep_df, threshold=run_threshold, is_deep=True), unsafe_allow_html=True)
 
             st.divider()
+
             st.markdown(f"### 🧠 Standard Matches (Pass 1 Only)")
-            st.markdown(generate_candidate_list_html(std_df, threshold=run_threshold, is_deep=False), unsafe_allow_html=True)
+            if std_df.empty:
+                st.info("All candidates in this run were upgraded to Deep Match.")
+            else:
+                if unique_jobs > 1:
+                    # Create tabs for Standard matches too if multi-job
+                    tabs_std = st.tabs(list(unique_job_names))
+                    for i, job in enumerate(unique_job_names):
+                        with tabs_std[i]:
+                            job_subset = std_df[std_df['job_name'] == job]
+                            st.markdown(generate_candidate_list_html(job_subset, threshold=run_threshold, is_deep=False), unsafe_allow_html=True)
+                else:
+                    st.markdown(generate_candidate_list_html(std_df, threshold=run_threshold, is_deep=False), unsafe_allow_html=True)
 
             st.divider()
-            st.write("### 🔎 Match Evidence Investigator")
-            results['d'] = results['candidate_name'] + " -> " + results['job_name'] + " (" + results['match_score'].astype(str) + "%)"
-            s_match = st.selectbox("Select Candidate to Inspect Details:", results['d'])
 
-            if s_match:
-                row = results[results['d'] == s_match].iloc[0]
-                match_id = int(row['id'])
+            # --- EVIDENCE INVESTIGATOR (FILTERED) ---
+            st.write("### 🔎 Match Evidence Investigator")
+
+            # Filter Logic
+            col_filter1, col_filter2 = st.columns(2)
+
+            # 1. Filter by Job
+            avail_jobs = results['job_name'].unique()
+            sel_job_filter = col_filter1.selectbox("Filter by Job:", avail_jobs, key="inv_job_filter")
+
+            # 2. Filter candidates based on job
+            filtered_candidates = results[results['job_name'] == sel_job_filter]
+
+            # Create label map for the selectbox
+            candidate_map = {f"{row['candidate_name']} ({row['match_score']}%)": row['id'] for idx, row in filtered_candidates.iterrows()}
+
+            sel_candidate_label = col_filter2.selectbox("Select Candidate:", list(candidate_map.keys()), key="inv_cand_filter")
+
+            if sel_candidate_label:
+                match_id = candidate_map[sel_candidate_label]
+                row = results[results['id'] == match_id].iloc[0]
 
                 # Single Match Actions
                 c_act1, c_act2 = st.columns([1, 4])
@@ -573,7 +608,6 @@ with tab3:
                             if data:
                                 raw_reasoning = data.get('reasoning', "No reasoning provided.")
                                 std_reasoning = "\n".join(raw_reasoning) if isinstance(raw_reasoning, list) else str(raw_reasoning)
-
                                 db.save_match(None, None, data, match_id, standard_reasoning=std_reasoning)
                                 status.update(label="Complete!", state="complete")
                                 time.sleep(1)
