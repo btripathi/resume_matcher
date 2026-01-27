@@ -78,9 +78,14 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
     for idx, row in df.iterrows():
         score = row['match_score']
         job_name = row.get('job_name', 'Unknown Role')
+        decision = row.get('decision', 'Reject')
 
         # --- DECISION LOGIC ---
-        if is_deep:
+        if decision == "Parsing Error" or decision == "Error":
+             decision_label = "⚠️ Parsing Failed"
+             badge_color = "color: #721c24; background-color: #f8d7da;" # Darker Red warning
+             score_color = "#dc3545"
+        elif is_deep:
             review_range = max(0, threshold - 20)
             if score >= threshold:
                 decision_label = "Move Forward"
@@ -165,13 +170,23 @@ def generate_matrix_view(df, view_mode="All"):
 
 # --- CORE MATCHING LOGIC ---
 def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, force_rerun_pass1):
+    # --- SAFETY CHECK: Stop immediately if stop requested ---
+    if st.session_state.stop_requested:
+        st.warning("🛑 Analysis process stopped.")
+        st.session_state.is_running = False
+        st.session_state.stop_requested = False
+        st.session_state.rerun_config = None
+        time.sleep(1)
+        st.rerun()
+        return
+
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
     rid = db.create_run(run_name, threshold=deep_match_thresh)
     total = len(jobs) * len(resumes)
     count = 0
 
     st.session_state.is_running = True
-    st.session_state.stop_requested = False
+    # REMOVED: st.session_state.stop_requested = False (This was causing the bug)
 
     progress_container = st.container()
 
@@ -191,6 +206,7 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
 
             for _, job in jobs.iterrows():
                 for _, res in resumes.iterrows():
+                    # --- CHECK STOP REQUEST INSIDE LOOP ---
                     if st.session_state.stop_requested:
                         add_log("🛑 **Run stopped by user.**")
                         status.update(label="Stopped", state="error")
@@ -207,18 +223,44 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                     mid = exist['id'] if exist else None
                     score = exist['match_score'] if exist else 0
 
+                    # --- PARSING ERROR CHECK ---
+                    try:
+                        profile_dict = json.loads(res['profile'])
+                    except:
+                        profile_dict = {}
+
+                    if profile_dict.get('error_flag') or profile_dict.get('candidate_name') == "Parsing Error":
+                        add_log(f"&nbsp;&nbsp;⚠️ Resume Parsing Error. Marking as Failed.")
+                        data = {
+                             "candidate_name": f"Error: {res['filename']}",
+                             "match_score": 0,
+                             "decision": "Parsing Error",
+                             "reasoning": "The resume text could not be extracted or parsed correctly (e.g. Scanned PDF or corrupt file).",
+                             "missing_skills": ["Unreadable Resume Content"]
+                        }
+                        mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard", standard_score=0, standard_reasoning="Parsing Failed")
+                        if mid: db.link_run_match(rid, mid)
+                        master_bar.progress(count/total)
+                        continue # Skip to next candidate
+
                     should_run_standard = (not exist) or force_rerun_pass1
 
                     if should_run_standard:
                         task_display.info(f"🧠 Pass 1: Holistic scan for **{current_resume_name}**...")
                         data = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
-                        if data:
+
+                        # --- ERROR HANDLING FIX: Ensure 'data' is a dict ---
+                        if data and isinstance(data, dict):
                             raw_reasoning = data.get('reasoning', "No reasoning provided.")
                             std_reasoning = "\n".join(raw_reasoning) if isinstance(raw_reasoning, list) else str(raw_reasoning)
                             mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard", standard_score=data['match_score'], standard_reasoning=std_reasoning)
                             score = data['match_score']
                             exist = db.get_match_if_exists(int(job['id']), int(res['id']))
                             add_log(f"&nbsp;&nbsp;🧠 Standard Score: {score}%")
+                        else:
+                            # Handle error case where data is None or not a dict
+                            add_log(f"&nbsp;&nbsp;❌ Analysis failed or returned invalid format for {current_resume_name}. Skipping...")
+                            continue # Skip this candidate if analysis failed
                     else:
                         if exist.get('strategy') == 'Deep' and exist.get('standard_score'):
                              score = exist['standard_score']
@@ -435,7 +477,7 @@ with tab1:
             event_jd = st.dataframe(
                 jds[['filename', 'upload_date']],
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
                 selection_mode="single-row",
                 on_select="rerun"
             )
@@ -587,7 +629,7 @@ with tab1:
             event_res = st.dataframe(
                 filtered_ress[['filename', 'tags', 'upload_date']],
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
                 selection_mode="single-row",
                 on_select="rerun"
             )
@@ -659,7 +701,7 @@ with tab2:
             filter_tag = st.selectbox("Filter by JD Tag (Optional):", ["All"] + sorted(list(all_used_tags)))
 
             if filter_tag != "All":
-                r_data = r_data[r_data['tags'].fillna('').astype(str).apply(lambda x: filter_tag in [t.strip() for t in x.split(',')] for tag in list_filter)]
+                r_data = r_data[r_data['tags'].fillna('').astype(str).apply(lambda x: filter_tag in [t.strip() for t in x.split(',')])]
 
         sel_r = r_data if st.checkbox("Select All Resumes", value=True) else r_data[r_data['filename'].isin(st.multiselect("Choose Resumes", r_data['filename']))]
 
@@ -756,6 +798,17 @@ with tab3:
 
         if not results.empty:
             st.caption(f"Results showing against Deep Match Threshold of **{run_threshold}%** used in this run.")
+
+            # --- EXPORT BUTTON ---
+            col_exp, _ = st.columns([1, 4])
+            with col_exp:
+                csv_data = results.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Results CSV",
+                    data=csv_data,
+                    file_name=f"match_results_{run_id}.csv",
+                    mime="text/csv"
+                )
 
             unique_jobs = results['job_id'].nunique()
             if unique_jobs > 1:

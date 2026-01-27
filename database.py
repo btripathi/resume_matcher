@@ -142,6 +142,13 @@ class DBManager:
         details = json.dumps(data.get('match_details', []))
         missing = json.dumps(data.get('missing_skills', []))
 
+        # --- FIX: Sanitize reasoning to ensure it's a string, not a list ---
+        reasoning_val = data.get('reasoning', "No reasoning provided.")
+        if isinstance(reasoning_val, list):
+            reasoning_val = "\n".join([str(item) for item in reasoning_val])
+        else:
+            reasoning_val = str(reasoning_val)
+
         # Check if job_id or resume_id are None (case when re-running existing match)
         if match_id:
             # Update
@@ -149,17 +156,17 @@ class DBManager:
                 c.execute('''UPDATE matches SET
                             candidate_name=?, match_score=?, standard_score=?, decision=?, reasoning=?, standard_reasoning=?, missing_skills=?, match_details=?, strategy=?
                             WHERE id=?''',
-                        (data['candidate_name'], data['match_score'], standard_score, data['decision'], data['reasoning'], standard_reasoning, missing, details, strategy, match_id))
+                        (data['candidate_name'], data['match_score'], standard_score, data['decision'], reasoning_val, standard_reasoning, missing, details, strategy, match_id))
             else:
                  c.execute('''UPDATE matches SET
                             candidate_name=?, match_score=?, decision=?, reasoning=?, missing_skills=?, match_details=?, strategy=?
                             WHERE id=?''',
-                        (data['candidate_name'], data['match_score'], data['decision'], data['reasoning'], missing, details, strategy, match_id))
+                        (data['candidate_name'], data['match_score'], data['decision'], reasoning_val, missing, details, strategy, match_id))
             new_id = match_id
         else:
             c.execute('''INSERT INTO matches (job_id, resume_id, candidate_name, match_score, standard_score, decision, reasoning, standard_reasoning, missing_skills, match_details, strategy)
                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                      (job_id, resume_id, data['candidate_name'], data['match_score'], standard_score, data['decision'], data['reasoning'], standard_reasoning, missing, details, strategy))
+                      (job_id, resume_id, data['candidate_name'], data['match_score'], standard_score, data['decision'], reasoning_val, standard_reasoning, missing, details, strategy))
             new_id = c.lastrowid
 
         conn.commit()
