@@ -34,6 +34,10 @@ if "stop_upload_res" not in st.session_state: st.session_state.stop_upload_res =
 if "jd_uploader_key" not in st.session_state: st.session_state.jd_uploader_key = 0
 if "res_uploader_key" not in st.session_state: st.session_state.res_uploader_key = 0
 
+# Selection State
+if "selected_jd_filename" not in st.session_state: st.session_state.selected_jd_filename = None
+if "selected_res_filename" not in st.session_state: st.session_state.selected_res_filename = None
+
 db = database.DBManager()
 
 # --- UI HELPERS ---
@@ -440,24 +444,35 @@ with tab1:
             if len(event_jd.selection.rows) > 0:
                 selected_index = event_jd.selection.rows[0]
                 selected_jd_row = jds.iloc[selected_index]
+                st.session_state.selected_jd_filename = selected_jd_row['filename']
 
-            if selected_jd_row is not None:
+            # --- SHOW EDIT PANEL IF SELECTED ---
+            if "selected_jd_filename" in st.session_state and st.session_state.selected_jd_filename in jds['filename'].values:
+                current_filename = st.session_state.selected_jd_filename
+                selected_jd_row = jds[jds['filename'] == current_filename].iloc[0]
+
                 st.divider()
                 st.markdown(f"**Editing: `{selected_jd_row['filename']}`**")
 
-                with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
-                    st.text_area("Raw Text Content", value=selected_jd_row['content'], height=300, disabled=True, key=f"raw_jd_{selected_jd_row['id']}")
+                # Hidden ID for logic
+                jd_edit_id = int(selected_jd_row['id'])
 
-                new_crit = st.text_area("JSON Criteria", value=selected_jd_row['criteria'], height=300, key=f"jd_ed_{selected_jd_row['id']}")
+                with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
+                    st.text_area("Raw Text Content", value=selected_jd_row['content'], height=300, disabled=True, key=f"raw_jd_{jd_edit_id}")
+
+                new_crit = st.text_area("JSON Criteria", value=selected_jd_row['criteria'], height=300, key=f"jd_ed_{jd_edit_id}")
 
                 ec1, ec2 = st.columns(2)
-                if ec1.button("Save JD Changes", key=f"sav_jd_{selected_jd_row['id']}"):
-                    db.execute_query("UPDATE jobs SET criteria = ? WHERE id = ?", (new_crit, int(selected_jd_row['id'])))
+                if ec1.button("Save JD Changes", key=f"sav_jd_{jd_edit_id}"):
+                    db.execute_query("UPDATE jobs SET criteria = ? WHERE id = ?", (new_crit, jd_edit_id))
                     st.success("Saved!")
+                    time.sleep(0.5)
                     st.rerun()
-                if ec2.button("Delete JD", key=f"del_jd_{selected_jd_row['id']}", type="primary"):
-                    db.execute_query("DELETE FROM matches WHERE job_id = ?", (int(selected_jd_row['id']),))
-                    db.execute_query("DELETE FROM jobs WHERE id = ?", (int(selected_jd_row['id']),))
+                if ec2.button("Delete JD", key=f"del_jd_{jd_edit_id}", type="primary"):
+                    db.execute_query("DELETE FROM matches WHERE job_id = ?", (jd_edit_id,))
+                    db.execute_query("DELETE FROM jobs WHERE id = ?", (jd_edit_id,))
+                    # Clear selection on delete
+                    del st.session_state.selected_jd_filename
                     st.rerun()
         else:
             st.info("No Job Descriptions uploaded yet.")
@@ -580,37 +595,43 @@ with tab1:
             selected_res_row = None
             if len(event_res.selection.rows) > 0:
                 selected_index = event_res.selection.rows[0]
-                # Map back to dataframe row
                 selected_res_row = filtered_ress.iloc[selected_index]
+                st.session_state.selected_res_filename = selected_res_row['filename']
 
-            if selected_res_row is not None:
+            # --- SHOW EDIT PANEL IF SELECTED ---
+            if "selected_res_filename" in st.session_state and st.session_state.selected_res_filename in ress['filename'].values:
+                current_filename = st.session_state.selected_res_filename
+                row = ress[ress['filename'] == current_filename].iloc[0]
+
                 st.divider()
-                st.markdown(f"**Editing: `{selected_res_row['filename']}`**")
+                st.markdown(f"**Editing: `{row['filename']}`**")
 
                 # --- TAG EDITOR ---
-                curr_tags_str = selected_res_row['tags'] if selected_res_row['tags'] else ""
+                curr_tags_str = row['tags'] if 'tags' in row and row['tags'] else ""
                 curr_tags_list = [t.strip() for t in curr_tags_str.split(',')] if curr_tags_str else []
 
                 all_opts = list(jd_options.keys())
                 for t in curr_tags_list:
                     if t not in all_opts: all_opts.append(t)
 
-                new_tags_list = st.multiselect("Edit JD Tags", options=all_opts, default=curr_tags_list, key=f"tag_ed_{selected_res_row['id']}")
+                new_tags_list = st.multiselect("Edit JD Tags", options=all_opts, default=curr_tags_list, key=f"tag_ed_{row['id']}")
                 new_tags_val = ",".join(new_tags_list) if new_tags_list else None
 
                 with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
-                    st.text_area("Raw Text Content", value=selected_res_row['content'], height=300, disabled=True, key=f"raw_{selected_res_row['id']}")
+                    st.text_area("Raw Text Content", value=row['content'], height=300, disabled=True, key=f"raw_{row['id']}")
 
-                new_prof = st.text_area("JSON Profile", value=selected_res_row['profile'], height=300, key=f"res_ed_{selected_res_row['id']}")
+                new_prof = st.text_area("JSON Profile", value=row['profile'], height=300, key=f"res_ed_{row['id']}")
 
                 ec1, ec2 = st.columns(2)
-                if ec1.button("Save Profile & Tags", key=f"sav_res_{selected_res_row['id']}"):
-                    db.execute_query("UPDATE resumes SET profile = ?, tags = ? WHERE id = ?", (new_prof, new_tags_val, int(selected_res_row['id'])))
+                if ec1.button("Save Profile & Tags", key=f"sav_res_{row['id']}"):
+                    db.execute_query("UPDATE resumes SET profile = ?, tags = ? WHERE id = ?", (new_prof, new_tags_val, int(row['id'])))
                     st.success("Saved!")
+                    time.sleep(0.5)
                     st.rerun()
-                if ec2.button("Delete Resume", key=f"del_res_{selected_res_row['id']}", type="primary"):
-                    db.execute_query("DELETE FROM matches WHERE resume_id = ?", (int(selected_res_row['id']),))
-                    db.execute_query("DELETE FROM resumes WHERE id = ?", (int(selected_res_row['id']),))
+                if ec2.button("Delete Resume", key=f"del_res_{row['id']}", type="primary"):
+                    db.execute_query("DELETE FROM matches WHERE resume_id = ?", (int(row['id']),))
+                    db.execute_query("DELETE FROM resumes WHERE id = ?", (int(row['id']),))
+                    del st.session_state.selected_res_filename
                     st.rerun()
         else:
             st.info("No resumes uploaded yet.")
@@ -638,7 +659,7 @@ with tab2:
             filter_tag = st.selectbox("Filter by JD Tag (Optional):", ["All"] + sorted(list(all_used_tags)))
 
             if filter_tag != "All":
-                r_data = r_data[r_data['tags'].fillna('').astype(str).apply(lambda x: filter_tag in [t.strip() for t in x.split(',')])]
+                r_data = r_data[r_data['tags'].fillna('').astype(str).apply(lambda x: filter_tag in [t.strip() for t in x.split(',')] for tag in list_filter)]
 
         sel_r = r_data if st.checkbox("Select All Resumes", value=True) else r_data[r_data['filename'].isin(st.multiselect("Choose Resumes", r_data['filename']))]
 
