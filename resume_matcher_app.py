@@ -366,150 +366,186 @@ tab1, tab2, tab3 = st.tabs(["1. Manage Data", "2. Run Analysis", "3. Match Resul
 # --- TAB 1: MANAGE DATA ---
 with tab1:
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
-    c1, c2 = st.columns(2)
 
-    # Jobs Column
-    with c1:
-        st.subheader("📂 Upload Job Descriptions")
-        jd_up = st.file_uploader("Upload JDs", accept_multiple_files=True, key=f"jd_up_{st.session_state.jd_uploader_key}")
-        force_reparse_jd = st.checkbox("Force Reparse Existing JDs", value=False)
+    # SPLIT TAB INTO SUB-TABS
+    subtab_jd, subtab_res = st.tabs(["📂 Job Descriptions", "📄 Candidate Resumes"])
 
-        if jd_up:
-            if not st.session_state.is_uploading_jd:
-                st.button("Process New JDs", type="primary", on_click=start_jd_upload)
+    # --- JOB DESCRIPTIONS SUB-TAB ---
+    with subtab_jd:
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            st.subheader("Upload JDs")
+            jd_up = st.file_uploader("Upload JDs (PDF/DOCX/TXT)", accept_multiple_files=True, key=f"jd_up_{st.session_state.jd_uploader_key}")
+            force_reparse_jd = st.checkbox("Force Reparse Existing JDs", value=False)
+
+            if jd_up:
+                if not st.session_state.is_uploading_jd:
+                    st.button("Process New JDs", type="primary", on_click=start_jd_upload)
+                else:
+                    st.button("🛑 STOP UPLOAD", type="primary", on_click=stop_jd_upload)
+
+                    with st.status("Processing JDs...", expanded=True) as status:
+                        total_jds = len(jd_up)
+                        prog_bar = st.progress(0)
+
+                        for i, f in enumerate(jd_up):
+                            if st.session_state.stop_upload_jd:
+                                status.update(label="Stopped", state="error")
+                                break
+
+                            status.update(label=f"Processing {i+1}/{total_jds}: {f.name}")
+                            existing = db.get_job_by_filename(f.name)
+                            if existing and not force_reparse_jd:
+                                continue
+
+                            file_bytes = f.read()
+                            file_name = f.name.lower()
+
+                            if file_name.endswith('.pdf'):
+                                text = document_utils.extract_text_from_pdf(file_bytes, use_ocr=st.session_state.ocr_enabled)
+                            elif file_name.endswith('.docx'):
+                                text = document_utils.extract_text_from_docx(file_bytes)
+                            else:
+                                text = str(file_bytes, 'utf-8', errors='ignore')
+
+                            analysis = client.analyze_jd(text)
+                            if existing:
+                                db.update_job_content(existing['id'], text, analysis)
+                            else:
+                                db.add_job(f.name, text, analysis)
+
+                            prog_bar.progress((i + 1) / total_jds)
+
+                        if not st.session_state.stop_upload_jd:
+                            status.update(label="Complete!", state="complete")
+                            st.session_state.jd_uploader_key += 1
+
+                    st.session_state.is_uploading_jd = False
+                    st.session_state.stop_upload_jd = False
+                    st.rerun()
+
+        with c2:
+            st.subheader("Manage JDs")
+            jds = db.fetch_dataframe("SELECT id, filename, criteria, content, upload_date FROM jobs")
+
+            if not jds.empty:
+                with st.expander(f"📚 Existing Job Descriptions ({len(jds)})", expanded=True):
+                    st.dataframe(jds[['filename', 'upload_date']], hide_index=True, use_container_width=True)
+
+                st.divider()
+                jd_choice = st.selectbox("Select JD to Edit:", jds['filename'])
+                row = jds[jds['filename'] == jd_choice].iloc[0]
+
+                with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
+                    st.text_area("Raw Text Content", value=row['content'], height=400, disabled=True, key=f"raw_jd_{row['id']}")
+
+                new_crit = st.text_area("JSON Criteria", value=row['criteria'], height=300, key=f"jd_ed_{row['id']}")
+
+                ec1, ec2 = st.columns(2)
+                if ec1.button("Save JD Changes", key=f"sav_jd_{row['id']}"):
+                    db.execute_query("UPDATE jobs SET criteria = ? WHERE id = ?", (new_crit, int(row['id'])))
+                    st.success("Saved!")
+                    st.rerun()
+                if ec2.button("Delete JD", key=f"del_jd_{row['id']}", type="primary"):
+                    db.execute_query("DELETE FROM matches WHERE job_id = ?", (int(row['id']),))
+                    db.execute_query("DELETE FROM jobs WHERE id = ?", (int(row['id']),))
+                    st.rerun()
             else:
-                st.button("🛑 STOP UPLOAD", type="primary", on_click=stop_jd_upload)
+                st.info("No Job Descriptions uploaded yet.")
 
-                with st.status("Processing JDs...", expanded=True) as status:
-                    total_jds = len(jd_up)
-                    prog_bar = st.progress(0)
+    # --- RESUMES SUB-TAB ---
+    with subtab_res:
+        c1, c2 = st.columns([1, 2])
 
-                    for i, f in enumerate(jd_up):
-                        if st.session_state.stop_upload_jd:
-                            status.update(label="Stopped", state="error")
-                            break
-
-                        status.update(label=f"Processing {i+1}/{total_jds}: {f.name}")
-                        existing = db.get_job_by_filename(f.name)
-                        if existing and not force_reparse_jd:
-                            continue
-
-                        file_bytes = f.read()
-                        file_name = f.name.lower()
-
-                        if file_name.endswith('.pdf'):
-                            text = document_utils.extract_text_from_pdf(file_bytes, use_ocr=st.session_state.ocr_enabled)
-                        elif file_name.endswith('.docx'):
-                            text = document_utils.extract_text_from_docx(file_bytes)
-                        else:
-                            text = str(file_bytes, 'utf-8', errors='ignore')
-
-                        analysis = client.analyze_jd(text)
-                        if existing:
-                            db.update_job_content(existing['id'], text, analysis)
-                        else:
-                            db.add_job(f.name, text, analysis)
-
-                        prog_bar.progress((i + 1) / total_jds)
-
-                    if not st.session_state.stop_upload_jd:
-                         status.update(label="Complete!", state="complete")
-                         st.session_state.jd_uploader_key += 1
-
-                st.session_state.is_uploading_jd = False
-                st.session_state.stop_upload_jd = False
-                st.rerun()
-
-        jds = db.fetch_dataframe("SELECT id, filename, criteria, content, upload_date FROM jobs")
-        if not jds.empty:
-            with st.expander(f"📚 View {len(jds)} Job Descriptions", expanded=False):
-                st.dataframe(jds[['filename', 'upload_date']], hide_index=True, width="stretch")
-
-            st.divider()
-            jd_choice = st.selectbox("Select JD to Edit:", jds['filename'])
-            row = jds[jds['filename'] == jd_choice].iloc[0]
-            with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
-                st.text_area("Raw Text Content", value=row['content'], height=400, disabled=True, key=f"raw_jd_{row['id']}")
-            new_crit = st.text_area("JSON Criteria", value=row['criteria'], height=300, key=f"jd_ed_{row['id']}")
-            c_sav, c_del = st.columns(2)
-            if c_sav.button("Save JD", key=f"sav_jd_{row['id']}"):
-                db.execute_query("UPDATE jobs SET criteria = ? WHERE id = ?", (new_crit, int(row['id'])))
-                st.success("Saved!")
-                st.rerun()
-            if c_del.button("Delete JD", key=f"del_jd_{row['id']}", type="primary"):
-                db.execute_query("DELETE FROM matches WHERE job_id = ?", (int(row['id']),))
-                db.execute_query("DELETE FROM jobs WHERE id = ?", (int(row['id']),))
-                st.rerun()
-
-    # Resumes Column
-    with c2:
-        st.subheader("📄 Upload Resumes")
-
-        # --- RESUME TAGGING LOGIC (MULTISELECT) ---
+        # Available tags for logic
         avail_jds = db.fetch_dataframe("SELECT id, filename FROM jobs")
         jd_options = {row['filename']: str(row['filename']) for idx, row in avail_jds.iterrows()}
 
-        selected_tags = st.multiselect("Assign JD Tag(s) to Upload:", list(jd_options.keys()))
-        tag_val = ",".join(selected_tags) if selected_tags else None
+        with c1:
+            st.subheader("Upload Resumes")
 
-        res_up = st.file_uploader("Upload Resumes", accept_multiple_files=True, key=f"res_up_{st.session_state.res_uploader_key}")
-        force_reparse_res = st.checkbox("Force Reparse Existing Resumes", value=False)
+            selected_tags = st.multiselect("Assign JD Tag(s) (Optional):", list(jd_options.keys()))
+            tag_val = ",".join(selected_tags) if selected_tags else None
 
-        if res_up:
-            if not st.session_state.is_uploading_res:
-                st.button("Process New Resumes", type="primary", on_click=start_res_upload)
-            else:
-                st.button("🛑 STOP UPLOAD", type="primary", on_click=stop_res_upload)
-
-                with st.status("Processing Resumes...", expanded=True) as status:
-                    total_res = len(res_up)
-                    prog_bar = st.progress(0)
-
-                    for i, f in enumerate(res_up):
-                        if st.session_state.stop_upload_res:
-                            status.update(label="Stopped", state="error")
-                            break
-
-                        status.update(label=f"Processing {i+1}/{total_res}: {f.name}")
-                        existing = db.get_resume_by_filename(f.name)
-                        if existing and not force_reparse_res:
-                            continue
-
-                        file_bytes = f.read()
-                        file_name = f.name.lower()
-                        if file_name.endswith('.pdf'):
-                            text = document_utils.extract_text_from_pdf(file_bytes, use_ocr=st.session_state.ocr_enabled)
-                        elif file_name.endswith('.docx'):
-                            text = document_utils.extract_text_from_docx(file_bytes)
-                        else:
-                            text = str(file_bytes, 'utf-8', errors='ignore')
-
-                        analysis = client.analyze_resume(text)
-
+            # Bulk Import
+            uploaded_json = st.file_uploader("Import Processed JSON", type=["json"], key="json_up")
+            if uploaded_json is not None and st.button("📥 Import JSON Data"):
+                try:
+                    data = json.load(uploaded_json)
+                    count = 0
+                    for record in data:
+                        existing = db.get_resume_by_filename(record['filename'])
                         if existing:
-                            db.update_resume_content(existing['id'], text, analysis)
-                            if tag_val: db.update_resume_tags(existing['id'], tag_val)
+                            db.update_resume_content(existing['id'], record['content'], record['profile'])
                         else:
-                            db.add_resume(f.name, text, analysis, tags=tag_val)
+                            db.add_resume(record['filename'], record['content'], record['profile'])
+                        count += 1
+                    st.success(f"Imported {count} resumes successfully!")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error importing JSON: {e}")
 
-                        prog_bar.progress((i + 1) / total_res)
+            res_up = st.file_uploader("Upload Resumes (PDF/DOCX)", accept_multiple_files=True, key=f"res_up_{st.session_state.res_uploader_key}")
+            force_reparse_res = st.checkbox("Force Reparse Existing Resumes", value=False)
 
-                    if not st.session_state.stop_upload_res:
-                         status.update(label="Complete!", state="complete")
-                         st.session_state.res_uploader_key += 1
+            if res_up:
+                if not st.session_state.is_uploading_res:
+                    st.button("Process New Resumes", type="primary", on_click=start_res_upload)
+                else:
+                    st.button("🛑 STOP UPLOAD", type="primary", on_click=stop_res_upload)
 
-                st.session_state.is_uploading_res = False
-                st.session_state.stop_upload_res = False
-                st.rerun()
+                    with st.status("Processing Resumes...", expanded=True) as status:
+                        total_res = len(res_up)
+                        prog_bar = st.progress(0)
 
-        try:
-            ress = db.fetch_dataframe("SELECT id, filename, profile, tags, content, upload_date FROM resumes")
-        except:
-             ress = db.fetch_dataframe("SELECT id, filename, profile, content, upload_date FROM resumes")
-             ress['tags'] = None
+                        for i, f in enumerate(res_up):
+                            if st.session_state.stop_upload_res:
+                                status.update(label="Stopped", state="error")
+                                break
 
-        if not ress.empty:
-            with st.expander(f"📚 View {len(ress)} Resumes", expanded=False):
+                            status.update(label=f"Processing {i+1}/{total_res}: {f.name}")
+                            existing = db.get_resume_by_filename(f.name)
+                            if existing and not force_reparse_res:
+                                continue
+
+                            file_bytes = f.read()
+                            file_name = f.name.lower()
+                            if file_name.endswith('.pdf'):
+                                text = document_utils.extract_text_from_pdf(file_bytes, use_ocr=st.session_state.ocr_enabled)
+                            elif file_name.endswith('.docx'):
+                                text = document_utils.extract_text_from_docx(file_bytes)
+                            else:
+                                text = str(file_bytes, 'utf-8', errors='ignore')
+
+                            analysis = client.analyze_resume(text)
+
+                            if existing:
+                                db.update_resume_content(existing['id'], text, analysis)
+                                if tag_val: db.update_resume_tags(existing['id'], tag_val)
+                            else:
+                                db.add_resume(f.name, text, analysis, tags=tag_val)
+
+                            prog_bar.progress((i + 1) / total_res)
+
+                        if not st.session_state.stop_upload_res:
+                            status.update(label="Complete!", state="complete")
+                            st.session_state.res_uploader_key += 1
+
+                    st.session_state.is_uploading_res = False
+                    st.session_state.stop_upload_res = False
+                    st.rerun()
+
+        with c2:
+            st.subheader("Manage Resumes")
+            try:
+                ress = db.fetch_dataframe("SELECT id, filename, profile, tags, content, upload_date FROM resumes")
+            except:
+                ress = db.fetch_dataframe("SELECT id, filename, profile, content, upload_date FROM resumes")
+                ress['tags'] = None
+
+            if not ress.empty:
+                # --- FILTER LIST ---
                 all_tags = set()
                 for t_str in ress['tags'].dropna().unique():
                     for t in t_str.split(','):
@@ -519,37 +555,47 @@ with tab1:
 
                 if list_filter:
                     mask = ress['tags'].fillna('').astype(str).apply(lambda x: any(tag in [t.strip() for t in x.split(',')] for tag in list_filter))
-                    st.dataframe(ress[mask][['filename', 'tags', 'upload_date']], hide_index=True, width="stretch")
+                    filtered_ress = ress[mask]
                 else:
-                    st.dataframe(ress[['filename', 'tags', 'upload_date']] if 'tags' in ress.columns else ress[['filename', 'upload_date']], hide_index=True, width="stretch")
+                    filtered_ress = ress
 
-            st.divider()
-            res_choice = st.selectbox("Select Resume to Edit:", ress['filename'])
-            row = ress[ress['filename'] == res_choice].iloc[0]
+                with st.expander(f"📚 View {len(filtered_ress)} Resumes", expanded=True):
+                    st.dataframe(filtered_ress[['filename', 'tags', 'upload_date']], hide_index=True, use_container_width=True)
 
-            curr_tags_str = row['tags'] if 'tags' in row and row['tags'] else ""
-            curr_tags_list = [t.strip() for t in curr_tags_str.split(',')] if curr_tags_str else []
+                st.divider()
 
-            all_opts = list(jd_options.keys())
-            for t in curr_tags_list:
-                if t not in all_opts: all_opts.append(t)
+                # Use filtered list for selection if not empty
+                select_options = filtered_ress['filename'] if not filtered_ress.empty else ress['filename']
+                res_choice = st.selectbox("Select Resume to Edit:", select_options)
 
-            new_tags_list = st.multiselect("Edit JD Tags", options=all_opts, default=curr_tags_list, key=f"tag_ed_{row['id']}")
-            new_tags_val = ",".join(new_tags_list) if new_tags_list else None
+                # Fetch full row for selected (might be from full df)
+                row = ress[ress['filename'] == res_choice].iloc[0]
 
-            with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
-                st.text_area("Raw Text Content", value=row['content'], height=400, disabled=True, key=f"raw_{row['id']}")
-            new_prof = st.text_area("JSON Profile", value=row['profile'], height=300, key=f"res_ed_{row['id']}")
+                curr_tags_str = row['tags'] if 'tags' in row and row['tags'] else ""
+                curr_tags_list = [t.strip() for t in curr_tags_str.split(',')] if curr_tags_str else []
 
-            c_sav, c_del = st.columns(2)
-            if c_sav.button("Save Profile & Tags", key=f"sav_res_{row['id']}"):
-                db.execute_query("UPDATE resumes SET profile = ?, tags = ? WHERE id = ?", (new_prof, new_tags_val, int(row['id'])))
-                st.success("Saved!")
-                st.rerun()
-            if c_del.button("Delete Resume", key=f"del_res_{row['id']}", type="primary"):
-                db.execute_query("DELETE FROM matches WHERE resume_id = ?", (int(row['id']),))
-                db.execute_query("DELETE FROM resumes WHERE id = ?", (int(row['id']),))
-                st.rerun()
+                all_opts = list(jd_options.keys())
+                for t in curr_tags_list:
+                    if t not in all_opts: all_opts.append(t)
+
+                new_tags_list = st.multiselect("Edit JD Tags", options=all_opts, default=curr_tags_list, key=f"tag_ed_{row['id']}")
+                new_tags_val = ",".join(new_tags_list) if new_tags_list else None
+
+                with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
+                    st.text_area("Raw Text Content", value=row['content'], height=400, disabled=True, key=f"raw_{row['id']}")
+                new_prof = st.text_area("JSON Profile", value=row['profile'], height=300, key=f"res_ed_{row['id']}")
+
+                ec1, ec2 = st.columns(2)
+                if ec1.button("Save Profile & Tags", key=f"sav_res_{row['id']}"):
+                    db.execute_query("UPDATE resumes SET profile = ?, tags = ? WHERE id = ?", (new_prof, new_tags_val, int(row['id'])))
+                    st.success("Saved!")
+                    st.rerun()
+                if ec2.button("Delete Resume", key=f"del_res_{row['id']}", type="primary"):
+                    db.execute_query("DELETE FROM matches WHERE resume_id = ?", (int(row['id']),))
+                    db.execute_query("DELETE FROM resumes WHERE id = ?", (int(row['id']),))
+                    st.rerun()
+            else:
+                st.info("No resumes uploaded yet.")
 
 # --- TAB 2: RUN ANALYSIS ---
 with tab2:
