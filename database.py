@@ -19,9 +19,16 @@ class DBManager:
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       filename TEXT, content TEXT, criteria TEXT, upload_date TIMESTAMP)''')
 
+        # Added 'tags' column to resumes
         c.execute('''CREATE TABLE IF NOT EXISTS resumes
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      filename TEXT, content TEXT, profile TEXT, upload_date TIMESTAMP)''')
+                      filename TEXT, content TEXT, profile TEXT, tags TEXT, upload_date TIMESTAMP)''')
+
+        # Migration for existing dbs
+        try:
+            c.execute("ALTER TABLE resumes ADD COLUMN tags TEXT")
+        except:
+            pass
 
         # Ensure strategy column exists (migration for existing dbs)
         try:
@@ -104,19 +111,27 @@ class DBManager:
         conn.commit()
         conn.close()
 
-    def add_resume(self, filename, content, profile):
+    def add_resume(self, filename, content, profile, tags=None):
         conn = self.get_connection()
         c = conn.cursor()
-        c.execute("INSERT INTO resumes (filename, content, profile, upload_date) VALUES (?, ?, ?, ?)",
-                  (filename, content, json.dumps(profile, indent=2), datetime.datetime.now().isoformat()))
+        c.execute("INSERT INTO resumes (filename, content, profile, tags, upload_date) VALUES (?, ?, ?, ?, ?)",
+                  (filename, content, json.dumps(profile, indent=2), tags, datetime.datetime.now().isoformat()))
         conn.commit()
         conn.close()
 
     def update_resume_content(self, resume_id, content, profile):
         conn = self.get_connection()
         c = conn.cursor()
+        # Preserve existing tags if not passed? For now just content update.
         c.execute("UPDATE resumes SET content = ?, profile = ?, upload_date = ? WHERE id = ?",
                   (content, json.dumps(profile, indent=2), datetime.datetime.now().isoformat(), resume_id))
+        conn.commit()
+        conn.close()
+
+    def update_resume_tags(self, resume_id, tags):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("UPDATE resumes SET tags = ? WHERE id = ?", (tags, resume_id))
         conn.commit()
         conn.close()
 

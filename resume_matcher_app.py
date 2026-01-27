@@ -18,10 +18,19 @@ if "lm_base_url" not in st.session_state: st.session_state.lm_base_url = "http:/
 if "lm_api_key" not in st.session_state: st.session_state.lm_api_key = "lm-studio"
 if "ocr_enabled" not in st.session_state: st.session_state.ocr_enabled = True
 if "processed_files" not in st.session_state: st.session_state.processed_files = set()
-if "is_running" not in st.session_state: st.session_state.is_running = False  # Track run state
-if "stop_requested" not in st.session_state: st.session_state.stop_requested = False # Track stop request
 
-# Initialize dynamic keys for file uploaders to allow clearing them
+# Analysis Run State
+if "is_running" not in st.session_state: st.session_state.is_running = False
+if "stop_requested" not in st.session_state: st.session_state.stop_requested = False
+if "rerun_config" not in st.session_state: st.session_state.rerun_config = None
+
+# Upload Run State
+if "is_uploading_jd" not in st.session_state: st.session_state.is_uploading_jd = False
+if "stop_upload_jd" not in st.session_state: st.session_state.stop_upload_jd = False
+if "is_uploading_res" not in st.session_state: st.session_state.is_uploading_res = False
+if "stop_upload_res" not in st.session_state: st.session_state.stop_upload_res = False
+
+# Initialize dynamic keys for file uploaders
 if "jd_uploader_key" not in st.session_state: st.session_state.jd_uploader_key = 0
 if "res_uploader_key" not in st.session_state: st.session_state.res_uploader_key = 0
 
@@ -68,9 +77,7 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
 
         # --- DECISION LOGIC ---
         if is_deep:
-            # For Deep Matches (Pass 2): Standard RAG logic against the threshold
             review_range = max(0, threshold - 20)
-
             if score >= threshold:
                 decision_label = "Move Forward"
                 badge_color = "color: #0f5132; background-color: #d1e7dd;" # Green
@@ -84,7 +91,6 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
                 badge_color = "color: #842029; background-color: #f8d7da;" # Red
                 score_color = "#842029"
         else:
-            # For Standard Matches (Pass 1 Only):
             if score < 50:
                 decision_label = "Reject (Low Fit)"
                 badge_color = "color: #842029; background-color: #f8d7da;" # Red
@@ -102,28 +108,60 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
         if 'standard_score' in row and pd.notna(row['standard_score']) and row['strategy'] == 'Deep':
             std_score_display = f"<br><span style='font-size: 10px; color: #666;'>Pass 1: {int(row['standard_score'])}%</span>"
 
-        # Only show Job Name if the dataframe has mixed jobs, otherwise it's redundant if grouped
         job_display = f"<br><span style='font-size: 11px; color: #007bff; font-weight:bold;'>Job: {job_name}</span>" if 'job_name' in df.columns and df['job_name'].nunique() > 1 else ""
 
         rows += f'<tr><td style="font-weight: 600;">{row["candidate_name"]}<br><span style="font-size: 11px; color: #666;">{row["res_name"]}</span>{job_display}</td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%{std_score_display}</td><td><span class="status-badge" style="{badge_color}">{decision_label}</span></td><td style="font-size: 13px; color: #444;">{row["reasoning"]}</td></tr>'
     return f"""<style>.candidate-table {{width: 100%; border-collapse: collapse; margin-bottom: 20px;}}.candidate-table th {{background-color: #f8f9fa; padding: 12px; text-align: left;}}.candidate-table td {{padding: 12px; border-bottom: 1px solid #dee2e6; vertical-align: top;}}.status-badge {{padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px;}}</style><table class="candidate-table"><thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th></tr></thead><tbody>{rows}</tbody></table>"""
 
-def generate_matrix_view(df):
-    """Generates a pivot table view for multi-job analysis."""
+def generate_matrix_view(df, view_mode="All"):
     if df.empty: return
 
-    # Pivot: Resume (Index) x Job (Column) = Score (Value)
-    # Ensure duplicates are handled (though distinct matches shouldn't have dupes)
-    pivot_df = df.pivot_table(index='candidate_name', columns='job_name', values='match_score', aggfunc='max')
+    if view_mode == "Deep Match Only":
+        df_filtered = df[df['strategy'] == 'Deep']
+    elif view_mode == "Standard Match Only":
+        df_filtered = df[df['strategy'] != 'Deep']
+    else:
+        df_filtered = df
+
+    if df_filtered.empty:
+        st.info(f"No results found for '{view_mode}' filter.")
+        return
+
+    pivot_df = df_filtered.pivot_table(index='candidate_name', columns='job_name', values='match_score', aggfunc='max')
+    pivot_df['Best Score'] = pivot_df.max(axis=1)
+    pivot_df = pivot_df.sort_values(by='Best Score', ascending=False)
+
+    headers = ["Candidate"] + list(pivot_df.columns[:-1]) + ["Best Score"]
+    header_html = "".join([f"<th style='background-color:#f0f2f6; padding:10px; border-bottom:2px solid #ccc; text-align:center;'>{h}</th>" for h in headers])
+
+    rows_html = ""
+    for cand, row in pivot_df.iterrows():
+        cells = f"<td style='padding:10px; font-weight:bold; border-bottom:1px solid #eee;'>{cand}</td>"
+        for col in pivot_df.columns[:-1]:
+            score = row[col]
+            if pd.isna(score):
+                cell_style = "color:#ccc; background-color:#f9f9f9;"
+                val = "-"
+            else:
+                s = int(score)
+                if s >= 75: bg = "#d1e7dd"; color = "#0f5132"
+                elif s >= 50: bg = "#fff3cd"; color = "#664d03"
+                else: bg = "#f8d7da"; color = "#842029"
+                cell_style = f"background-color:{bg}; color:{color}; font-weight:bold;"
+                val = f"{s}%"
+            cells += f"<td style='padding:10px; text-align:center; border-bottom:1px solid #eee; {cell_style}'>{val}</td>"
+
+        best = int(row['Best Score'])
+        cells += f"<td style='padding:10px; text-align:center; border-bottom:1px solid #eee; font-weight:bold; font-size:1.1em; background-color:#f8f9fa;'>{best}%</td>"
+        rows_html += f"<tr>{cells}</tr>"
 
     st.markdown("### 📊 Cross-Job Match Matrix")
-    st.caption("Quickly compare candidate scores across all jobs in this run.")
-    st.dataframe(pivot_df.style.background_gradient(cmap='RdYlGn', vmin=0, vmax=100).format("{:.0f}%"), use_container_width=True)
+    st.markdown(f"""<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-family:sans-serif; font-size:0.9em;"><thead><tr>{header_html}</tr></thead><tbody>{rows_html}</tbody></table></div>""", unsafe_allow_html=True)
+
 
 # --- CORE MATCHING LOGIC ---
 def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, force_rerun_pass1):
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
-
     rid = db.create_run(run_name, threshold=deep_match_thresh)
     total = len(jobs) * len(resumes)
     count = 0
@@ -138,7 +176,6 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
             master_bar = st.progress(0)
             task_display = st.empty()
             sub_bar = st.empty()
-
             log_placeholder = st.empty()
             log_lines = []
 
@@ -166,7 +203,6 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                     mid = exist['id'] if exist else None
                     score = exist['match_score'] if exist else 0
 
-                    # Step 1: Standard Pass
                     should_run_standard = (not exist) or force_rerun_pass1
 
                     if should_run_standard:
@@ -187,7 +223,6 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                              score = exist['match_score']
                              add_log(f"&nbsp;&nbsp;ℹ️ Using existing Match Score: {score}% (Pass 1 Skipped)")
 
-                    # Step 2: Deep Match
                     is_already_deep = exist and exist['strategy'] == 'Deep'
                     qualifies_for_deep = score >= deep_match_thresh
 
@@ -281,6 +316,20 @@ def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_r
     st.session_state.is_running = True
     st.session_state.stop_requested = False
 
+def start_jd_upload():
+    st.session_state.is_uploading_jd = True
+    st.session_state.stop_upload_jd = False
+
+def stop_jd_upload():
+    st.session_state.stop_upload_jd = True
+
+def start_res_upload():
+    st.session_state.is_uploading_res = True
+    st.session_state.stop_upload_res = False
+
+def stop_res_upload():
+    st.session_state.stop_upload_res = True
+
 # --- HEADER & SETTINGS ---
 col_head, col_set = st.columns([6, 1])
 with col_head: st.title("🚀 TalentScout: Intelligent Resume Screening")
@@ -325,37 +374,57 @@ with tab1:
         jd_up = st.file_uploader("Upload JDs", accept_multiple_files=True, key=f"jd_up_{st.session_state.jd_uploader_key}")
         force_reparse_jd = st.checkbox("Force Reparse Existing JDs", value=False)
 
-        if jd_up and st.button("Process New JDs", type="primary"):
-            with st.status("Processing JDs...") as status:
-                for f in jd_up:
-                    existing = db.get_job_by_filename(f.name)
-                    if existing and not force_reparse_jd:
-                        st.warning(f"Skipped {f.name} (Duplicate). Check 'Force Reparse' to overwrite.")
-                        continue
+        if jd_up:
+            if not st.session_state.is_uploading_jd:
+                st.button("Process New JDs", type="primary", on_click=start_jd_upload)
+            else:
+                st.button("🛑 STOP UPLOAD", type="primary", on_click=stop_jd_upload)
 
-                    file_bytes = f.read()
-                    file_name = f.name.lower()
+                with st.status("Processing JDs...", expanded=True) as status:
+                    total_jds = len(jd_up)
+                    prog_bar = st.progress(0)
 
-                    if file_name.endswith('.pdf'):
-                        text = document_utils.extract_text_from_pdf(file_bytes, use_ocr=st.session_state.ocr_enabled)
-                    elif file_name.endswith('.docx'):
-                        text = document_utils.extract_text_from_docx(file_bytes)
-                    else:
-                        text = str(file_bytes, 'utf-8', errors='ignore')
+                    for i, f in enumerate(jd_up):
+                        if st.session_state.stop_upload_jd:
+                            status.update(label="Stopped", state="error")
+                            break
 
-                    analysis = client.analyze_jd(text)
-                    if existing:
-                        db.update_job_content(existing['id'], text, analysis)
-                        st.info(f"Updated {f.name}")
-                    else:
-                        db.add_job(f.name, text, analysis)
+                        status.update(label=f"Processing {i+1}/{total_jds}: {f.name}")
+                        existing = db.get_job_by_filename(f.name)
+                        if existing and not force_reparse_jd:
+                            continue
 
-                st.session_state.jd_uploader_key += 1
+                        file_bytes = f.read()
+                        file_name = f.name.lower()
+
+                        if file_name.endswith('.pdf'):
+                            text = document_utils.extract_text_from_pdf(file_bytes, use_ocr=st.session_state.ocr_enabled)
+                        elif file_name.endswith('.docx'):
+                            text = document_utils.extract_text_from_docx(file_bytes)
+                        else:
+                            text = str(file_bytes, 'utf-8', errors='ignore')
+
+                        analysis = client.analyze_jd(text)
+                        if existing:
+                            db.update_job_content(existing['id'], text, analysis)
+                        else:
+                            db.add_job(f.name, text, analysis)
+
+                        prog_bar.progress((i + 1) / total_jds)
+
+                    if not st.session_state.stop_upload_jd:
+                         status.update(label="Complete!", state="complete")
+                         st.session_state.jd_uploader_key += 1
+
+                st.session_state.is_uploading_jd = False
+                st.session_state.stop_upload_jd = False
                 st.rerun()
 
         jds = db.fetch_dataframe("SELECT id, filename, criteria, content, upload_date FROM jobs")
         if not jds.empty:
-            st.dataframe(jds[['filename', 'upload_date']], hide_index=True, width="stretch")
+            with st.expander(f"📚 View {len(jds)} Job Descriptions", expanded=False):
+                st.dataframe(jds[['filename', 'upload_date']], hide_index=True, width="stretch")
+
             st.divider()
             jd_choice = st.selectbox("Select JD to Edit:", jds['filename'])
             row = jds[jds['filename'] == jd_choice].iloc[0]
@@ -375,47 +444,106 @@ with tab1:
     # Resumes Column
     with c2:
         st.subheader("📄 Upload Resumes")
+
+        # --- RESUME TAGGING LOGIC (MULTISELECT) ---
+        avail_jds = db.fetch_dataframe("SELECT id, filename FROM jobs")
+        jd_options = {row['filename']: str(row['filename']) for idx, row in avail_jds.iterrows()}
+
+        selected_tags = st.multiselect("Assign JD Tag(s) to Upload:", list(jd_options.keys()))
+        tag_val = ",".join(selected_tags) if selected_tags else None
+
         res_up = st.file_uploader("Upload Resumes", accept_multiple_files=True, key=f"res_up_{st.session_state.res_uploader_key}")
         force_reparse_res = st.checkbox("Force Reparse Existing Resumes", value=False)
 
-        if res_up and st.button("Process New Resumes", type="primary"):
-            with st.status("Processing Resumes...") as status:
-                for f in res_up:
-                    existing = db.get_resume_by_filename(f.name)
-                    if existing and not force_reparse_res:
-                        st.warning(f"Skipped {f.name} (Duplicate). Check 'Force Reparse' to overwrite.")
-                        continue
+        if res_up:
+            if not st.session_state.is_uploading_res:
+                st.button("Process New Resumes", type="primary", on_click=start_res_upload)
+            else:
+                st.button("🛑 STOP UPLOAD", type="primary", on_click=stop_res_upload)
 
-                    file_bytes = f.read()
-                    file_name = f.name.lower()
-                    if file_name.endswith('.pdf'):
-                        text = document_utils.extract_text_from_pdf(file_bytes, use_ocr=st.session_state.ocr_enabled)
-                    elif file_name.endswith('.docx'):
-                        text = document_utils.extract_text_from_docx(file_bytes)
-                    else:
-                        text = str(file_bytes, 'utf-8', errors='ignore')
+                with st.status("Processing Resumes...", expanded=True) as status:
+                    total_res = len(res_up)
+                    prog_bar = st.progress(0)
 
-                    analysis = client.analyze_resume(text)
-                    if existing:
-                        db.update_resume_content(existing['id'], text, analysis)
-                        st.info(f"Updated {f.name}")
-                    else:
-                        db.add_resume(f.name, text, analysis)
-                st.session_state.res_uploader_key += 1
+                    for i, f in enumerate(res_up):
+                        if st.session_state.stop_upload_res:
+                            status.update(label="Stopped", state="error")
+                            break
+
+                        status.update(label=f"Processing {i+1}/{total_res}: {f.name}")
+                        existing = db.get_resume_by_filename(f.name)
+                        if existing and not force_reparse_res:
+                            continue
+
+                        file_bytes = f.read()
+                        file_name = f.name.lower()
+                        if file_name.endswith('.pdf'):
+                            text = document_utils.extract_text_from_pdf(file_bytes, use_ocr=st.session_state.ocr_enabled)
+                        elif file_name.endswith('.docx'):
+                            text = document_utils.extract_text_from_docx(file_bytes)
+                        else:
+                            text = str(file_bytes, 'utf-8', errors='ignore')
+
+                        analysis = client.analyze_resume(text)
+
+                        if existing:
+                            db.update_resume_content(existing['id'], text, analysis)
+                            if tag_val: db.update_resume_tags(existing['id'], tag_val)
+                        else:
+                            db.add_resume(f.name, text, analysis, tags=tag_val)
+
+                        prog_bar.progress((i + 1) / total_res)
+
+                    if not st.session_state.stop_upload_res:
+                         status.update(label="Complete!", state="complete")
+                         st.session_state.res_uploader_key += 1
+
+                st.session_state.is_uploading_res = False
+                st.session_state.stop_upload_res = False
                 st.rerun()
 
-        ress = db.fetch_dataframe("SELECT id, filename, profile, content, upload_date FROM resumes")
+        try:
+            ress = db.fetch_dataframe("SELECT id, filename, profile, tags, content, upload_date FROM resumes")
+        except:
+             ress = db.fetch_dataframe("SELECT id, filename, profile, content, upload_date FROM resumes")
+             ress['tags'] = None
+
         if not ress.empty:
-            st.dataframe(ress[['filename', 'upload_date']], hide_index=True, width="stretch")
+            with st.expander(f"📚 View {len(ress)} Resumes", expanded=False):
+                all_tags = set()
+                for t_str in ress['tags'].dropna().unique():
+                    for t in t_str.split(','):
+                        all_tags.add(t.strip())
+
+                list_filter = st.multiselect("Filter List by Tag:", sorted(list(all_tags)), key="list_tag_filter")
+
+                if list_filter:
+                    mask = ress['tags'].fillna('').astype(str).apply(lambda x: any(tag in [t.strip() for t in x.split(',')] for tag in list_filter))
+                    st.dataframe(ress[mask][['filename', 'tags', 'upload_date']], hide_index=True, width="stretch")
+                else:
+                    st.dataframe(ress[['filename', 'tags', 'upload_date']] if 'tags' in ress.columns else ress[['filename', 'upload_date']], hide_index=True, width="stretch")
+
             st.divider()
             res_choice = st.selectbox("Select Resume to Edit:", ress['filename'])
             row = ress[ress['filename'] == res_choice].iloc[0]
+
+            curr_tags_str = row['tags'] if 'tags' in row and row['tags'] else ""
+            curr_tags_list = [t.strip() for t in curr_tags_str.split(',')] if curr_tags_str else []
+
+            all_opts = list(jd_options.keys())
+            for t in curr_tags_list:
+                if t not in all_opts: all_opts.append(t)
+
+            new_tags_list = st.multiselect("Edit JD Tags", options=all_opts, default=curr_tags_list, key=f"tag_ed_{row['id']}")
+            new_tags_val = ",".join(new_tags_list) if new_tags_list else None
+
             with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
                 st.text_area("Raw Text Content", value=row['content'], height=400, disabled=True, key=f"raw_{row['id']}")
             new_prof = st.text_area("JSON Profile", value=row['profile'], height=300, key=f"res_ed_{row['id']}")
+
             c_sav, c_del = st.columns(2)
-            if c_sav.button("Save Profile", key=f"sav_res_{row['id']}"):
-                db.execute_query("UPDATE resumes SET profile = ? WHERE id = ?", (new_prof, int(row['id'])))
+            if c_sav.button("Save Profile & Tags", key=f"sav_res_{row['id']}"):
+                db.execute_query("UPDATE resumes SET profile = ?, tags = ? WHERE id = ?", (new_prof, new_tags_val, int(row['id'])))
                 st.success("Saved!")
                 st.rerun()
             if c_del.button("Delete Resume", key=f"del_res_{row['id']}", type="primary"):
@@ -436,6 +564,18 @@ with tab2:
 
     with col_r:
         st.markdown("#### 2. Select Resumes")
+
+        if 'tags' in r_data.columns:
+            all_used_tags = set()
+            for t_str in r_data['tags'].dropna().unique():
+                for t in t_str.split(','):
+                    all_used_tags.add(t.strip())
+
+            filter_tag = st.selectbox("Filter by JD Tag (Optional):", ["All"] + sorted(list(all_used_tags)))
+
+            if filter_tag != "All":
+                r_data = r_data[r_data['tags'].fillna('').astype(str).apply(lambda x: filter_tag in [t.strip() for t in x.split(',')])]
+
         sel_r = r_data if st.checkbox("Select All Resumes", value=True) else r_data[r_data['filename'].isin(st.multiselect("Choose Resumes", r_data['filename']))]
 
     if not sel_j.empty and not sel_r.empty:
@@ -532,15 +672,13 @@ with tab3:
         if not results.empty:
             st.caption(f"Results showing against Deep Match Threshold of **{run_threshold}%** used in this run.")
 
-            # --- MATRIX VIEW ---
             unique_jobs = results['job_id'].nunique()
             if unique_jobs > 1:
-                generate_matrix_view(results)
+                matrix_filter = st.radio("Matrix Data View:", ["All Scores", "Deep Match Only", "Standard Match Only"], horizontal=True)
+                generate_matrix_view(results, view_mode=matrix_filter)
                 st.divider()
 
-            # --- SPLIT TABLES: DEEP vs STANDARD (GROUPED BY JOB) ---
             unique_job_names = results['job_name'].unique()
-
             deep_df = results[results['strategy'] == 'Deep']
             std_df = results[results['strategy'] != 'Deep']
 
@@ -564,7 +702,6 @@ with tab3:
                 st.info("All candidates in this run were upgraded to Deep Match.")
             else:
                 if unique_jobs > 1:
-                    # Create tabs for Standard matches too if multi-job
                     tabs_std = st.tabs(list(unique_job_names))
                     for i, job in enumerate(unique_job_names):
                         with tabs_std[i]:
@@ -575,20 +712,13 @@ with tab3:
 
             st.divider()
 
-            # --- EVIDENCE INVESTIGATOR (FILTERED) ---
             st.write("### 🔎 Match Evidence Investigator")
 
-            # Filter Logic
             col_filter1, col_filter2 = st.columns(2)
-
-            # 1. Filter by Job
             avail_jobs = results['job_name'].unique()
             sel_job_filter = col_filter1.selectbox("Filter by Job:", avail_jobs, key="inv_job_filter")
 
-            # 2. Filter candidates based on job
             filtered_candidates = results[results['job_name'] == sel_job_filter]
-
-            # Create label map for the selectbox
             candidate_map = {f"{row['candidate_name']} ({row['match_score']}%)": row['id'] for idx, row in filtered_candidates.iterrows()}
 
             sel_candidate_label = col_filter2.selectbox("Select Candidate:", list(candidate_map.keys()), key="inv_cand_filter")
@@ -597,7 +727,6 @@ with tab3:
                 match_id = candidate_map[sel_candidate_label]
                 row = results[results['id'] == match_id].iloc[0]
 
-                # Single Match Actions
                 c_act1, c_act2 = st.columns([1, 4])
                 with c_act1:
                     if st.button("🔄 Rerun This Match", key=f"re_s_{match_id}"):
