@@ -10,6 +10,10 @@ import database
 import document_utils
 import ai_engine
 
+# --- LOGGING CONFIGURATION ---
+# Suppress pypdf warnings about malformed PDF structures (harmless noise)
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+
 # --- CONFIGURATION ---
 st.set_page_config(page_title="TalentScout AI", page_icon="🚀", layout="wide")
 

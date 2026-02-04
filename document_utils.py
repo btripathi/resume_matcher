@@ -14,9 +14,32 @@ except ImportError:
     PDF2IMAGE_AVAILABLE = False
 
 def extract_text_from_docx(file_bytes):
+    """
+    Extracts text from DOCX files, robustly handling both standard paragraphs
+    and text hidden inside tables (common in resume layouts).
+    """
     try:
         doc = docx.Document(io.BytesIO(file_bytes))
-        text = "\n".join([para.text for para in doc.paragraphs])
+        full_text = []
+
+        # 1. Extract text from standard paragraphs
+        for para in doc.paragraphs:
+            if para.text.strip():
+                full_text.append(para.text)
+
+        # 2. Extract text from tables (Crucial for resumes with sidebars/grid layouts)
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = []
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        if para.text.strip():
+                            row_text.append(para.text)
+                # Join cell content with pipe to maintain some structure
+                if row_text:
+                    full_text.append(" | ".join(row_text))
+
+        text = "\n".join(full_text)
         return text
     except Exception as e:
         return f"Error reading DOCX: {e}"
@@ -102,8 +125,15 @@ def clean_json_response(text):
             start = text.find('{')
             end = text.rfind('}')
             if start == -1 or end == -1 or end <= start:
-                return None
-            text_content = text[start:end+1].strip()
+                # Fallback 2.1: Try finding list brackets if object failed
+                start_list = text.find('[')
+                end_list = text.rfind(']')
+                if start_list != -1 and end_list != -1 and end_list > start_list:
+                    text_content = text[start_list:end_list+1].strip()
+                else:
+                    return None
+            else:
+                text_content = text[start:end+1].strip()
 
         # Normalize smart quotes (common LLM issue)
         text_content = text_content.replace("\u2019", "'")

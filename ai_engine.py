@@ -58,19 +58,21 @@ class AIEngine:
                 "error_flag": True
             }
 
-        prompt = f"""
-        You are an expert Technical Recruiter. Parse the resume text below into a structured JSON profile.
+        system_prompt = """
+        You are an expert Technical Recruiter.
+        Task: Parse the resume text into a structured JSON profile.
+        Output: Return ONLY valid JSON. Use DOUBLE QUOTES for all keys and strings.
+        """
 
+        user_prompt = f"""
         INSTRUCTIONS:
-        1. Extract the candidate's name, email, and phone.
-        2. "extracted_skills": List ALL technical skills, tools, languages, and frameworks found.
-        3. "work_history": Create a list of previous roles with company name, job title, and a short summary of duties.
-        4. "years_experience": Estimate total years of professional experience based on the timeline.
-        5. "domain_experience": List any specific industries (e.g. Fintech, Healthcare, E-commerce) mentioned.
+        1. Extract candidate_name, email, phone.
+        2. "extracted_skills": List ALL technical skills, tools, languages.
+        3. "work_history": List previous roles. IMPORTANT: Summarize duties concisely (max 3 sentences per role) to save space.
+        4. "years_experience": Estimate total years of professional experience.
+        5. "domain_experience": List specific industries (e.g. Fintech, Healthcare, AI).
 
-        CRITICAL: Return ONLY valid JSON. Use DOUBLE QUOTES for all keys and strings. Do not use single quotes.
-
-        JSON Format:
+        JSON Structure:
         {{
             "candidate_name": "Name",
             "email": "Email",
@@ -80,16 +82,22 @@ class AIEngine:
             "education_summary": "Degree, University",
             "domain_experience": ["Domain A", "Domain B"],
             "work_history": [
-                {{ "company": "Company A", "role": "Title", "summary": "Summary of work" }}
+                {{ "company": "Company A", "role": "Title", "summary": "Concise summary of work" }}
             ]
         }}
 
-        RESUME TEXT:
-        {text[:20000]}
+        RESUME CONTENT:
+        {text[:15000]}
         """
         try:
             resp = self.client.chat.completions.create(
-                model="local-model", messages=[{"role": "user", "content": prompt}], temperature=0.1
+                model="local-model",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0,
+                max_tokens=1500  # Strict limit to prevent infinite generation
             )
             # If null, return a fallback object to prevent app crash
             result = document_utils.clean_json_response(resp.choices[0].message.content)
@@ -123,7 +131,10 @@ class AIEngine:
         user_prompt = f"JD CRITERIA:\n{jd_criteria}\n\nRESUME PROFILE:\n{resume_profile}\n\nRESUME TEXT:\n{resume_text[:12000]}"
         try:
             resp = self.client.chat.completions.create(
-                model="local-model", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], temperature=0.1
+                model="local-model",
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                temperature=0.1,
+                max_tokens=1024
             )
             return document_utils.clean_json_response(resp.choices[0].message.content)
         except: return None
