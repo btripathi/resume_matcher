@@ -173,7 +173,7 @@ def generate_matrix_view(df, view_mode="All"):
 
 
 # --- CORE MATCHING LOGIC ---
-def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, force_rerun_pass1):
+def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, force_rerun_pass1, match_by_tags=False):
     # --- SAFETY CHECK: Stop immediately if stop requested ---
     if st.session_state.stop_requested:
         st.warning("🛑 Analysis process stopped.")
@@ -185,12 +185,48 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
         return
 
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
-    rid = db.create_run(run_name, threshold=deep_match_thresh)
-    total = len(jobs) * len(resumes)
-    count = 0
 
+    # Pre-calculate work to do for progress bar
+    tasks = []
+    if match_by_tags:
+        # In tag mode, we find matching resumes for each JD
+        for _, job in jobs.iterrows():
+            # Filter resumes that have this job's filename in their tags
+            jd_tag = job['filename']
+            # Safely check tags (handle None)
+            matching_resumes = resumes[resumes['tags'].fillna('').astype(str).apply(lambda x: jd_tag in [t.strip() for t in x.split(',')])]
+
+            if not matching_resumes.empty:
+                # Create a specific run name for this JD
+                specific_run_name = f"Auto: {job['filename']}"
+                tasks.append({
+                    "job": job,
+                    "resumes": matching_resumes,
+                    "run_name": specific_run_name,
+                    "create_new_run": True
+                })
+    else:
+        # Standard mode: One run, all JDs x all Resumes
+        tasks.append({
+            "job": None, # Will iterate all inside
+            "resumes": resumes,
+            "run_name": run_name,
+            "create_new_run": True
+        })
+
+    if not tasks and match_by_tags:
+        st.error("No resumes found with tags matching the selected JDs.")
+        st.session_state.is_running = False
+        return
+
+    total_ops = 0
+    if match_by_tags:
+        total_ops = sum([len(t['resumes']) for t in tasks])
+    else:
+        total_ops = len(jobs) * len(resumes)
+
+    count = 0
     st.session_state.is_running = True
-    # REMOVED: st.session_state.stop_requested = False (This was causing the bug)
 
     progress_container = st.container()
 
@@ -208,135 +244,158 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                 html_content = f"<div style='height:300px; overflow-y:auto; background-color:#f8f9fa; border:1px solid #dee2e6; padding:10px; border-radius:4px; font-family:monospace; font-size:0.9em; color:#212529;'>{''.join(log_lines)}</div>"
                 log_placeholder.markdown(html_content, unsafe_allow_html=True)
 
-            for _, job in jobs.iterrows():
-                for _, res in resumes.iterrows():
-                    # --- CHECK STOP REQUEST INSIDE LOOP ---
-                    if st.session_state.stop_requested:
-                        add_log("🛑 **Run stopped by user.**")
-                        status.update(label="Stopped", state="error")
-                        st.session_state.is_running = False
-                        st.session_state.rerun_config = None
-                        st.stop()
+            # --- PROCESS TASKS ---
+            for task in tasks:
+                if st.session_state.stop_requested: break
 
-                    count += 1
-                    current_resume_name = res['filename']
-                    status.update(label=f"Match {count}/{total}: {current_resume_name} vs {job['filename']}")
-                    add_log(f"<b>Starting analysis for {current_resume_name}</b> vs {job['filename']}")
+                # Create Run ID
+                rid = db.create_run(task['run_name'], threshold=deep_match_thresh)
 
-                    exist = db.get_match_if_exists(int(job['id']), int(res['id']))
-                    mid = exist['id'] if exist else None
-                    score = exist['match_score'] if exist else 0
+                # Determine JDs to loop over (Single specific JD or All selected JDs)
+                jobs_to_process = pd.DataFrame([task['job']]) if match_by_tags else jobs
+                resumes_to_process = task['resumes']
 
-                    # --- PARSING ERROR CHECK ---
-                    try:
-                        profile_dict = json.loads(res['profile'])
-                    except:
-                        profile_dict = {}
+                for _, job in jobs_to_process.iterrows():
+                    for _, res in resumes_to_process.iterrows():
+                        # --- CHECK STOP REQUEST INSIDE LOOP ---
+                        if st.session_state.stop_requested:
+                            add_log("🛑 **Run stopped by user.**")
+                            status.update(label="Stopped", state="error")
+                            st.session_state.is_running = False
+                            st.session_state.rerun_config = None
+                            st.stop()
+                            return # Exit completely
 
-                    if profile_dict.get('error_flag') or profile_dict.get('candidate_name') == "Parsing Error":
-                        add_log(f"&nbsp;&nbsp;⚠️ Resume Parsing Error. Marking as Failed.")
-                        data = {
-                             "candidate_name": f"Error: {res['filename']}",
-                             "match_score": 0,
-                             "decision": "Parsing Error",
-                             "reasoning": "The resume text could not be extracted or parsed correctly (e.g. Scanned PDF or corrupt file).",
-                             "missing_skills": ["Unreadable Resume Content"]
-                        }
-                        mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard", standard_score=0, standard_reasoning="Parsing Failed")
-                        if mid: db.link_run_match(rid, mid)
-                        master_bar.progress(count/total)
-                        continue # Skip to next candidate
+                        count += 1
+                        current_resume_name = res['filename']
+                        status.update(label=f"Match {count}/{total_ops}: {current_resume_name} vs {job['filename']}")
+                        add_log(f"<b>Starting analysis for {current_resume_name}</b> vs {job['filename']}")
 
-                    should_run_standard = (not exist) or force_rerun_pass1
+                        exist = db.get_match_if_exists(int(job['id']), int(res['id']))
+                        mid = exist['id'] if exist else None
+                        score = exist['match_score'] if exist else 0
 
-                    if should_run_standard:
-                        task_display.info(f"🧠 Pass 1: Holistic scan for **{current_resume_name}**...")
-                        data = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
+                        # --- PARSING ERROR CHECK ---
+                        try:
+                            profile_dict = json.loads(res['profile'])
+                        except:
+                            profile_dict = {}
 
-                        # --- ERROR HANDLING FIX: Ensure 'data' is a dict ---
-                        if data and isinstance(data, dict):
-                            raw_reasoning = data.get('reasoning', "No reasoning provided.")
-                            std_reasoning = "\n".join(raw_reasoning) if isinstance(raw_reasoning, list) else str(raw_reasoning)
-                            mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard", standard_score=data['match_score'], standard_reasoning=std_reasoning)
-                            score = data['match_score']
-                            exist = db.get_match_if_exists(int(job['id']), int(res['id']))
-                            add_log(f"&nbsp;&nbsp;🧠 Standard Score: {score}%")
+                        if profile_dict.get('error_flag') or profile_dict.get('candidate_name') == "Parsing Error":
+                            add_log(f"&nbsp;&nbsp;⚠️ Resume Parsing Error. Marking as Failed.")
+                            data = {
+                                "candidate_name": f"Error: {res['filename']}",
+                                "match_score": 0,
+                                "decision": "Parsing Error",
+                                "reasoning": "The resume text could not be extracted or parsed correctly (e.g. Scanned PDF or corrupt file).",
+                                "missing_skills": ["Unreadable Resume Content"]
+                            }
+                            mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard", standard_score=0, standard_reasoning="Parsing Failed")
+                            if mid: db.link_run_match(rid, mid)
+                            master_bar.progress(count/total_ops)
+                            continue # Skip to next candidate
+
+                        should_run_standard = (not exist) or force_rerun_pass1
+
+                        if should_run_standard:
+                            task_display.info(f"🧠 Pass 1: Holistic scan for **{current_resume_name}**...")
+                            data = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
+
+                            # --- ERROR HANDLING FIX: Ensure 'data' is a dict ---
+                            if data and isinstance(data, dict):
+                                raw_reasoning = data.get('reasoning', "No reasoning provided.")
+                                std_reasoning = "\n".join(raw_reasoning) if isinstance(raw_reasoning, list) else str(raw_reasoning)
+                                mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard", standard_score=data['match_score'], standard_reasoning=std_reasoning)
+                                score = data['match_score']
+                                exist = db.get_match_if_exists(int(job['id']), int(res['id']))
+                                add_log(f"&nbsp;&nbsp;🧠 Standard Score: {score}%")
+                            else:
+                                # Handle error case where data is None or not a dict
+                                add_log(f"&nbsp;&nbsp;❌ Analysis failed or returned invalid format for {current_resume_name}. Skipping...")
+                                # Mark as failed in DB to avoid re-running repeatedly
+                                err_data = {
+                                    "candidate_name": f"Error: {res['filename']}",
+                                    "match_score": 0,
+                                    "decision": "Error",
+                                    "reasoning": "LLM Analysis failed or returned malformed data.",
+                                    "missing_skills": []
+                                }
+                                mid = db.save_match(int(job['id']), int(res['id']), err_data, mid, strategy="Standard", standard_score=0, standard_reasoning="LLM Analysis Failed")
+                                if mid: db.link_run_match(rid, mid) # Link failed matches too
+                                master_bar.progress(count/total_ops)
+                                continue # Skip this candidate
                         else:
-                            # Handle error case where data is None or not a dict
-                            add_log(f"&nbsp;&nbsp;❌ Analysis failed or returned invalid format for {current_resume_name}. Skipping...")
-                            continue # Skip this candidate if analysis failed
-                    else:
-                        if exist.get('strategy') == 'Deep' and exist.get('standard_score'):
-                             score = exist['standard_score']
-                             add_log(f"&nbsp;&nbsp;ℹ️ Using existing Standard Score: {score}% (Pass 1 Skipped)")
-                        else:
-                             score = exist['match_score']
-                             add_log(f"&nbsp;&nbsp;ℹ️ Using existing Match Score: {score}% (Pass 1 Skipped)")
+                            if exist.get('strategy') == 'Deep' and exist.get('standard_score'):
+                                score = exist['standard_score']
+                                add_log(f"&nbsp;&nbsp;ℹ️ Using existing Standard Score: {score}% (Pass 1 Skipped)")
+                            else:
+                                score = exist['match_score']
+                                add_log(f"&nbsp;&nbsp;ℹ️ Using existing Match Score: {score}% (Pass 1 Skipped)")
 
-                    is_already_deep = exist and exist['strategy'] == 'Deep'
-                    qualifies_for_deep = score >= deep_match_thresh
+                        is_already_deep = exist and exist['strategy'] == 'Deep'
+                        qualifies_for_deep = score >= deep_match_thresh
 
-                    if auto_deep and qualifies_for_deep:
-                        if is_already_deep and not force_rerun_pass1:
-                             mid = exist['id']
-                             add_log("&nbsp;&nbsp;ℹ️ Deep match already exists. Skipping.")
-                        else:
-                            add_log(f"&nbsp;&nbsp;🔬 Threshold met ({score}%). Triggering Deep Scan...")
-                            jd_c = json.loads(job['criteria'])
+                        if auto_deep and qualifies_for_deep:
+                            if is_already_deep and not force_rerun_pass1:
+                                mid = exist['id']
+                                add_log("&nbsp;&nbsp;ℹ️ Deep match already exists. Skipping.")
+                            else:
+                                add_log(f"&nbsp;&nbsp;🔬 Threshold met ({score}%). Triggering Deep Scan...")
+                                jd_c = json.loads(job['criteria'])
 
-                            priority_reqs = []
-                            if 'must_have_skills' in jd_c and isinstance(jd_c['must_have_skills'], list):
-                                priority_reqs.extend([('must_have_skills', v) for v in jd_c['must_have_skills']])
-                            if 'domain_knowledge' in jd_c and isinstance(jd_c['domain_knowledge'], list):
-                                priority_reqs.extend([('domain_knowledge', v) for v in jd_c['domain_knowledge']])
-                            if jd_c.get('min_years_experience', 0) > 0:
-                                priority_reqs.append(('experience', f"Minimum {jd_c['min_years_experience']} years relevant experience"))
+                                priority_reqs = []
+                                if 'must_have_skills' in jd_c and isinstance(jd_c['must_have_skills'], list):
+                                    priority_reqs.extend([('must_have_skills', v) for v in jd_c['must_have_skills']])
+                                if 'domain_knowledge' in jd_c and isinstance(jd_c['domain_knowledge'], list):
+                                    priority_reqs.extend([('domain_knowledge', v) for v in jd_c['domain_knowledge']])
+                                if jd_c.get('min_years_experience', 0) > 0:
+                                    priority_reqs.append(('experience', f"Minimum {jd_c['min_years_experience']} years relevant experience"))
 
-                            bulk_reqs = []
-                            for k in ['nice_to_have_skills', 'soft_skills', 'education_requirements', 'key_responsibilities']:
-                                if k in jd_c and isinstance(jd_c[k], list):
-                                    bulk_reqs.extend([(k, v) for v in jd_c[k]])
+                                bulk_reqs = []
+                                for k in ['nice_to_have_skills', 'soft_skills', 'education_requirements', 'key_responsibilities']:
+                                    if k in jd_c and isinstance(jd_c[k], list):
+                                        bulk_reqs.extend([(k, v) for v in jd_c[k]])
 
-                            details = []
-                            num_reqs = len(priority_reqs) + (1 if bulk_reqs else 0)
-                            processed_count = 0
+                                details = []
+                                num_reqs = len(priority_reqs) + (1 if bulk_reqs else 0)
+                                processed_count = 0
 
-                            for rt, rv in priority_reqs:
+                                for rt, rv in priority_reqs:
+                                    if st.session_state.stop_requested: break
+                                    processed_count += 1
+                                    add_log(f"&nbsp;&nbsp;&nbsp;&nbsp;🔎 Checking {rt.replace('_', ' ').title()}: <i>{str(rv)[:40]}...</i>")
+                                    task_display.warning(f"🔬 Deep Scan: Checking {rt.upper()} (Priority)...")
+                                    sub_bar.progress(processed_count/num_reqs)
+                                    res_crit = client.evaluate_criterion(res['content'], rt, rv)
+                                    if res_crit:
+                                        details.append(res_crit)
+                                        icon = "✅" if res_crit['status'] == 'Met' else "⚠️" if res_crit['status'] == 'Partial' else "❌"
+                                        add_log(f"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↳ {icon} {res_crit['status']}")
+
                                 if st.session_state.stop_requested: break
-                                processed_count += 1
-                                add_log(f"&nbsp;&nbsp;&nbsp;&nbsp;🔎 Checking {rt.replace('_', ' ').title()}: <i>{str(rv)[:40]}...</i>")
-                                task_display.warning(f"🔬 Deep Scan: Checking {rt.upper()} (Priority)...")
-                                sub_bar.progress(processed_count/num_reqs)
-                                res_crit = client.evaluate_criterion(res['content'], rt, rv)
-                                if res_crit:
-                                    details.append(res_crit)
-                                    icon = "✅" if res_crit['status'] == 'Met' else "⚠️" if res_crit['status'] == 'Partial' else "❌"
-                                    add_log(f"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↳ {icon} {res_crit['status']}")
 
-                            if st.session_state.stop_requested: break
+                                if bulk_reqs:
+                                    processed_count += 1
+                                    task_display.info(f"⚡ Bulk Scan: Checking {len(bulk_reqs)} secondary criteria...")
+                                    add_log(f"&nbsp;&nbsp;&nbsp;&nbsp;⚡ Bulk checking {len(bulk_reqs)} secondary items...")
+                                    sub_bar.progress(processed_count/num_reqs)
+                                    bulk_results = client.evaluate_bulk_criteria(res['content'], bulk_reqs)
+                                    if bulk_results: details.extend(bulk_results)
 
-                            if bulk_reqs:
-                                processed_count += 1
-                                task_display.info(f"⚡ Bulk Scan: Checking {len(bulk_reqs)} secondary criteria...")
-                                add_log(f"&nbsp;&nbsp;&nbsp;&nbsp;⚡ Bulk checking {len(bulk_reqs)} secondary items...")
-                                sub_bar.progress(processed_count/num_reqs)
-                                bulk_results = client.evaluate_bulk_criteria(res['content'], bulk_reqs)
-                                if bulk_results: details.extend(bulk_results)
+                                sub_bar.empty()
+                                sf, df, rf = client.generate_final_decision(res['filename'], details, strategy="Deep")
 
-                            sub_bar.empty()
-                            sf, df, rf = client.generate_final_decision(res['filename'], details, strategy="Deep")
+                                std_score_saved = exist.get('standard_score', score)
+                                std_reasoning_saved = exist.get('standard_reasoning', exist.get('reasoning'))
 
-                            std_score_saved = exist.get('standard_score', score)
-                            std_reasoning_saved = exist.get('standard_reasoning', exist.get('reasoning'))
+                                mid = db.save_match(int(job['id']), int(res['id']), {"candidate_name": res['filename'], "match_score": sf, "decision": df, "reasoning": rf, "match_details": details}, mid, strategy="Deep", standard_score=std_score_saved, standard_reasoning=std_reasoning_saved)
+                                add_log(f"&nbsp;&nbsp;🏁 <b>Deep Match Final: {sf}% ({df})</b>")
 
-                            mid = db.save_match(int(job['id']), int(res['id']), {"candidate_name": res['filename'], "match_score": sf, "decision": df, "reasoning": rf, "match_details": details}, mid, strategy="Deep", standard_score=std_score_saved, standard_reasoning=std_reasoning_saved)
-                            add_log(f"&nbsp;&nbsp;🏁 <b>Deep Match Final: {sf}% ({df})</b>")
+                        elif auto_deep and not qualifies_for_deep:
+                            add_log(f"&nbsp;&nbsp;⏭️ Score ({score}%) below threshold ({deep_match_thresh}%). Skipping Deep Match.")
 
-                    elif auto_deep and not qualifies_for_deep:
-                        add_log(f"&nbsp;&nbsp;⏭️ Score ({score}%) below threshold ({deep_match_thresh}%). Skipping Deep Match.")
-
-                    if mid: db.link_run_match(rid, mid)
-                    master_bar.progress(count/total)
+                        if mid: db.link_run_match(rid, mid)
+                        master_bar.progress(count/total_ops)
 
             status.update(label="Complete!", state="complete")
 
@@ -354,14 +413,15 @@ def start_run_callback():
 def stop_run_callback():
     st.session_state.stop_requested = True
 
-def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_rerun):
+def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_rerun, match_by_tags=False):
     st.session_state.rerun_config = {
         "run_name": name,
         "jobs": jobs_df,
         "resumes": resumes_df,
         "thresh": thresh,
         "auto": auto_deep,
-        "force": force_rerun
+        "force": force_rerun,
+        "tags": match_by_tags
     }
     st.session_state.is_running = True
     st.session_state.stop_requested = False
@@ -713,6 +773,10 @@ with tab2:
         st.divider()
         with st.container(border=True):
             st.markdown("#### ⚙️ Smart Match Configuration")
+
+            # --- NEW TAGS CONFIGURATION ---
+            match_tags = st.checkbox("🎯 Auto-match based on JD Tags", help="When enabled, creates a separate Run for each JD, checking ONLY resumes tagged with that JD's filename.")
+
             c1, c2 = st.columns([2, 2])
             auto_deep = c1.checkbox("✨ Auto-Upgrade to Deep Match", value=True, help="Automatically run a Deep Scan if the Standard Match score is high enough.")
 
@@ -734,8 +798,10 @@ with tab2:
 
             if st.session_state.is_running and st.session_state.rerun_config is None:
                 c4.button("🛑 STOP ANALYSIS", type="primary", use_container_width=True, on_click=stop_run_callback)
-                run_analysis_batch(run_name, sel_j, sel_r, deep_match_thresh, auto_deep, force_rerun_pass1=f_rerun)
+                # Pass match_tags param
+                run_analysis_batch(run_name, sel_j, sel_r, deep_match_thresh, auto_deep, force_rerun_pass1=f_rerun, match_by_tags=match_tags)
             elif not st.session_state.is_running:
+                # Pass match_tags param
                 c4.button("🚀 START ANALYSIS", type="primary", use_container_width=True, on_click=start_run_callback)
 
 # --- TAB 3: MATCH RESULTS ---
@@ -760,6 +826,9 @@ with tab3:
             if new_auto_deep:
                 new_thresh = c_r2.slider("New Deep Match Threshold (%)", 0, 100, run_threshold, key="rerun_thresh")
 
+            # --- RERUN TAG OPTION ---
+            new_match_tags = st.checkbox("Auto-match based on JD Tags", value=False, key="rerun_tags")
+
             f_rerun_p1 = st.checkbox("Force Re-run Pass 1 (Standard Match)", value=False, help="If unchecked, existing standard match scores will be reused to save time.")
 
             linked_data = db.fetch_dataframe(f"""
@@ -780,9 +849,11 @@ with tab3:
                 if st.session_state.is_running and st.session_state.rerun_config:
                     st.button("🛑 STOP RERUN", type="primary", on_click=stop_run_callback)
                     cfg = st.session_state.rerun_config
-                    run_analysis_batch(cfg['run_name'], cfg['jobs'], cfg['resumes'], cfg['thresh'], cfg['auto'], cfg['force'])
+                    # Use stored config parameters
+                    run_analysis_batch(cfg['run_name'], cfg['jobs'], cfg['resumes'], cfg['thresh'], cfg['auto'], cfg['force'], match_by_tags=cfg.get('tags', False))
                 elif not st.session_state.is_running:
-                    st.button("🚀 Rerun Batch", type="primary", on_click=prepare_rerun_callback, args=(rerun_name_input, rerun_j, rerun_r, new_thresh, new_auto_deep, f_rerun_p1))
+                    # Pass new_match_tags here
+                    st.button("🚀 Rerun Batch", type="primary", on_click=prepare_rerun_callback, args=(rerun_name_input, rerun_j, rerun_r, new_thresh, new_auto_deep, f_rerun_p1, new_match_tags))
             else:
                 st.error("Could not find original JDs/Resumes for this run.")
 
