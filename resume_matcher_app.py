@@ -18,7 +18,7 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)
 st.set_page_config(page_title="TalentScout AI", page_icon="🚀", layout="wide")
 
 # Init Session State
-if "lm_base_url" not in st.session_state: st.session_state.lm_base_url = "http://localhost:1234/v1"
+if "lm_base_url" not in st.session_state: st.session_state.lm_base_url = "https://equitably-unmetalized-frieda.ngrok-free.dev/v1"
 if "lm_api_key" not in st.session_state: st.session_state.lm_api_key = "lm-studio"
 if "ocr_enabled" not in st.session_state: st.session_state.ocr_enabled = True
 if "processed_files" not in st.session_state: st.session_state.processed_files = set()
