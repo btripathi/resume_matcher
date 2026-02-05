@@ -9,7 +9,7 @@ import logging
 import database
 import document_utils
 import ai_engine
-import github_sync  # <--- INSERT 1: Import Sync
+import github_sync  # <--- ADDED: Sync Module
 
 # --- LOGGING CONFIGURATION ---
 # Suppress pypdf warnings about malformed PDF structures (harmless noise)
@@ -18,13 +18,13 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)
 # --- CONFIGURATION ---
 st.set_page_config(page_title="TalentScout AI", page_icon="🚀", layout="wide")
 
-# --- INSERT 2: Startup Sync ---
+# --- ADDED: SYNC ON STARTUP ---
 if "db_synced" not in st.session_state:
-    with st.spinner("🔄 Syncing Database from GitHub..."):
+    with st.spinner("🔄 Checking GitHub for Database..."):
         if github_sync.pull_db():
-            st.toast("✅ Database Restored!", icon="☁️")
+            st.toast("✅ Database Restored from GitHub!", icon="☁️")
         else:
-            st.toast("ℹ️ No remote DB found. Starting fresh.", icon="✨")
+            st.toast("ℹ️ No remote DB found. Using Local.", icon="💻")
     st.session_state.db_synced = True
 
 # Init Session State
@@ -409,6 +409,10 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
 
             status.update(label="Complete!", state="complete")
 
+            # --- AUTO SAVE TRIGGER ---
+            with st.spinner("Syncing results to GitHub..."):
+                github_sync.push_db()
+
     st.session_state.is_running = False
     st.session_state.stop_requested = False
     st.session_state.rerun_config = None
@@ -469,14 +473,24 @@ with col_set:
             except Exception as e:
                 st.error(f"Connection failed. Error: {e}")
 
-        # --- INSERT 3: Manual Sync Button ---
+        # --- SYNC BUTTONS ---
         st.divider()
-        if st.button("💾 Sync to GitHub", type="primary"):
+        c1, c2 = st.columns(2)
+        if c1.button("💾 Push to GitHub", type="primary"):
             with st.spinner("Pushing database to GitHub..."):
                 if github_sync.push_db():
-                    st.success("Database Saved!")
+                    st.success("Synced!")
                 else:
-                    st.error("Save Failed. Check logs.")
+                    st.error("Failed. Check logs.")
+
+        if c2.button("📥 Force Pull"):
+            with st.spinner("Pulling from GitHub..."):
+                if github_sync.pull_db():
+                    st.success("Pulled!")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Not Found")
 
         if st.button("🗑️ Reset DB", type="secondary"):
             db.execute_query("DELETE FROM matches")
@@ -485,6 +499,8 @@ with col_set:
             db.execute_query("DELETE FROM jobs")
             db.execute_query("DELETE FROM resumes")
             st.session_state.processed_files = set()
+            with st.spinner("Syncing reset to GitHub..."):
+                github_sync.push_db()
             st.success("Reset Complete")
             time.sleep(1)
             st.rerun()
@@ -547,6 +563,10 @@ with tab1:
                             status.update(label="Complete!", state="complete")
                             st.session_state.jd_uploader_key += 1
 
+                            # --- AUTO SAVE TRIGGER ---
+                            with st.spinner("Syncing to GitHub..."):
+                                github_sync.push_db()
+
                     st.session_state.is_uploading_jd = False
                     st.session_state.stop_upload_jd = False
                     st.rerun()
@@ -590,12 +610,22 @@ with tab1:
                 ec1, ec2 = st.columns(2)
                 if ec1.button("Save JD Changes", key=f"sav_jd_{jd_edit_id}"):
                     db.execute_query("UPDATE jobs SET criteria = ? WHERE id = ?", (new_crit, jd_edit_id))
+
+                    # --- AUTO SAVE TRIGGER ---
+                    with st.spinner("Syncing to GitHub..."):
+                        github_sync.push_db()
+
                     st.success("Saved!")
                     time.sleep(0.5)
                     st.rerun()
                 if ec2.button("Delete JD", key=f"del_jd_{jd_edit_id}", type="primary"):
                     db.execute_query("DELETE FROM matches WHERE job_id = ?", (jd_edit_id,))
                     db.execute_query("DELETE FROM jobs WHERE id = ?", (jd_edit_id,))
+
+                    # --- AUTO SAVE TRIGGER ---
+                    with st.spinner("Syncing to GitHub..."):
+                        github_sync.push_db()
+
                     # Clear selection on delete
                     del st.session_state.selected_jd_filename
                     st.rerun()
@@ -661,6 +691,10 @@ with tab1:
                                 status.update(label="Complete!", state="complete")
                                 st.session_state.res_uploader_key += 1
 
+                                # --- AUTO SAVE TRIGGER ---
+                                with st.spinner("Syncing to GitHub..."):
+                                    github_sync.push_db()
+
                         st.session_state.is_uploading_res = False
                         st.session_state.stop_upload_res = False
                         st.rerun()
@@ -680,6 +714,11 @@ with tab1:
                                 db.add_resume(record['filename'], record['content'], record['profile'])
                             count += 1
                         st.success(f"Imported {count} resumes successfully!")
+
+                        # --- AUTO SAVE TRIGGER ---
+                        with st.spinner("Syncing to GitHub..."):
+                            github_sync.push_db()
+
                         time.sleep(1)
                         st.rerun()
                     except Exception as e:
@@ -750,12 +789,22 @@ with tab1:
                 ec1, ec2 = st.columns(2)
                 if ec1.button("Save Profile & Tags", key=f"sav_res_{row['id']}"):
                     db.execute_query("UPDATE resumes SET profile = ?, tags = ? WHERE id = ?", (new_prof, new_tags_val, int(row['id'])))
+
+                    # --- AUTO SAVE TRIGGER ---
+                    with st.spinner("Syncing to GitHub..."):
+                        github_sync.push_db()
+
                     st.success("Saved!")
                     time.sleep(0.5)
                     st.rerun()
                 if ec2.button("Delete Resume", key=f"del_res_{row['id']}", type="primary"):
                     db.execute_query("DELETE FROM matches WHERE resume_id = ?", (int(row['id']),))
                     db.execute_query("DELETE FROM resumes WHERE id = ?", (int(row['id']),))
+
+                    # --- AUTO SAVE TRIGGER ---
+                    with st.spinner("Syncing to GitHub..."):
+                        github_sync.push_db()
+
                     del st.session_state.selected_res_filename
                     st.rerun()
         else:
@@ -880,6 +929,11 @@ with tab3:
         if st.button("🗑️ Delete Run History", type="secondary"):
             db.execute_query("DELETE FROM runs WHERE id=?", (run_id,))
             db.execute_query("DELETE FROM run_matches WHERE run_id=?", (run_id,))
+
+            # --- AUTO SAVE TRIGGER ---
+            with st.spinner("Syncing to GitHub..."):
+                github_sync.push_db()
+
             st.success("Deleted")
             st.rerun()
 
@@ -970,12 +1024,22 @@ with tab3:
                                 raw_reasoning = data.get('reasoning', "No reasoning provided.")
                                 std_reasoning = "\n".join(raw_reasoning) if isinstance(raw_reasoning, list) else str(raw_reasoning)
                                 db.save_match(None, None, data, match_id, standard_reasoning=std_reasoning)
+
+                                # --- AUTO SAVE TRIGGER ---
+                                with st.spinner("Syncing to GitHub..."):
+                                    github_sync.push_db()
+
                                 status.update(label="Complete!", state="complete")
                                 time.sleep(1)
                                 st.rerun()
                 with c_act2:
                     if st.button("🗑️ Delete This Match", key=f"del_s_{match_id}", type="primary"):
                         db.execute_query("DELETE FROM matches WHERE id=?", (match_id,))
+
+                        # --- AUTO SAVE TRIGGER ---
+                        with st.spinner("Syncing to GitHub..."):
+                            github_sync.push_db()
+
                         st.success("Deleted")
                         time.sleep(0.5)
                         st.rerun()
