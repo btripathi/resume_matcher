@@ -305,10 +305,17 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                             master_bar.progress(count/total_ops)
                             continue # Skip to next candidate
 
-                        should_run_standard = (not exist) or force_rerun_pass1
+                        # Check if previous run was a technical failure (NEW LOGIC)
+                        previous_failure = exist and (exist.get('decision') in ["Parsing Error", "Error"] or str(exist.get('match_score')) == "0")
+
+                        should_run_standard = (not exist) or force_rerun_pass1 or previous_failure
 
                         if should_run_standard:
-                            task_display.info(f"🧠 Pass 1: Holistic scan for **{current_resume_name}**...")
+                            msg_prefix = "🧠 Pass 1"
+                            if previous_failure:
+                                msg_prefix = "🔄 Retry (Prev Failed)"
+
+                            task_display.info(f"{msg_prefix}: Holistic scan for **{current_resume_name}**...")
                             data = client.evaluate_standard(res['content'], job['criteria'], res['profile'])
 
                             # --- ERROR HANDLING FIX: Ensure 'data' is a dict ---
@@ -346,7 +353,7 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                         qualifies_for_deep = score >= deep_match_thresh
 
                         if auto_deep and qualifies_for_deep:
-                            if is_already_deep and not force_rerun_pass1:
+                            if is_already_deep and not force_rerun_pass1 and not previous_failure:
                                 mid = exist['id']
                                 add_log("&nbsp;&nbsp;ℹ️ Deep match already exists. Skipping.")
                             else:
@@ -931,7 +938,7 @@ with tab3:
             db.execute_query("DELETE FROM run_matches WHERE run_id=?", (run_id,))
 
             # --- AUTO SAVE TRIGGER ---
-            with st.spinner("Syncing to GitHub..."):
+            with st.spinner("Syncing deletion to GitHub..."):
                 github_sync.push_db()
 
             st.success("Deleted")
