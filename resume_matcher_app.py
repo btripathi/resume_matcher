@@ -9,6 +9,7 @@ import logging
 import database
 import document_utils
 import ai_engine
+import github_sync  # <--- INSERT 1: Import Sync
 
 # --- LOGGING CONFIGURATION ---
 # Suppress pypdf warnings about malformed PDF structures (harmless noise)
@@ -16,6 +17,15 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="TalentScout AI", page_icon="🚀", layout="wide")
+
+# --- INSERT 2: Startup Sync ---
+if "db_synced" not in st.session_state:
+    with st.spinner("🔄 Syncing Database from GitHub..."):
+        if github_sync.pull_db():
+            st.toast("✅ Database Restored!", icon="☁️")
+        else:
+            st.toast("ℹ️ No remote DB found. Starting fresh.", icon="✨")
+    st.session_state.db_synced = True
 
 # Init Session State
 if "lm_base_url" not in st.session_state: st.session_state.lm_base_url = "https://equitably-unmetalized-frieda.ngrok-free.dev/v1"
@@ -459,7 +469,16 @@ with col_set:
             except Exception as e:
                 st.error(f"Connection failed. Error: {e}")
 
-        if st.button("🗑️ Reset DB", type="primary"):
+        # --- INSERT 3: Manual Sync Button ---
+        st.divider()
+        if st.button("💾 Sync to GitHub", type="primary"):
+            with st.spinner("Pushing database to GitHub..."):
+                if github_sync.push_db():
+                    st.success("Database Saved!")
+                else:
+                    st.error("Save Failed. Check logs.")
+
+        if st.button("🗑️ Reset DB", type="secondary"):
             db.execute_query("DELETE FROM matches")
             db.execute_query("DELETE FROM runs")
             db.execute_query("DELETE FROM run_matches")

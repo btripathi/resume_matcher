@@ -8,3 +8,4 @@ pandas
 pdf2image
 matplotlib
 matplotlib
+PyGithub
