@@ -50,6 +50,8 @@ elif not st.session_state.local_lm_available and st.session_state.lm_base_url.st
 if "lm_api_key" not in st.session_state: st.session_state.lm_api_key = "lm-studio"
 if "ocr_enabled" not in st.session_state: st.session_state.ocr_enabled = True
 if "processed_files" not in st.session_state: st.session_state.processed_files = set()
+if "write_mode" not in st.session_state: st.session_state.write_mode = False
+if "write_mode_warned" not in st.session_state: st.session_state.write_mode_warned = False
 
 # Analysis Run State
 if "is_running" not in st.session_state: st.session_state.is_running = False
@@ -73,6 +75,17 @@ if "selected_res_filename" not in st.session_state: st.session_state.selected_re
 db = database.DBManager()
 
 # --- UI HELPERS ---
+if not st.session_state.write_mode:
+    st.info("Read-only mode: changes are local only and will NOT sync to the shared DB. Enable Write Mode to share results.", icon="🔒")
+
+def sync_db_if_allowed():
+    if st.session_state.write_mode:
+        return github_sync.push_db()
+    if not st.session_state.write_mode_warned:
+        st.warning("Read-only mode: changes are not synced to shared DB. Enable Write Mode to push.")
+        st.session_state.write_mode_warned = True
+    return False
+
 def _safe_int(val, default=0):
     try:
         if isinstance(val, (bytes, bytearray)):
@@ -461,7 +474,7 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
 
             # --- AUTO SAVE TRIGGER ---
             with st.spinner("Syncing results to GitHub..."):
-                github_sync.push_db()
+                sync_db_if_allowed()
 
     st.session_state.is_running = False
     st.session_state.stop_requested = False
@@ -518,6 +531,98 @@ with col_set:
         st.text_input("API Key", key="lm_api_key")
         st.checkbox("Enable OCR", key="ocr_enabled")
 
+        # --- WRITE MODE (SINGLE WRITER) ---
+        st.divider()
+        st.write("### Write Mode")
+        lock_timeout = 6
+        try:
+            lock_timeout = st.secrets.get("writer", {}).get("lock_timeout_hours", 6)
+        except Exception:
+            lock_timeout = 6
+
+        lock_info = github_sync.get_lock(timeout_hours=lock_timeout)
+        if lock_info and isinstance(lock_info, dict):
+            owner = lock_info.get("owner", "unknown")
+            created = lock_info.get("created_at", "unknown time")
+            if lock_info.get("expired"):
+                st.caption(f"Write lock: **{owner}** since {created} (expired)")
+            else:
+                st.caption(f"Write lock: **{owner}** since {created}")
+        else:
+            st.caption("Write lock: none")
+
+        writer_name_default = ""
+        try:
+            writer_name_default = st.secrets.get("writer", {}).get("name", "")
+        except Exception:
+            writer_name_default = ""
+        writer_name = st.text_input("Writer name", value=writer_name_default, key="writer_name")
+        writer_password = st.text_input("Write password", type="password", key="writer_password")
+
+        st.caption(f"Lock auto-expires after {lock_timeout} hours. Use Release before closing if possible.")
+
+        if st.button("Enable Write Mode"):
+            expected = None
+            try:
+                expected = st.secrets.get("writer", {}).get("password")
+            except Exception:
+                expected = None
+            if not expected:
+                st.error("Write password not configured in secrets.")
+            elif writer_password != expected:
+                st.error("Incorrect write password.")
+            else:
+                # If lock already belongs to this writer, just resume write mode
+                if lock_info and isinstance(lock_info, dict) and lock_info.get("owner") == (writer_name or "unknown"):
+                    st.session_state.write_mode = True
+                    st.session_state.write_mode_warned = False
+                    st.success("Write mode resumed (existing lock).")
+                    time.sleep(0.2)
+                    st.rerun()
+                else:
+                    ok, msg = github_sync.acquire_lock(writer_name or "unknown", timeout_hours=lock_timeout)
+                    if ok:
+                        st.session_state.write_mode = True
+                        st.session_state.write_mode_warned = False
+                        st.success(msg)
+                        time.sleep(0.2)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+        if st.session_state.write_mode:
+            if st.button("Disable Write Mode / Release Lock"):
+                ok, msg = github_sync.release_lock(writer_name or "unknown")
+                if ok:
+                    st.session_state.write_mode = False
+                    st.session_state.write_mode_warned = False
+                    st.success(msg)
+                    time.sleep(0.2)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+        if st.button("Force Unlock (Admin)"):
+            expected = None
+            try:
+                expected = st.secrets.get("writer", {}).get("password")
+            except Exception:
+                expected = None
+            if not expected:
+                st.error("Write password not configured in secrets.")
+            elif writer_password != expected:
+                st.error("Incorrect write password.")
+            else:
+                ok, msg = github_sync.release_lock(writer_name or "unknown", force=True)
+                if ok:
+                    st.session_state.write_mode = False
+                    st.session_state.write_mode_warned = False
+                    st.success(msg)
+                    time.sleep(0.2)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
         if st.button("🔌 Test Connection"):
             try:
                 from openai import OpenAI
@@ -530,9 +635,9 @@ with col_set:
         # --- SYNC BUTTONS ---
         st.divider()
         c1, c2 = st.columns(2)
-        if c1.button("💾 Push to GitHub", type="primary"):
+        if c1.button("💾 Push to GitHub", type="primary", disabled=not st.session_state.write_mode):
             with st.spinner("Pushing database to GitHub..."):
-                if github_sync.push_db():
+                if sync_db_if_allowed():
                     st.success("Synced!")
                 else:
                     st.error("Failed. Check logs.")
@@ -554,7 +659,7 @@ with col_set:
             db.execute_query("DELETE FROM resumes")
             st.session_state.processed_files = set()
             with st.spinner("Syncing reset to GitHub..."):
-                github_sync.push_db()
+                sync_db_if_allowed()
             st.success("Reset Complete")
             time.sleep(1)
             st.rerun()
@@ -564,6 +669,8 @@ tab1, tab2, tab3 = st.tabs(["1. Manage Data", "2. Run Analysis", "3. Match Resul
 
 # --- TAB 1: MANAGE DATA ---
 with tab1:
+    if not st.session_state.write_mode:
+        st.info("Read-only mode: uploads/edits are saved locally only and won't sync to the shared DB.", icon="🔒")
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
 
     # SPLIT TAB INTO SUB-TABS
@@ -619,7 +726,7 @@ with tab1:
 
                             # --- AUTO SAVE TRIGGER ---
                             with st.spinner("Syncing to GitHub..."):
-                                github_sync.push_db()
+                                sync_db_if_allowed()
 
                     st.session_state.is_uploading_jd = False
                     st.session_state.stop_upload_jd = False
@@ -668,7 +775,7 @@ with tab1:
 
                     # --- AUTO SAVE TRIGGER ---
                     with st.spinner("Syncing to GitHub..."):
-                        github_sync.push_db()
+                        sync_db_if_allowed()
 
                     st.success("Saved!")
                     time.sleep(0.5)
@@ -679,7 +786,7 @@ with tab1:
 
                     # --- AUTO SAVE TRIGGER ---
                     with st.spinner("Syncing to GitHub..."):
-                        github_sync.push_db()
+                        sync_db_if_allowed()
 
                     # Clear selection on delete
                     del st.session_state.selected_jd_filename
@@ -748,7 +855,7 @@ with tab1:
 
                                 # --- AUTO SAVE TRIGGER ---
                                 with st.spinner("Syncing to GitHub..."):
-                                    github_sync.push_db()
+                                    sync_db_if_allowed()
 
                         st.session_state.is_uploading_res = False
                         st.session_state.stop_upload_res = False
@@ -772,7 +879,7 @@ with tab1:
 
                         # --- AUTO SAVE TRIGGER ---
                         with st.spinner("Syncing to GitHub..."):
-                            github_sync.push_db()
+                            sync_db_if_allowed()
 
                         time.sleep(1)
                         st.rerun()
@@ -849,7 +956,7 @@ with tab1:
 
                     # --- AUTO SAVE TRIGGER ---
                     with st.spinner("Syncing to GitHub..."):
-                        github_sync.push_db()
+                        sync_db_if_allowed()
 
                     st.success("Saved!")
                     time.sleep(0.5)
@@ -860,7 +967,7 @@ with tab1:
 
                     # --- AUTO SAVE TRIGGER ---
                     with st.spinner("Syncing to GitHub..."):
-                        github_sync.push_db()
+                        sync_db_if_allowed()
 
                     del st.session_state.selected_res_filename
                     st.rerun()
@@ -869,6 +976,8 @@ with tab1:
 
 # --- TAB 2: RUN ANALYSIS ---
 with tab2:
+    if not st.session_state.write_mode:
+        st.info("Read-only mode: run results are local only and won't sync to the shared DB.", icon="🔒")
     j_data = db.fetch_dataframe("SELECT * FROM jobs")
     r_data = db.fetch_dataframe("SELECT * FROM resumes")
 
@@ -934,6 +1043,8 @@ with tab2:
 
 # --- TAB 3: MATCH RESULTS ---
 with tab3:
+    if not st.session_state.write_mode:
+        st.info("Read-only mode: reruns/edits are local only and won't sync to the shared DB.", icon="🔒")
     runs = db.fetch_dataframe("SELECT * FROM runs ORDER BY id DESC")
     if not runs.empty:
         runs['label'] = runs['name'] + " (" + runs['created_at'] + ")"
@@ -954,7 +1065,7 @@ with tab3:
             if new_run_name != run_name_base:
                 db.execute_query("UPDATE runs SET name=? WHERE id=?", (new_run_name, run_id))
                 with st.spinner("Syncing rename to GitHub..."):
-                    github_sync.push_db()
+                    sync_db_if_allowed()
                 st.rerun()  # <--- CRITICAL: Refreshes the dropdown immediately
 
         # --- RERUN SECTION ---
@@ -1013,7 +1124,7 @@ with tab3:
 
             # --- AUTO SAVE TRIGGER ---
             with st.spinner("Syncing deletion to GitHub..."):
-                github_sync.push_db()
+                sync_db_if_allowed()
 
             st.success("Deleted")
             st.rerun()
@@ -1120,7 +1231,7 @@ with tab3:
 
                                 # --- AUTO SAVE TRIGGER ---
                                 with st.spinner("Syncing to GitHub..."):
-                                    github_sync.push_db()
+                                    sync_db_if_allowed()
 
                                 status.update(label="Complete!", state="complete")
                             else:
@@ -1133,7 +1244,7 @@ with tab3:
 
                         # --- AUTO SAVE TRIGGER ---
                         with st.spinner("Syncing to GitHub..."):
-                            github_sync.push_db()
+                            sync_db_if_allowed()
 
                         st.success("Deleted")
                         time.sleep(0.5)
