@@ -1076,7 +1076,7 @@ with tab3:
                          with st.status("Re-evaluating...", expanded=True) as status:
                             action_data = db.fetch_dataframe(f"SELECT r.content as resume_text, r.profile as resume_profile, j.criteria as job_criteria FROM matches m JOIN resumes r ON m.resume_id = r.id JOIN jobs j ON m.job_id = j.id WHERE m.id = {match_id}").iloc[0]
                             resp = client.evaluate_standard(action_data['resume_text'], action_data['job_criteria'], action_data['resume_profile'])
-                            data = document_utils.clean_json_response(resp)
+                            data = resp if isinstance(resp, dict) else document_utils.clean_json_response(resp)
                             if data:
                                 raw_reasoning = data.get('reasoning', "No reasoning provided.")
                                 std_reasoning = "\n".join(raw_reasoning) if isinstance(raw_reasoning, list) else str(raw_reasoning)
@@ -1087,8 +1087,10 @@ with tab3:
                                     github_sync.push_db()
 
                                 status.update(label="Complete!", state="complete")
-                                time.sleep(1)
-                                st.rerun()
+                            else:
+                                status.update(label="Re-evaluation failed.", state="error")
+                            time.sleep(1)
+                            st.rerun()
                 with c_act2:
                     if st.button("🗑️ Delete This Match", key=f"del_s_{match_id}", type="primary"):
                         db.execute_query("DELETE FROM matches WHERE id=?", (match_id,))
