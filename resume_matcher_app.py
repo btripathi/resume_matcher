@@ -141,13 +141,12 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
              badge_color = "color: #721c24; background-color: #f8d7da;" # Darker Red warning
              score_color = "#dc3545"
         elif is_deep:
-            review_range = max(0, threshold - 20)
-            if score >= threshold:
-                decision_label = "Move Forward"
+            # For Deep matches, use the stored decision to stay consistent with scoring logic
+            decision_label = decision
+            if decision == "Move Forward":
                 badge_color = "color: #0f5132; background-color: #d1e7dd;" # Green
                 score_color = "#0f5132"
-            elif score >= review_range:
-                decision_label = "Review"
+            elif decision == "Review":
                 badge_color = "color: #664d03; background-color: #fff3cd;" # Yellow
                 score_color = "#856404"
             else:
