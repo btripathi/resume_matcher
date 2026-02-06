@@ -17,16 +17,24 @@ class DBManager:
 
         c.execute('''CREATE TABLE IF NOT EXISTS jobs
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      filename TEXT, content TEXT, criteria TEXT, upload_date TIMESTAMP)''')
+                      filename TEXT, content TEXT, criteria TEXT, tags TEXT, upload_date TIMESTAMP)''')
 
         # Added 'tags' column to resumes
         c.execute('''CREATE TABLE IF NOT EXISTS resumes
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       filename TEXT, content TEXT, profile TEXT, tags TEXT, upload_date TIMESTAMP)''')
 
+        c.execute('''CREATE TABLE IF NOT EXISTS tags
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      name TEXT UNIQUE)''')
+
         # Migration for existing dbs
         try:
             c.execute("ALTER TABLE resumes ADD COLUMN tags TEXT")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE jobs ADD COLUMN tags TEXT")
         except:
             pass
 
@@ -95,11 +103,11 @@ class DBManager:
         conn.close()
         return {'id': res[0]} if res else None
 
-    def add_job(self, filename, content, criteria):
+    def add_job(self, filename, content, criteria, tags=None):
         conn = self.get_connection()
         c = conn.cursor()
-        c.execute("INSERT INTO jobs (filename, content, criteria, upload_date) VALUES (?, ?, ?, ?)",
-                  (filename, content, json.dumps(criteria, indent=2), datetime.datetime.now().isoformat()))
+        c.execute("INSERT INTO jobs (filename, content, criteria, tags, upload_date) VALUES (?, ?, ?, ?, ?)",
+                  (filename, content, json.dumps(criteria, indent=2), tags, datetime.datetime.now().isoformat()))
         conn.commit()
         conn.close()
 
@@ -108,6 +116,13 @@ class DBManager:
         c = conn.cursor()
         c.execute("UPDATE jobs SET content = ?, criteria = ?, upload_date = ? WHERE id = ?",
                   (content, json.dumps(criteria, indent=2), datetime.datetime.now().isoformat(), job_id))
+        conn.commit()
+        conn.close()
+
+    def update_job_tags(self, job_id, tags):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("UPDATE jobs SET tags = ? WHERE id = ?", (tags, job_id))
         conn.commit()
         conn.close()
 
@@ -134,6 +149,162 @@ class DBManager:
         c.execute("UPDATE resumes SET tags = ? WHERE id = ?", (tags, resume_id))
         conn.commit()
         conn.close()
+
+    def list_tags(self):
+        conn = self.get_connection()
+        c = conn.cursor()
+        try:
+            c.execute("SELECT name FROM tags ORDER BY name COLLATE NOCASE")
+            rows = [row[0] for row in c.fetchall()]
+        except:
+            rows = []
+        conn.close()
+        return rows
+
+    def add_tag(self, name):
+        if not name or not name.strip():
+            return
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name.strip(),))
+        conn.commit()
+        conn.close()
+
+    def delete_tag(self, name):
+        if not name or not name.strip():
+            return
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM tags WHERE name = ?", (name.strip(),))
+        conn.commit()
+        conn.close()
+
+    def rename_tag(self, old, new):
+        if not old or not new:
+            return
+        old_name = old.strip()
+        new_name = new.strip()
+        if not old_name or not new_name or old_name == new_name:
+            return
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (new_name,))
+        c.execute("DELETE FROM tags WHERE name = ?", (old_name,))
+        conn.commit()
+        conn.close()
+
+    def rename_tag_in_resumes(self, old, new):
+        if not old or not new:
+            return
+        old_name = old.strip()
+        new_name = new.strip()
+        if not old_name or not new_name or old_name == new_name:
+            return
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT id, tags FROM resumes WHERE tags IS NOT NULL AND tags != ''")
+        rows = c.fetchall()
+        for resume_id, tags_str in rows:
+            tags = self._split_tags(tags_str)
+            updated = False
+            new_tags = []
+            for tag in tags:
+                if tag == old_name:
+                    new_tags.append(new_name)
+                    updated = True
+                else:
+                    new_tags.append(tag)
+            if updated:
+                new_tags_val = self._join_tags(new_tags)
+                c.execute("UPDATE resumes SET tags = ? WHERE id = ?", (new_tags_val, resume_id))
+        conn.commit()
+        conn.close()
+
+    def rename_tag_in_jobs(self, old, new):
+        if not old or not new:
+            return
+        old_name = old.strip()
+        new_name = new.strip()
+        if not old_name or not new_name or old_name == new_name:
+            return
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT id, tags FROM jobs WHERE tags IS NOT NULL AND tags != ''")
+        rows = c.fetchall()
+        for job_id, tags_str in rows:
+            tags = self._split_tags(tags_str)
+            updated = False
+            new_tags = []
+            for tag in tags:
+                if tag == old_name:
+                    new_tags.append(new_name)
+                    updated = True
+                else:
+                    new_tags.append(tag)
+            if updated:
+                new_tags_val = self._join_tags(new_tags)
+                c.execute("UPDATE jobs SET tags = ? WHERE id = ?", (new_tags_val, job_id))
+        conn.commit()
+        conn.close()
+
+    def delete_tag_from_resumes(self, name):
+        if not name or not name.strip():
+            return
+        tag_name = name.strip()
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT id, tags FROM resumes WHERE tags IS NOT NULL AND tags != ''")
+        rows = c.fetchall()
+        for resume_id, tags_str in rows:
+            tags = self._split_tags(tags_str)
+            if tag_name not in tags:
+                continue
+            new_tags = [t for t in tags if t != tag_name]
+            new_tags_val = self._join_tags(new_tags) if new_tags else None
+            c.execute("UPDATE resumes SET tags = ? WHERE id = ?", (new_tags_val, resume_id))
+        conn.commit()
+        conn.close()
+
+    def delete_tag_from_jobs(self, name):
+        if not name or not name.strip():
+            return
+        tag_name = name.strip()
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT id, tags FROM jobs WHERE tags IS NOT NULL AND tags != ''")
+        rows = c.fetchall()
+        for job_id, tags_str in rows:
+            tags = self._split_tags(tags_str)
+            if tag_name not in tags:
+                continue
+            new_tags = [t for t in tags if t != tag_name]
+            new_tags_val = self._join_tags(new_tags) if new_tags else None
+            c.execute("UPDATE jobs SET tags = ? WHERE id = ?", (new_tags_val, job_id))
+        conn.commit()
+        conn.close()
+
+    def _split_tags(self, tags_str):
+        if not tags_str:
+            return []
+        return [t.strip() for t in str(tags_str).split(",") if t.strip()]
+
+    def _join_tags(self, tags_list):
+        if not tags_list:
+            return None
+        seen = set()
+        out = []
+        for tag in tags_list:
+            if not tag:
+                continue
+            t = tag.strip()
+            if not t:
+                continue
+            key = t.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(t)
+        return ",".join(out)
 
     def save_match(self, job_id, resume_id, data, match_id=None, strategy="Standard", standard_score=None, standard_reasoning=None):
         conn = self.get_connection()

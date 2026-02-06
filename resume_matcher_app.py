@@ -257,10 +257,19 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
     if match_by_tags:
         # In tag mode, we find matching resumes for each JD
         for _, job in jobs.iterrows():
-            # Filter resumes that have this job's filename in their tags
-            jd_tag = job['filename']
-            # Safely check tags (handle None)
-            matching_resumes = resumes[resumes['tags'].fillna('').astype(str).apply(lambda x: jd_tag in [t.strip() for t in x.split(',')])]
+            # Prefer JD tags; fallback to filename if tags are missing
+            jd_tags_raw = job.get('tags', None)
+            if jd_tags_raw:
+                jd_tags = [t.strip() for t in str(jd_tags_raw).split(',') if t.strip()]
+            else:
+                jd_tags = [str(job.get('filename', '')).strip()] if job.get('filename') else []
+
+            if not jd_tags:
+                matching_resumes = resumes.iloc[0:0]
+            else:
+                matching_resumes = resumes[resumes['tags'].fillna('').astype(str).apply(
+                    lambda x: any(tag in [t.strip() for t in x.split(',')] for tag in jd_tags)
+                )]
 
             if not matching_resumes.empty:
                 # Create a specific run name for this JD
@@ -689,11 +698,14 @@ with tab1:
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
 
     # SPLIT TAB INTO SUB-TABS
-    subtab_jd, subtab_res = st.tabs(["📂 Job Descriptions", "📄 Candidate Resumes"])
+    subtab_jd, subtab_res, subtab_tags = st.tabs(["📂 Job Descriptions", "📄 Candidate Resumes", "🏷️ Tag Manager"])
 
     # --- JOB DESCRIPTIONS SUB-TAB ---
     with subtab_jd:
         with st.expander("📤 Upload New Job Descriptions", expanded=False):
+            tag_options = sorted(set(db.list_tags()))
+            jd_tag_assign = st.multiselect("Assign Tag(s) to JDs (Optional):", tag_options)
+            jd_tag_val = ",".join(jd_tag_assign) if jd_tag_assign else None
             jd_up = st.file_uploader("Upload JDs (PDF/DOCX/TXT)", accept_multiple_files=True, key=f"jd_up_{st.session_state.jd_uploader_key}")
             force_reparse_jd = st.checkbox("Force Reparse Existing JDs", value=False)
 
@@ -730,8 +742,13 @@ with tab1:
                             analysis = client.analyze_jd(text)
                             if existing:
                                 db.update_job_content(existing['id'], text, analysis)
+                                if jd_tag_val:
+                                    db.update_job_tags(existing['id'], jd_tag_val)
                             else:
-                                db.add_job(f.name, text, analysis)
+                                db.add_job(f.name, text, analysis, tags=jd_tag_val)
+                            if jd_tag_val:
+                                for t in [t.strip() for t in jd_tag_val.split(",") if t.strip()]:
+                                    db.add_tag(t)
 
                             prog_bar.progress((i + 1) / total_jds)
 
@@ -748,14 +765,18 @@ with tab1:
                     st.rerun()
 
         st.subheader("Manage JDs")
-        jds = db.fetch_dataframe("SELECT id, filename, criteria, content, upload_date FROM jobs")
+        try:
+            jds = db.fetch_dataframe("SELECT id, filename, criteria, content, tags, upload_date FROM jobs")
+        except:
+            jds = db.fetch_dataframe("SELECT id, filename, criteria, content, upload_date FROM jobs")
+            jds["tags"] = None
         st.caption(f"Total Job Descriptions: {len(jds)}")
 
         if not jds.empty:
             # --- INTERACTIVE JD TABLE ---
             st.caption("Click on a row to edit.")
             event_jd = st.dataframe(
-                jds[['filename', 'upload_date']],
+                jds[['filename', 'tags', 'upload_date']],
                 hide_index=True,
                 width="stretch",
                 selection_mode="single-row",
@@ -782,11 +803,20 @@ with tab1:
                 with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
                     st.text_area("Raw Text Content", value=selected_jd_row['content'], height=300, disabled=True, key=f"raw_jd_{jd_edit_id}")
 
+                curr_jd_tags_str = selected_jd_row['tags'] if 'tags' in selected_jd_row and selected_jd_row['tags'] else ""
+                curr_jd_tags_list = [t.strip() for t in curr_jd_tags_str.split(',')] if curr_jd_tags_str else []
+                all_tag_opts = sorted(set(db.list_tags() + curr_jd_tags_list))
+                new_jd_tags = st.multiselect("Edit JD Tags", options=all_tag_opts, default=curr_jd_tags_list, key=f"jd_tag_ed_{jd_edit_id}")
+                new_jd_tags_val = ",".join(new_jd_tags) if new_jd_tags else None
+
                 new_crit = st.text_area("JSON Criteria", value=selected_jd_row['criteria'], height=300, key=f"jd_ed_{jd_edit_id}")
 
                 ec1, ec2 = st.columns(2)
                 if ec1.button("Save JD Changes", key=f"sav_jd_{jd_edit_id}"):
-                    db.execute_query("UPDATE jobs SET criteria = ? WHERE id = ?", (new_crit, jd_edit_id))
+                    db.execute_query("UPDATE jobs SET criteria = ?, tags = ? WHERE id = ?", (new_crit, new_jd_tags_val, jd_edit_id))
+                    if new_jd_tags:
+                        for t in [t.strip() for t in new_jd_tags if t.strip()]:
+                            db.add_tag(t)
 
                     # --- AUTO SAVE TRIGGER ---
                     with st.spinner("Syncing to GitHub..."):
@@ -814,12 +844,13 @@ with tab1:
         # Available tags for logic
         avail_jds = db.fetch_dataframe("SELECT id, filename FROM jobs")
         jd_options = {row['filename']: str(row['filename']) for idx, row in avail_jds.iterrows()}
+        tag_options = sorted(set(db.list_tags() + list(jd_options.keys())))
 
         with st.expander("📤 Upload / Import Resumes", expanded=False):
             c1, c2 = st.columns(2)
             with c1:
                 st.write("#### File Upload")
-                selected_tags = st.multiselect("Assign JD Tag(s) (Optional):", list(jd_options.keys()))
+                selected_tags = st.multiselect("Assign Tag(s) (Optional):", tag_options)
                 tag_val = ",".join(selected_tags) if selected_tags else None
 
                 res_up = st.file_uploader("Upload Resumes (PDF/DOCX)", accept_multiple_files=True, key=f"res_up_{st.session_state.res_uploader_key}")
@@ -861,6 +892,9 @@ with tab1:
                                     if tag_val: db.update_resume_tags(existing['id'], tag_val)
                                 else:
                                     db.add_resume(f.name, text, analysis, tags=tag_val)
+                                if tag_val:
+                                    for t in [t.strip() for t in tag_val.split(",") if t.strip()]:
+                                        db.add_tag(t)
 
                                 prog_bar.progress((i + 1) / total_res)
 
@@ -908,6 +942,13 @@ with tab1:
         except:
              ress = db.fetch_dataframe("SELECT id, filename, profile, content, upload_date FROM resumes")
              ress['tags'] = None
+        def _normalize_tag_value(val):
+            if val is None:
+                return ""
+            if isinstance(val, bytes):
+                return val.decode("utf-8", errors="ignore")
+            return str(val)
+        ress['tags'] = ress['tags'].apply(_normalize_tag_value)
         st.caption(f"Total Resumes: {len(ress)}")
 
         if not ress.empty:
@@ -920,19 +961,22 @@ with tab1:
             list_filter = st.multiselect("Filter List by Tag:", sorted(list(all_tags)), key="list_tag_filter")
 
             if list_filter:
-                mask = ress['tags'].fillna('').astype(str).apply(lambda x: any(tag in [t.strip() for t in x.split(',')] for tag in list_filter))
+                mask = ress['tags'].apply(lambda x: any(tag in [t.strip() for t in x.split(',')] for tag in list_filter))
                 filtered_ress = ress[mask]
             else:
                 filtered_ress = ress
             st.caption(f"Filtered Resumes: {len(filtered_ress)}")
 
             st.caption("Click on a row to edit details.")
+            display_ress = filtered_ress.copy()
+            display_ress['tags'] = display_ress['tags'].fillna('')
             event_res = st.dataframe(
-                filtered_ress[['filename', 'tags', 'upload_date']],
+                display_ress[['filename', 'tags', 'upload_date']],
                 hide_index=True,
                 width="stretch",
                 selection_mode="single-row",
-                on_select="rerun"
+                on_select="rerun",
+                key=f"res_table_{st.session_state.get('res_table_refresh_id', 0)}"
             )
 
             selected_res_row = None
@@ -940,6 +984,7 @@ with tab1:
                 selected_index = event_res.selection.rows[0]
                 selected_res_row = filtered_ress.iloc[selected_index]
                 st.session_state.selected_res_filename = selected_res_row['filename']
+                st.session_state.res_table_refresh_id = st.session_state.get("res_table_refresh_id", 0) + 1
 
             # --- SHOW EDIT PANEL IF SELECTED ---
             if "selected_res_filename" in st.session_state and st.session_state.selected_res_filename in ress['filename'].values:
@@ -953,11 +998,17 @@ with tab1:
                 curr_tags_str = row['tags'] if 'tags' in row and row['tags'] else ""
                 curr_tags_list = [t.strip() for t in curr_tags_str.split(',')] if curr_tags_str else []
 
-                all_opts = list(jd_options.keys())
+                all_opts = list(tag_options)
                 for t in curr_tags_list:
                     if t not in all_opts: all_opts.append(t)
 
-                new_tags_list = st.multiselect("Edit JD Tags", options=all_opts, default=curr_tags_list, key=f"tag_ed_{row['id']}")
+                tag_key = f"tag_ed_{row['id']}"
+                if st.session_state.get("selected_res_filename_prev") != current_filename:
+                    st.session_state[tag_key] = list(curr_tags_list)
+                    st.session_state.selected_res_filename_prev = current_filename
+                elif tag_key not in st.session_state:
+                    st.session_state[tag_key] = list(curr_tags_list)
+                new_tags_list = st.multiselect("Edit Tags", options=all_opts, key=tag_key)
                 new_tags_val = ",".join(new_tags_list) if new_tags_list else None
 
                 with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
@@ -968,6 +1019,11 @@ with tab1:
                 ec1, ec2 = st.columns(2)
                 if ec1.button("Save Profile & Tags", key=f"sav_res_{row['id']}"):
                     db.execute_query("UPDATE resumes SET profile = ?, tags = ? WHERE id = ?", (new_prof, new_tags_val, int(row['id'])))
+                    if new_tags_list:
+                        for t in [t.strip() for t in new_tags_list if t.strip()]:
+                            db.add_tag(t)
+                    st.session_state[tag_key] = list(new_tags_list)
+                    st.session_state.res_table_refresh_id = st.session_state.get("res_table_refresh_id", 0) + 1
 
                     # --- AUTO SAVE TRIGGER ---
                     with st.spinner("Syncing to GitHub..."):
@@ -988,6 +1044,55 @@ with tab1:
                     st.rerun()
         else:
             st.info("No resumes uploaded yet.")
+
+    # --- TAG MANAGER SUB-TAB ---
+    with subtab_tags:
+        st.subheader("Manage Tags")
+        tags = db.list_tags()
+        st.caption(f"Total Tags: {len(tags)}")
+
+        st.markdown("Add, rename, or delete tags. Renames and deletes will update JD and resume tags.")
+        c1, c2, c3 = st.columns([2, 2, 2])
+        with c1:
+            new_tag = st.text_input("New Tag")
+            if st.button("Add Tag"):
+                if new_tag.strip():
+                    db.add_tag(new_tag.strip())
+                    with st.spinner("Syncing to GitHub..."):
+                        sync_db_if_allowed()
+                    st.success("Tag added.")
+                    time.sleep(0.5)
+                    st.rerun()
+        with c2:
+            if tags:
+                old_tag = st.selectbox("Rename Tag", tags, key="rename_tag_old")
+                new_name = st.text_input("New Name", key="rename_tag_new")
+                if st.button("Rename Tag"):
+                    if new_name.strip():
+                        db.rename_tag(old_tag, new_name.strip())
+                        db.rename_tag_in_resumes(old_tag, new_name.strip())
+                        db.rename_tag_in_jobs(old_tag, new_name.strip())
+                        with st.spinner("Syncing to GitHub..."):
+                            sync_db_if_allowed()
+                        st.success("Tag renamed.")
+                        time.sleep(0.5)
+                        st.rerun()
+            else:
+                st.info("No tags available to rename.")
+        with c3:
+            if tags:
+                del_tag = st.selectbox("Delete Tag", tags, key="delete_tag_sel")
+                if st.button("Delete Tag"):
+                    db.delete_tag(del_tag)
+                    db.delete_tag_from_resumes(del_tag)
+                    db.delete_tag_from_jobs(del_tag)
+                    with st.spinner("Syncing to GitHub..."):
+                        sync_db_if_allowed()
+                    st.success("Tag deleted.")
+                    time.sleep(0.5)
+                    st.rerun()
+            else:
+                st.info("No tags available to delete.")
 
 # --- TAB 2: RUN ANALYSIS ---
 with tab2:
