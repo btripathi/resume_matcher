@@ -211,7 +211,7 @@ def generate_matrix_view(df, view_mode="All"):
 
 
 # --- CORE MATCHING LOGIC ---
-def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, force_rerun_pass1, match_by_tags=False, deep_only=False, force_rerun_deep=False):
+def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, force_rerun_pass1, match_by_tags=False, deep_only=False, force_rerun_deep=False, run_id=None, create_new_run=True):
     # --- SAFETY CHECK: Stop immediately if stop requested ---
     if st.session_state.stop_requested:
         st.warning("🛑 Analysis process stopped.")
@@ -249,7 +249,8 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
             "job": None, # Will iterate all inside
             "resumes": resumes,
             "run_name": run_name,
-            "create_new_run": True
+            "create_new_run": create_new_run,
+            "run_id": run_id
         })
 
     if not tasks and match_by_tags:
@@ -286,8 +287,15 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
             for task in tasks:
                 if st.session_state.stop_requested: break
 
-                # Create Run ID
-                rid = db.create_run(task['run_name'], threshold=deep_match_thresh)
+                # Create or reuse Run ID
+                if task.get("create_new_run", True):
+                    rid = db.create_run(task['run_name'], threshold=deep_match_thresh)
+                else:
+                    rid = int(task.get("run_id")) if task.get("run_id") else db.create_run(task['run_name'], threshold=deep_match_thresh)
+                    # Clear old links so this run reflects the latest results
+                    db.execute_query("DELETE FROM run_matches WHERE run_id = ?", (rid,))
+                    # Update threshold for this run
+                    db.execute_query("UPDATE runs SET threshold = ? WHERE id = ?", (deep_match_thresh, rid))
 
                 # Determine JDs to loop over (Single specific JD or All selected JDs)
                 jobs_to_process = pd.DataFrame([task['job']]) if match_by_tags else jobs
@@ -469,7 +477,7 @@ def start_run_callback():
 def stop_run_callback():
     st.session_state.stop_requested = True
 
-def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_rerun, match_by_tags=False, deep_only=False, force_rerun_deep=False):
+def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_rerun, match_by_tags=False, deep_only=False, force_rerun_deep=False, create_new_run=False, run_id=None):
     st.session_state.rerun_config = {
         "run_name": name,
         "jobs": jobs_df,
@@ -479,7 +487,9 @@ def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_r
         "force": force_rerun,
         "tags": match_by_tags,
         "deep_only": deep_only,
-        "force_rerun_deep": force_rerun_deep
+        "force_rerun_deep": force_rerun_deep,
+        "create_new_run": create_new_run,
+        "run_id": run_id
     }
     st.session_state.is_running = True
     st.session_state.stop_requested = False
@@ -952,7 +962,8 @@ with tab3:
             st.info(f"Re-running will process the JDs and Resumes linked to this batch using new parameters.")
 
             c_r1, c_r2 = st.columns(2)
-            rerun_name_input = c_r1.text_input("New Batch Name", value=f"Rerun of {run_name_base}")
+            create_new_run = c_r1.checkbox("Create new run (separate history)", value=False)
+            rerun_name_input = c_r1.text_input("New Batch Name", value=f"Rerun of {run_name_base}", disabled=not create_new_run)
             new_auto_deep = c_r1.checkbox("Auto-Upgrade to Deep Match", value=True, key="rerun_auto")
             new_thresh = 50
             if new_auto_deep:
@@ -960,6 +971,8 @@ with tab3:
 
             # --- RERUN TAG OPTION ---
             new_match_tags = st.checkbox("Auto-match based on JD Tags", value=False, key="rerun_tags")
+            if new_match_tags and not create_new_run:
+                st.caption("Tag-based reruns always create new runs.")
 
             deep_only = st.checkbox("Deep Scan Only (reuse existing Standard scores)", value=False, help="Only re-run Deep Scan. If a Standard score is missing, it will be computed once.")
             force_rerun_deep = st.checkbox("Force Re-run Deep Scan", value=False, help="Re-run Deep Scan even if a deep result already exists.")
@@ -984,10 +997,12 @@ with tab3:
                     st.button("🛑 STOP RERUN", type="primary", on_click=stop_run_callback)
                     cfg = st.session_state.rerun_config
                     # Use stored config parameters
-                    run_analysis_batch(cfg['run_name'], cfg['jobs'], cfg['resumes'], cfg['thresh'], cfg['auto'], cfg['force'], match_by_tags=cfg.get('tags', False), deep_only=cfg.get('deep_only', False), force_rerun_deep=cfg.get('force_rerun_deep', False))
+                    run_analysis_batch(cfg['run_name'], cfg['jobs'], cfg['resumes'], cfg['thresh'], cfg['auto'], cfg['force'], match_by_tags=cfg.get('tags', False), deep_only=cfg.get('deep_only', False), force_rerun_deep=cfg.get('force_rerun_deep', False), run_id=cfg.get('run_id'), create_new_run=cfg.get('create_new_run', True))
                 elif not st.session_state.is_running:
                     # Pass new_match_tags here
-                    st.button("🚀 Rerun Batch", type="primary", on_click=prepare_rerun_callback, args=(rerun_name_input, rerun_j, rerun_r, new_thresh, new_auto_deep, f_rerun_p1, new_match_tags, deep_only, force_rerun_deep))
+                    name_to_use = rerun_name_input if create_new_run else run_name_base
+                    create_new_run_effective = create_new_run if not new_match_tags else True
+                    st.button("🚀 Rerun Batch", type="primary", on_click=prepare_rerun_callback, args=(name_to_use, rerun_j, rerun_r, new_thresh, new_auto_deep, f_rerun_p1, new_match_tags, deep_only, force_rerun_deep, create_new_run_effective, run_id))
             else:
                 st.error("Could not find original JDs/Resumes for this run.")
 
