@@ -4,6 +4,7 @@ import json
 import time
 import datetime
 import logging
+import urllib.request
 
 # Import local modules
 import database
@@ -28,7 +29,24 @@ if "db_synced" not in st.session_state:
     st.session_state.db_synced = True
 
 # Init Session State
-if "lm_base_url" not in st.session_state: st.session_state.lm_base_url = "https://equitably-unmetalized-frieda.ngrok-free.dev/v1"
+DEFAULT_CLOUD_URL = "https://equitably-unmetalized-frieda.ngrok-free.dev/v1"
+DEFAULT_LOCAL_URL = "http://127.0.0.1:1234/v1"
+
+def _check_local_lm_available():
+    url = DEFAULT_LOCAL_URL + "/models"
+    try:
+        with urllib.request.urlopen(url, timeout=0.5) as resp:
+            return 200 <= resp.status < 400
+    except Exception:
+        return False
+
+if "local_lm_available" not in st.session_state:
+    st.session_state.local_lm_available = _check_local_lm_available()
+
+if "lm_base_url" not in st.session_state:
+    st.session_state.lm_base_url = DEFAULT_LOCAL_URL if st.session_state.local_lm_available else DEFAULT_CLOUD_URL
+elif not st.session_state.local_lm_available and st.session_state.lm_base_url.startswith(DEFAULT_LOCAL_URL):
+    st.session_state.lm_base_url = DEFAULT_CLOUD_URL
 if "lm_api_key" not in st.session_state: st.session_state.lm_api_key = "lm-studio"
 if "ocr_enabled" not in st.session_state: st.session_state.ocr_enabled = True
 if "processed_files" not in st.session_state: st.session_state.processed_files = set()
@@ -580,6 +598,7 @@ with tab1:
 
         st.subheader("Manage JDs")
         jds = db.fetch_dataframe("SELECT id, filename, criteria, content, upload_date FROM jobs")
+        st.caption(f"Total Job Descriptions: {len(jds)}")
 
         if not jds.empty:
             # --- INTERACTIVE JD TABLE ---
@@ -738,6 +757,7 @@ with tab1:
         except:
              ress = db.fetch_dataframe("SELECT id, filename, profile, content, upload_date FROM resumes")
              ress['tags'] = None
+        st.caption(f"Total Resumes: {len(ress)}")
 
         if not ress.empty:
             # --- FILTER LIST ---
@@ -753,6 +773,7 @@ with tab1:
                 filtered_ress = ress[mask]
             else:
                 filtered_ress = ress
+            st.caption(f"Filtered Resumes: {len(filtered_ress)}")
 
             st.caption("Click on a row to edit details.")
             event_res = st.dataframe(
@@ -843,6 +864,9 @@ with tab2:
                 r_data = r_data[r_data['tags'].fillna('').astype(str).apply(lambda x: filter_tag in [t.strip() for t in x.split(',')])]
 
         sel_r = r_data if st.checkbox("Select All Resumes", value=True) else r_data[r_data['filename'].isin(st.multiselect("Choose Resumes", r_data['filename']))]
+
+    st.caption(f"Selected JDs: {len(sel_j)} / {len(j_data)}")
+    st.caption(f"Selected Resumes: {len(sel_r)} / {len(r_data)}")
 
     if not sel_j.empty and not sel_r.empty:
         st.divider()
@@ -967,6 +991,18 @@ with tab3:
 
         if not results.empty:
             st.caption(f"Results showing against Deep Match Threshold of **{run_threshold}%** used in this run.")
+            total_matches = len(results)
+            deep_count = len(results[results['strategy'] == 'Deep'])
+            std_count = total_matches - deep_count
+            unique_candidates = results['candidate_name'].nunique()
+            unique_jobs = results['job_id'].nunique()
+
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Total Matches", total_matches)
+            m2.metric("Deep Matches", deep_count)
+            m3.metric("Standard Only", std_count)
+            m4.metric("Unique Candidates", unique_candidates)
+            m5.metric("Unique Jobs", unique_jobs)
 
             # --- EXPORT BUTTON ---
             col_exp, _ = st.columns([1, 4])
