@@ -73,6 +73,16 @@ if "selected_res_filename" not in st.session_state: st.session_state.selected_re
 db = database.DBManager()
 
 # --- UI HELPERS ---
+def _safe_int(val, default=0):
+    try:
+        if isinstance(val, (bytes, bytearray)):
+            return int.from_bytes(val, byteorder="little", signed=False)
+        if isinstance(val, str):
+            return int(val.strip())
+        return int(val)
+    except Exception:
+        return default
+
 def generate_criteria_html(details):
     rows = ""
     cat_order = ["must_have_skills", "experience", "domain_knowledge", "nice_to_have_skills", "education_requirements", "soft_skills"]
@@ -108,7 +118,7 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
     if df.empty: return "<p style='color: #666;'>No results found.</p>"
     rows = ""
     for idx, row in df.iterrows():
-        score = row['match_score']
+        score = _safe_int(row['match_score'], 0)
         job_name = row.get('job_name', 'Unknown Role')
         decision = row.get('decision', 'Reject')
 
@@ -147,7 +157,7 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
 
         std_score_display = ""
         if 'standard_score' in row and pd.notna(row['standard_score']) and row['strategy'] == 'Deep':
-            std_score_display = f"<br><span style='font-size: 10px; color: #666;'>Pass 1: {int(row['standard_score'])}%</span>"
+            std_score_display = f"<br><span style='font-size: 10px; color: #666;'>Pass 1: {_safe_int(row['standard_score'])}%</span>"
 
         job_display = f"<br><span style='font-size: 11px; color: #007bff; font-weight:bold;'>Job: {job_name}</span>" if 'job_name' in df.columns and df['job_name'].nunique() > 1 else ""
 
@@ -184,7 +194,7 @@ def generate_matrix_view(df, view_mode="All"):
                 cell_style = "color:#ccc; background-color:#f9f9f9;"
                 val = "-"
             else:
-                s = int(score)
+                s = _safe_int(score, 0)
                 if s >= 75: bg = "#d1e7dd"; color = "#0f5132"
                 elif s >= 50: bg = "#fff3cd"; color = "#664d03"
                 else: bg = "#f8d7da"; color = "#842029"
@@ -201,7 +211,7 @@ def generate_matrix_view(df, view_mode="All"):
 
 
 # --- CORE MATCHING LOGIC ---
-def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, force_rerun_pass1, match_by_tags=False):
+def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, force_rerun_pass1, match_by_tags=False, deep_only=False, force_rerun_deep=False):
     # --- SAFETY CHECK: Stop immediately if stop requested ---
     if st.session_state.stop_requested:
         st.warning("🛑 Analysis process stopped.")
@@ -301,7 +311,7 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
 
                         exist = db.get_match_if_exists(int(job['id']), int(res['id']))
                         mid = exist['id'] if exist else None
-                        score = exist['match_score'] if exist else 0
+                        score = _safe_int(exist['match_score'], 0) if exist else 0
 
                         # --- PARSING ERROR CHECK ---
                         try:
@@ -327,6 +337,9 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                         previous_failure = exist and (exist.get('decision') in ["Parsing Error", "Error"] or str(exist.get('match_score')) == "0")
 
                         should_run_standard = (not exist) or force_rerun_pass1 or previous_failure
+                        if deep_only:
+                            # Only run standard if we have no existing standard score to use
+                            should_run_standard = not (exist and exist.get('standard_score'))
 
                         if should_run_standard:
                             msg_prefix = "🧠 Pass 1"
@@ -360,18 +373,18 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                                 master_bar.progress(count/total_ops)
                                 continue # Skip this candidate
                         else:
-                            if exist.get('strategy') == 'Deep' and exist.get('standard_score'):
-                                score = exist['standard_score']
+                            if exist.get('strategy') == 'Deep' and exist.get('standard_score') is not None:
+                                score = _safe_int(exist['standard_score'], 0)
                                 add_log(f"&nbsp;&nbsp;ℹ️ Using existing Standard Score: {score}% (Pass 1 Skipped)")
                             else:
-                                score = exist['match_score']
+                                score = _safe_int(exist['match_score'], 0)
                                 add_log(f"&nbsp;&nbsp;ℹ️ Using existing Match Score: {score}% (Pass 1 Skipped)")
 
                         is_already_deep = exist and exist['strategy'] == 'Deep'
-                        qualifies_for_deep = score >= deep_match_thresh
+                        qualifies_for_deep = _safe_int(score, 0) >= _safe_int(deep_match_thresh, 0)
 
                         if auto_deep and qualifies_for_deep:
-                            if is_already_deep and not force_rerun_pass1 and not previous_failure:
+                            if is_already_deep and not force_rerun_pass1 and not previous_failure and not force_rerun_deep:
                                 mid = exist['id']
                                 add_log("&nbsp;&nbsp;ℹ️ Deep match already exists. Skipping.")
                             else:
@@ -456,7 +469,7 @@ def start_run_callback():
 def stop_run_callback():
     st.session_state.stop_requested = True
 
-def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_rerun, match_by_tags=False):
+def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_rerun, match_by_tags=False, deep_only=False, force_rerun_deep=False):
     st.session_state.rerun_config = {
         "run_name": name,
         "jobs": jobs_df,
@@ -464,7 +477,9 @@ def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_r
         "thresh": thresh,
         "auto": auto_deep,
         "force": force_rerun,
-        "tags": match_by_tags
+        "tags": match_by_tags,
+        "deep_only": deep_only,
+        "force_rerun_deep": force_rerun_deep
     }
     st.session_state.is_running = True
     st.session_state.stop_requested = False
@@ -921,7 +936,7 @@ with tab3:
         run_row = runs[runs['label'] == sel_run_label].iloc[0]
         run_id = int(run_row['id'])
         run_name_base = run_row['name']
-        run_threshold = int(run_row['threshold']) if 'threshold' in run_row and pd.notna(run_row['threshold']) else 50
+        run_threshold = _safe_int(run_row['threshold'], 50) if 'threshold' in run_row and pd.notna(run_row['threshold']) else 50
 
         with c_ren:
             # Rename Logic
@@ -946,7 +961,9 @@ with tab3:
             # --- RERUN TAG OPTION ---
             new_match_tags = st.checkbox("Auto-match based on JD Tags", value=False, key="rerun_tags")
 
-            f_rerun_p1 = st.checkbox("Force Re-run Pass 1 (Standard Match)", value=False, help="If unchecked, existing standard match scores will be reused to save time.")
+            deep_only = st.checkbox("Deep Scan Only (reuse existing Standard scores)", value=False, help="Only re-run Deep Scan. If a Standard score is missing, it will be computed once.")
+            force_rerun_deep = st.checkbox("Force Re-run Deep Scan", value=False, help="Re-run Deep Scan even if a deep result already exists.")
+            f_rerun_p1 = st.checkbox("Force Re-run Pass 1 (Standard Match)", value=False, help="If unchecked, existing standard match scores will be reused to save time.", disabled=deep_only)
 
             linked_data = db.fetch_dataframe(f"""
                 SELECT DISTINCT m.job_id, m.resume_id
@@ -967,10 +984,10 @@ with tab3:
                     st.button("🛑 STOP RERUN", type="primary", on_click=stop_run_callback)
                     cfg = st.session_state.rerun_config
                     # Use stored config parameters
-                    run_analysis_batch(cfg['run_name'], cfg['jobs'], cfg['resumes'], cfg['thresh'], cfg['auto'], cfg['force'], match_by_tags=cfg.get('tags', False))
+                    run_analysis_batch(cfg['run_name'], cfg['jobs'], cfg['resumes'], cfg['thresh'], cfg['auto'], cfg['force'], match_by_tags=cfg.get('tags', False), deep_only=cfg.get('deep_only', False), force_rerun_deep=cfg.get('force_rerun_deep', False))
                 elif not st.session_state.is_running:
                     # Pass new_match_tags here
-                    st.button("🚀 Rerun Batch", type="primary", on_click=prepare_rerun_callback, args=(rerun_name_input, rerun_j, rerun_r, new_thresh, new_auto_deep, f_rerun_p1, new_match_tags))
+                    st.button("🚀 Rerun Batch", type="primary", on_click=prepare_rerun_callback, args=(rerun_name_input, rerun_j, rerun_r, new_thresh, new_auto_deep, f_rerun_p1, new_match_tags, deep_only, force_rerun_deep))
             else:
                 st.error("Could not find original JDs/Resumes for this run.")
 
@@ -1110,10 +1127,10 @@ with tab3:
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
                     c1.title(row['candidate_name'])
-                    c2.metric("Weighted Score", f"{row['match_score']}%")
+                    c2.metric("Weighted Score", f"{_safe_int(row['match_score'], 0)}%")
 
                     if pd.notna(row.get('standard_score')) and row['strategy'] == 'Deep':
-                         st.caption(f"Pass 1 (Standard) Score: **{int(row['standard_score'])}%**")
+                         st.caption(f"Pass 1 (Standard) Score: **{_safe_int(row['standard_score'], 0)}%**")
 
                     if row['strategy'] == 'Deep':
                         st.caption("✨ Evaluated with High-Precision Multi-Pass Tiered Weighting")
