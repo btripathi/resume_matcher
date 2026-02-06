@@ -146,9 +146,14 @@ class AIEngine:
         - 60-79: Review. Has most skills, but maybe lacks depth or specific domain knowledge.
         - 80-100: Strong Match. Exceeds requirements.
 
+        OUTPUT RULES:
+        - Return ONLY a single JSON object.
+        - Do NOT include explanations, markdown, or multiple JSON blocks.
+        - Use double quotes for all keys and strings.
+
         Return JSON: {candidate_name, match_score, decision, reasoning, missing_skills}
         """
-        user_prompt = f"JD CRITERIA:\n{jd_criteria}\n\nRESUME PROFILE:\n{resume_profile}\n\nRESUME TEXT:\n{resume_text[:12000]}"
+        user_prompt = f"JD CRITERIA:\n{jd_criteria}\n\nRESUME PROFILE:\n{resume_profile}\n\nRESUME TEXT:\n{resume_text[:6000]}"
         try:
             resp = self.client.chat.completions.create(
                 model="local-model",
