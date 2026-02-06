@@ -193,3 +193,114 @@ def clean_json_response(text):
 
     except Exception:
         return None
+
+def _is_list_of_strings(value):
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+def _is_list_of_dicts(value):
+    return isinstance(value, list) and all(isinstance(v, dict) for v in value)
+
+def validate_jd_schema(data):
+    errors = []
+    if not isinstance(data, dict):
+        return False, ["JD data is not an object"]
+
+    required = {
+        "role_title": str,
+        "must_have_skills": list,
+        "nice_to_have_skills": list,
+        "min_years_experience": int,
+        "education_requirements": list,
+        "domain_knowledge": list,
+        "soft_skills": list,
+        "key_responsibilities": list,
+    }
+
+    for key, typ in required.items():
+        if key not in data:
+            errors.append(f"Missing key: {key}")
+            continue
+        if not isinstance(data[key], typ):
+            errors.append(f"Invalid type for {key}")
+
+    # List element sanity checks
+    for key in [
+        "must_have_skills",
+        "nice_to_have_skills",
+        "education_requirements",
+        "domain_knowledge",
+        "soft_skills",
+        "key_responsibilities",
+    ]:
+        if key in data and not _is_list_of_strings(data[key]):
+            errors.append(f"{key} must be a list of strings")
+
+    return len(errors) == 0, errors
+
+def validate_resume_profile_schema(data):
+    errors = []
+    if not isinstance(data, dict):
+        return False, ["Resume profile is not an object"]
+
+    required = {
+        "candidate_name": str,
+        "email": str,
+        "phone": str,
+        "extracted_skills": list,
+        "years_experience": int,
+        "education_summary": str,
+        "domain_experience": list,
+        "work_history": list,
+    }
+
+    for key, typ in required.items():
+        if key not in data:
+            errors.append(f"Missing key: {key}")
+            continue
+        if not isinstance(data[key], typ):
+            errors.append(f"Invalid type for {key}")
+
+    if "extracted_skills" in data and not _is_list_of_strings(data["extracted_skills"]):
+        errors.append("extracted_skills must be a list of strings")
+    if "domain_experience" in data and not _is_list_of_strings(data["domain_experience"]):
+        errors.append("domain_experience must be a list of strings")
+    if "work_history" in data and not _is_list_of_dicts(data["work_history"]):
+        errors.append("work_history must be a list of objects")
+
+    return len(errors) == 0, errors
+
+def validate_criterion_schema(data):
+    errors = []
+    if not isinstance(data, dict):
+        return False, ["Criterion is not an object"]
+    for key in ["requirement", "status", "evidence"]:
+        if key not in data:
+            errors.append(f"Missing key: {key}")
+    if "status" in data and data.get("status") not in ["Met", "Partial", "Missing"]:
+        errors.append("Invalid status value")
+    return len(errors) == 0, errors
+
+def validate_bulk_criteria_schema(data):
+    if not isinstance(data, list):
+        return False, ["Bulk criteria is not a list"]
+    errors = []
+    for idx, item in enumerate(data):
+        ok, err = validate_criterion_schema(item)
+        if not ok:
+            errors.append(f"Item {idx} invalid: {', '.join(err)}")
+    return len(errors) == 0, errors
+
+def validate_standard_output_schema(data):
+    errors = []
+    if not isinstance(data, dict):
+        return False, ["Standard output is not an object"]
+    for key in ["candidate_name", "match_score", "decision", "reasoning", "missing_skills", "match_details"]:
+        if key not in data:
+            errors.append(f"Missing key: {key}")
+    if "match_score" in data and not isinstance(data["match_score"], int):
+        errors.append("match_score must be int")
+    if "missing_skills" in data and not _is_list_of_strings(data["missing_skills"]):
+        errors.append("missing_skills must be a list of strings")
+    if "match_details" in data and not _is_list_of_dicts(data["match_details"]):
+        errors.append("match_details must be a list of objects")
+    return len(errors) == 0, errors

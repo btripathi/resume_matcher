@@ -4,6 +4,7 @@ import json
 import time
 import datetime
 import logging
+import urllib.request
 
 # Import local modules
 import database
@@ -28,10 +29,25 @@ if "db_synced" not in st.session_state:
     st.session_state.db_synced = True
 
 # Init Session State
-if "lm_base_url" not in st.session_state: st.session_state.lm_base_url = "https://equitably-unmetalized-frieda.ngrok-free.dev/v1"
+DEFAULT_CLOUD_URL = "https://equitably-unmetalized-frieda.ngrok-free.dev/v1"
+DEFAULT_LOCAL_URL = "http://127.0.0.1:1234/v1"
+
+if "lm_base_url" not in st.session_state: st.session_state.lm_base_url = DEFAULT_CLOUD_URL
 if "lm_api_key" not in st.session_state: st.session_state.lm_api_key = "lm-studio"
 if "ocr_enabled" not in st.session_state: st.session_state.ocr_enabled = True
 if "processed_files" not in st.session_state: st.session_state.processed_files = set()
+
+# Local LM availability check (prevents selecting localhost on Streamlit Cloud)
+def _check_local_lm_available():
+    url = DEFAULT_LOCAL_URL + "/models"
+    try:
+        with urllib.request.urlopen(url, timeout=0.5) as resp:
+            return 200 <= resp.status < 400
+    except Exception:
+        return False
+
+if "local_lm_available" not in st.session_state:
+    st.session_state.local_lm_available = _check_local_lm_available()
 
 # Analysis Run State
 if "is_running" not in st.session_state: st.session_state.is_running = False
@@ -93,6 +109,9 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
         score = row['match_score']
         job_name = row.get('job_name', 'Unknown Role')
         decision = row.get('decision', 'Reject')
+        conf_val = row.get('confidence')
+        needs_review = row.get('needs_review', 0)
+        low_evidence = row.get('low_evidence', 0)
 
         # --- DECISION LOGIC ---
         if decision == "Parsing Error" or decision == "Error":
@@ -131,9 +150,21 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
         if 'standard_score' in row and pd.notna(row['standard_score']) and row['strategy'] == 'Deep':
             std_score_display = f"<br><span style='font-size: 10px; color: #666;'>Pass 1: {int(row['standard_score'])}%</span>"
 
+        conf_display = ""
+        if pd.notna(conf_val):
+            flag_label = ""
+            if needs_review == 1:
+                flag_label = "Review"
+            elif low_evidence == 1:
+                flag_label = "Low Evidence"
+            if flag_label:
+                conf_display = f"<br><span style='font-size: 10px; color: #b33;'>Conf: {float(conf_val):.2f} • {flag_label}</span>"
+            else:
+                conf_display = f"<br><span style='font-size: 10px; color: #666;'>Conf: {float(conf_val):.2f}</span>"
+
         job_display = f"<br><span style='font-size: 11px; color: #007bff; font-weight:bold;'>Job: {job_name}</span>" if 'job_name' in df.columns and df['job_name'].nunique() > 1 else ""
 
-        rows += f'<tr><td style="font-weight: 600;">{row["candidate_name"]}<br><span style="font-size: 11px; color: #666;">{row["res_name"]}</span>{job_display}</td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%{std_score_display}</td><td><span class="status-badge" style="{badge_color}">{decision_label}</span></td><td style="font-size: 13px; color: #444;">{row["reasoning"]}</td></tr>'
+        rows += f'<tr><td style="font-weight: 600;">{row["candidate_name"]}<br><span style="font-size: 11px; color: #666;">{row["res_name"]}</span>{job_display}{conf_display}</td><td style="color: {score_color}; font-weight: bold; font-size: 16px;">{score}%{std_score_display}</td><td><span class="status-badge" style="{badge_color}">{decision_label}</span></td><td style="font-size: 13px; color: #444;">{row["reasoning"]}</td></tr>'
     return f"""<style>.candidate-table {{width: 100%; border-collapse: collapse; margin-bottom: 20px;}}.candidate-table th {{background-color: #f8f9fa; padding: 12px; text-align: left;}}.candidate-table td {{padding: 12px; border-bottom: 1px solid #dee2e6; vertical-align: top;}}.status-badge {{padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 12px;}}</style><table class="candidate-table"><thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th></tr></thead><tbody>{rows}</tbody></table>"""
 
 def generate_matrix_view(df, view_mode="All"):
@@ -405,7 +436,17 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                                 std_score_saved = exist.get('standard_score', score)
                                 std_reasoning_saved = exist.get('standard_reasoning', exist.get('reasoning'))
 
-                                mid = db.save_match(int(job['id']), int(res['id']), {"candidate_name": res['filename'], "match_score": sf, "decision": df, "reasoning": rf, "match_details": details}, mid, strategy="Deep", standard_score=std_score_saved, standard_reasoning=std_reasoning_saved)
+                                confidence, needs_review, low_evidence = client._compute_confidence(details)
+                                mid = db.save_match(int(job['id']), int(res['id']), {
+                                    "candidate_name": res['filename'],
+                                    "match_score": sf,
+                                    "decision": df,
+                                    "reasoning": rf,
+                                    "match_details": details,
+                                    "confidence": confidence,
+                                    "needs_review": int(needs_review),
+                                    "low_evidence": int(low_evidence)
+                                }, mid, strategy="Deep", standard_score=std_score_saved, standard_reasoning=std_reasoning_saved)
                                 add_log(f"&nbsp;&nbsp;🏁 <b>Deep Match Final: {sf}% ({df})</b>")
 
                         elif auto_deep and not qualifies_for_deep:
@@ -467,6 +508,21 @@ with col_head: st.title("🚀 TalentScout: Intelligent Resume Screening")
 with col_set:
     with st.popover("⚙️ Settings"):
         st.write("### Configuration")
+        lm_options = ["Cloud (ngrok)", "Custom"]
+        if st.session_state.local_lm_available:
+            lm_options.insert(1, "Local (127.0.0.1:1234)")
+        else:
+            if st.session_state.lm_base_url.startswith(DEFAULT_LOCAL_URL):
+                st.session_state.lm_base_url = DEFAULT_CLOUD_URL
+            st.caption("Local LM is not reachable from this environment. Run the app locally or use a tunnel.")
+
+        lm_choice = st.selectbox("LM Mode", lm_options, index=0)
+        if lm_choice == "Cloud (ngrok)":
+            st.session_state.lm_base_url = DEFAULT_CLOUD_URL
+        elif lm_choice == "Local (127.0.0.1:1234)":
+            st.session_state.lm_base_url = DEFAULT_LOCAL_URL
+        # Custom leaves whatever is typed below
+
         st.text_input("LM URL", key="lm_base_url")
         st.text_input("API Key", key="lm_api_key")
         st.checkbox("Enable OCR", key="ocr_enabled")
@@ -580,6 +636,7 @@ with tab1:
 
         st.subheader("Manage JDs")
         jds = db.fetch_dataframe("SELECT id, filename, criteria, content, upload_date FROM jobs")
+        st.caption(f"Total Job Descriptions: {len(jds)}")
 
         if not jds.empty:
             # --- INTERACTIVE JD TABLE ---
@@ -739,6 +796,8 @@ with tab1:
              ress = db.fetch_dataframe("SELECT id, filename, profile, content, upload_date FROM resumes")
              ress['tags'] = None
 
+        st.caption(f"Total Resumes: {len(ress)}")
+
         if not ress.empty:
             # --- FILTER LIST ---
             all_tags = set()
@@ -753,6 +812,8 @@ with tab1:
                 filtered_ress = ress[mask]
             else:
                 filtered_ress = ress
+
+            st.caption(f"Filtered Resumes: {len(filtered_ress)}")
 
             st.caption("Click on a row to edit details.")
             event_res = st.dataframe(
@@ -843,6 +904,10 @@ with tab2:
                 r_data = r_data[r_data['tags'].fillna('').astype(str).apply(lambda x: filter_tag in [t.strip() for t in x.split(',')])]
 
         sel_r = r_data if st.checkbox("Select All Resumes", value=True) else r_data[r_data['filename'].isin(st.multiselect("Choose Resumes", r_data['filename']))]
+
+    # Selection counts
+    st.caption(f"Selected JDs: {len(sel_j)} / {len(j_data)}")
+    st.caption(f"Selected Resumes: {len(sel_r)} / {len(r_data)}")
 
     if not sel_j.empty and not sel_r.empty:
         st.divider()
@@ -967,6 +1032,18 @@ with tab3:
 
         if not results.empty:
             st.caption(f"Results showing against Deep Match Threshold of **{run_threshold}%** used in this run.")
+            total_matches = len(results)
+            deep_count = len(results[results['strategy'] == 'Deep'])
+            std_count = total_matches - deep_count
+            unique_candidates = results['candidate_name'].nunique()
+            unique_jobs = results['job_id'].nunique()
+
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Total Matches", total_matches)
+            m2.metric("Deep Matches", deep_count)
+            m3.metric("Standard Only", std_count)
+            m4.metric("Unique Candidates", unique_candidates)
+            m5.metric("Unique Jobs", unique_jobs)
 
             # --- EXPORT BUTTON ---
             col_exp, _ = st.columns([1, 4])
@@ -990,6 +1067,7 @@ with tab3:
             std_df = results[results['strategy'] != 'Deep']
 
             st.markdown(f"### ✨ Deep Matches for {run_name_base}")
+            st.caption("Legend: Conf = confidence (0.00-1.00). Review = flagged for missing must-have or low confidence. Low Evidence = evidence snippets too sparse.")
             if deep_df.empty:
                 st.info("No candidates qualified for Deep Match in this run.")
             else:
@@ -1005,6 +1083,7 @@ with tab3:
             st.divider()
 
             st.markdown(f"### 🧠 Standard Matches (Pass 1 Only)")
+            st.caption("Legend: Conf = confidence (0.00-1.00). Review = flagged for missing must-have or low confidence. Low Evidence = evidence snippets too sparse.")
             if std_df.empty:
                 st.info("All candidates in this run were upgraded to Deep Match.")
             else:
@@ -1076,6 +1155,14 @@ with tab3:
                     if row['strategy'] == 'Deep':
                         st.caption("✨ Evaluated with High-Precision Multi-Pass Tiered Weighting")
 
+                    conf_val = row.get('confidence')
+                    if pd.notna(conf_val):
+                        c2.metric("Confidence", f"{float(conf_val):.2f}")
+                        if row.get("needs_review") == 1:
+                            st.warning("Flagged for review: low confidence or missing must-have evidence.")
+                        elif row.get("low_evidence") == 1:
+                            st.info("Low evidence density: check excerpts before final decision.")
+
                     st.info(f"**Final Decision:** {row['reasoning']}")
 
                     if pd.notna(row.get('standard_reasoning')) and row['strategy'] == 'Deep':
@@ -1084,6 +1171,8 @@ with tab3:
 
                     try:
                         dets = json.loads(row['match_details'])
-                        if dets: st.markdown(generate_criteria_html(dets), unsafe_allow_html=True)
-                    except: st.warning("Detailed requirement breakdown unavailable for this match.")
+                        if dets:
+                            st.markdown(generate_criteria_html(dets), unsafe_allow_html=True)
+                    except:
+                        st.warning("Detailed requirement breakdown unavailable for this match.")
     else: st.info("No run history found. Run an analysis in Tab 2 first.")

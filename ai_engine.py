@@ -49,7 +49,34 @@ class AIEngine:
             resp = self.client.chat.completions.create(
                 model="local-model", messages=[{"role": "user", "content": prompt}], temperature=0.0
             )
-            return document_utils.clean_json_response(resp.choices[0].message.content)
+            parsed = document_utils.clean_json_response(resp.choices[0].message.content)
+            ok, _ = document_utils.validate_jd_schema(parsed)
+            if ok:
+                return parsed
+
+            # Retry once with a fix prompt
+            fix_prompt = f"""
+            Your previous response was invalid JSON or missing required keys.
+            Return ONLY valid JSON using this exact schema and double quotes:
+            {{
+                "role_title": "Full title",
+                "must_have_skills": [],
+                "nice_to_have_skills": [],
+                "min_years_experience": integer,
+                "education_requirements": [],
+                "domain_knowledge": [],
+                "soft_skills": [],
+                "key_responsibilities": []
+            }}
+            JD TEXT:
+            {text[:15000]}
+            """
+            resp2 = self.client.chat.completions.create(
+                model="local-model", messages=[{"role": "user", "content": fix_prompt}], temperature=0.0
+            )
+            parsed2 = document_utils.clean_json_response(resp2.choices[0].message.content)
+            ok2, _ = document_utils.validate_jd_schema(parsed2)
+            return parsed2 if ok2 else {"error": "Invalid JD JSON schema"}
         except Exception as e:
             return {"error": str(e)}
 
@@ -116,48 +143,100 @@ class AIEngine:
                 temperature=0.0,
                 max_tokens=1500  # Strict limit to prevent infinite generation
             )
-            # If null, return a fallback object to prevent app crash
             result = document_utils.clean_json_response(resp.choices[0].message.content)
-            if not result:
-                 return {
-                    "candidate_name": "Parsing Error",
-                    "extracted_skills": [],
-                    "years_experience": 0,
-                    "error_flag": True
-                }
-            return result
-        except Exception as e:
+            ok, _ = document_utils.validate_resume_profile_schema(result)
+            if ok:
+                return result
+
+            # Retry once with a fix prompt
+            fix_prompt = """
+            Your previous response was invalid JSON or missing required keys.
+            Return ONLY valid JSON using this schema and double quotes:
+            {
+                "candidate_name": "Name",
+                "email": "Email",
+                "phone": "Phone",
+                "extracted_skills": ["Skill A", "Skill B"],
+                "years_experience": 10,
+                "education_summary": "Degree, University",
+                "domain_experience": ["Domain A", "Domain B"],
+                "work_history": [
+                    { "company": "Company A", "role": "Title", "summary": "Concise summary of work" }
+                ]
+            }
+            """
+            resp2 = self.client.chat.completions.create(
+                model="local-model",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": fix_prompt + "\n\nRESUME CONTENT:\n" + text[:15000]}
+                ],
+                temperature=0.0,
+                max_tokens=1500
+            )
+            result2 = document_utils.clean_json_response(resp2.choices[0].message.content)
+            ok2, _ = document_utils.validate_resume_profile_schema(result2)
+            if ok2:
+                return result2
+            return {
+                "candidate_name": "Parsing Error",
+                "extracted_skills": [],
+                "years_experience": 0,
+                "error_flag": True
+            }
+        except Exception:
             return {"candidate_name": "Error", "error_flag": True}
 
     def evaluate_standard(self, resume_text, jd_criteria, resume_profile):
         if self.use_mock:
             return self._mock_evaluate_standard(resume_text, jd_criteria)
         document_utils = self._document_utils()
-        system_prompt = """
-        You are a very strict Technical Recruiter. Your job is to filter out candidates who do not strongly match the requirements.
+        jd = self._parse_criteria(jd_criteria)
 
-        STRICT SCORING RULES (0-100):
-        1. CRITICAL: If the candidate lacks "Must Have" skills, the score MUST be below 50.
-        2. EXPERIENCE: If the candidate has significantly fewer years of experience than required, deduct 20 points immediately.
-        3. DEPTH: Mentioning a keyword is not enough. Look for evidence of usage in Work History.
+        # Build a deterministic evaluation list
+        criteria_list = []
+        for k in ["must_have_skills", "domain_knowledge", "nice_to_have_skills", "soft_skills", "education_requirements", "key_responsibilities"]:
+            if k in jd and isinstance(jd[k], list):
+                criteria_list.extend([(k, v) for v in jd[k]])
 
-        SCORING TIERS:
-        - 0-59: Reject. Missing key skills or experience.
-        - 60-79: Review. Has most skills, but maybe lacks depth or specific domain knowledge.
-        - 80-100: Strong Match. Exceeds requirements.
+        if jd.get("min_years_experience", 0) and int(jd.get("min_years_experience", 0)) > 0:
+            criteria_list.append(("experience", f"Minimum {jd['min_years_experience']} years relevant experience"))
 
-        Return JSON: {candidate_name, match_score, decision, reasoning, missing_skills}
-        """
-        user_prompt = f"JD CRITERIA:\n{jd_criteria}\n\nRESUME PROFILE:\n{resume_profile}\n\nRESUME TEXT:\n{resume_text[:12000]}"
-        try:
-            resp = self.client.chat.completions.create(
-                model="local-model",
-                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-                temperature=0.1,
-                max_tokens=1024
-            )
-            return document_utils.clean_json_response(resp.choices[0].message.content)
-        except: return None
+        details = self.evaluate_bulk_criteria(resume_text, criteria_list)
+        details = self._enforce_evidence(details)
+
+        score, decision, reasoning = self.generate_final_decision("Candidate", details, strategy="Standard")
+        confidence, needs_review, low_evidence = self._compute_confidence(details)
+
+        missing_skills = [
+            d.get("requirement")
+            for d in details
+            if d.get("category") == "must_have_skills" and d.get("status") in ["Missing", "Partial"]
+        ]
+
+        candidate_name = "Unknown"
+        profile_obj = resume_profile
+        if isinstance(resume_profile, str):
+            try:
+                profile_obj = json.loads(resume_profile)
+            except json.JSONDecodeError:
+                profile_obj = None
+        if isinstance(profile_obj, dict):
+            candidate_name = profile_obj.get("candidate_name", "Unknown")
+
+        result = {
+            "candidate_name": candidate_name,
+            "match_score": score,
+            "decision": decision,
+            "reasoning": reasoning,
+            "missing_skills": missing_skills,
+            "match_details": details,
+            "confidence": confidence,
+            "needs_review": int(needs_review),
+            "low_evidence": int(low_evidence)
+        }
+        ok, _ = document_utils.validate_standard_output_schema(result)
+        return result if ok else None
 
     def evaluate_criterion(self, resume_text, category, value):
         if self.use_mock:
@@ -165,7 +244,8 @@ class AIEngine:
         document_utils = self._document_utils()
         system_prompt = f"""
         Verify if resume meets this {category} requirement: "{value}".
-        Return JSON: {{ "requirement": "{value}", "status": "Met" | "Partial" | "Missing", "evidence": "Quote or 'None'" }}
+        Return JSON: {{ "requirement": "{value}", "status": "Met" | "Partial" | "Missing", "evidence": "Short quote or 'None'" }}
+        Evidence rule: If status is Met or Partial, evidence MUST be a short exact quote from the resume.
         """
         user_prompt = f"TEXT:\n{resume_text[:15000]}"
         try:
@@ -173,9 +253,25 @@ class AIEngine:
                 model="local-model", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], temperature=0.0
             )
             data = document_utils.clean_json_response(resp.choices[0].message.content)
-            if data: data['category'] = category
+            ok, _ = document_utils.validate_criterion_schema(data)
+            if not ok:
+                fix_prompt = f"""
+                Fix your previous response to valid JSON with keys: requirement, status, evidence.
+                Status must be one of: Met, Partial, Missing.
+                Evidence rule: If status is Met or Partial, evidence MUST be a short exact quote from the resume.
+                Requirement: "{value}"
+                """
+                resp2 = self.client.chat.completions.create(
+                    model="local-model", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": fix_prompt}], temperature=0.0
+                )
+                data = document_utils.clean_json_response(resp2.choices[0].message.content)
+
+            if data:
+                data["category"] = category
+                data = self._enforce_evidence([data])[0]
             return data
-        except: return None
+        except:
+            return None
 
     def evaluate_bulk_criteria(self, resume_text, criteria_list):
         if self.use_mock:
@@ -188,6 +284,7 @@ class AIEngine:
         system_prompt = """
         You are a Technical Auditor. Evaluate the candidate against the list of requirements provided.
         For EACH requirement, determine if it is Met, Partial, or Missing based on the resume text.
+        Evidence rule: If status is Met or Partial, evidence MUST be a short exact quote from the resume.
 
         RETURN ONLY A JSON ARRAY of objects:
         [
@@ -202,10 +299,30 @@ class AIEngine:
                 model="local-model", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], temperature=0.0
             )
             data = document_utils.clean_json_response(resp.choices[0].message.content)
-            if isinstance(data, list): return data
-            if isinstance(data, dict) and "results" in data: return data["results"]
+            if isinstance(data, dict) and "results" in data:
+                data = data["results"]
+
+            ok, _ = document_utils.validate_bulk_criteria_schema(data)
+            if not ok:
+                fix_prompt = f"""
+                Fix your previous response to ONLY a valid JSON array.
+                Each item must have: requirement, category, status (Met/Partial/Missing), evidence.
+                Evidence rule: If status is Met or Partial, evidence MUST be a short exact quote from the resume.
+                REQUIREMENTS:
+                {reqs_str}
+                """
+                resp2 = self.client.chat.completions.create(
+                    model="local-model", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": fix_prompt}], temperature=0.0
+                )
+                data = document_utils.clean_json_response(resp2.choices[0].message.content)
+                if isinstance(data, dict) and "results" in data:
+                    data = data["results"]
+
+            if isinstance(data, list):
+                return self._enforce_evidence(data)
             return []
-        except: return []
+        except:
+            return []
 
     def generate_final_decision(self, candidate_name, match_details, strategy="Deep"):
         if not match_details: return 0, "Reject", "No data analyzed."
@@ -341,3 +458,58 @@ class AIEngine:
     def _estimate_years(self, text):
         match = re.search(r"(\d+)\+?\s*years", text, re.IGNORECASE)
         return int(match.group(1)) if match else 0
+
+    def _enforce_evidence(self, details):
+        if not isinstance(details, list):
+            return []
+        cleaned = []
+        for d in details:
+            if not isinstance(d, dict):
+                continue
+            status = d.get("status", "Missing")
+            evidence = d.get("evidence", "")
+            if status in ["Met", "Partial"]:
+                if not evidence or str(evidence).strip().lower() == "none":
+                    d["status"] = "Missing" if status == "Partial" else "Partial"
+            cleaned.append(d)
+        return cleaned
+
+    def _compute_confidence(self, details):
+        if not isinstance(details, list) or len(details) == 0:
+            return 0.0, True, True
+
+        total = 0
+        met = 0
+        partial = 0
+        missing = 0
+        evidence_missing = 0
+        must_missing = 0
+
+        for d in details:
+            if not isinstance(d, dict):
+                continue
+            total += 1
+            status = d.get("status", "Missing")
+            evidence = str(d.get("evidence", "") or "").strip()
+
+            if status == "Met":
+                met += 1
+            elif status == "Partial":
+                partial += 1
+            else:
+                missing += 1
+
+            if d.get("category") == "must_have_skills" and status in ["Missing", "Partial"]:
+                must_missing += 1
+
+            if status in ["Met", "Partial"] and (not evidence or evidence.lower() == "none"):
+                evidence_missing += 1
+
+        coverage = (met + 0.5 * partial) / total if total > 0 else 0.0
+        evidence_ratio = 1.0 - (evidence_missing / max(1, (met + partial)))
+        confidence = max(0.05, min(1.0, coverage * (0.6 + 0.4 * evidence_ratio)))
+
+        low_evidence = evidence_ratio < 0.6
+        needs_review = must_missing > 0 or confidence < 0.6 or low_evidence
+
+        return round(confidence, 2), bool(needs_review), bool(low_evidence)

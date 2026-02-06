@@ -52,12 +52,26 @@ class DBManager:
             c.execute("ALTER TABLE matches ADD COLUMN standard_reasoning TEXT")
         except:
             pass
+        # Confidence + review flags
+        try:
+            c.execute("ALTER TABLE matches ADD COLUMN confidence REAL")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE matches ADD COLUMN needs_review INTEGER")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE matches ADD COLUMN low_evidence INTEGER")
+        except:
+            pass
 
         c.execute('''CREATE TABLE IF NOT EXISTS matches
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       job_id INTEGER, resume_id INTEGER,
                       candidate_name TEXT, match_score INTEGER, standard_score INTEGER, decision TEXT,
                       reasoning TEXT, standard_reasoning TEXT, missing_skills TEXT, match_details TEXT,
+                      confidence REAL, needs_review INTEGER, low_evidence INTEGER,
                       strategy TEXT,
                       FOREIGN KEY(job_id) REFERENCES jobs(id),
                       FOREIGN KEY(resume_id) REFERENCES resumes(id))''')
@@ -154,19 +168,19 @@ class DBManager:
             # Update
             if standard_score is not None:
                 c.execute('''UPDATE matches SET
-                            candidate_name=?, match_score=?, standard_score=?, decision=?, reasoning=?, standard_reasoning=?, missing_skills=?, match_details=?, strategy=?
+                            candidate_name=?, match_score=?, standard_score=?, decision=?, reasoning=?, standard_reasoning=?, missing_skills=?, match_details=?, confidence=?, needs_review=?, low_evidence=?, strategy=?
                             WHERE id=?''',
-                        (data['candidate_name'], data['match_score'], standard_score, data['decision'], reasoning_val, standard_reasoning, missing, details, strategy, match_id))
+                        (data['candidate_name'], data['match_score'], standard_score, data['decision'], reasoning_val, standard_reasoning, missing, details, data.get("confidence"), data.get("needs_review"), data.get("low_evidence"), strategy, match_id))
             else:
                  c.execute('''UPDATE matches SET
-                            candidate_name=?, match_score=?, decision=?, reasoning=?, missing_skills=?, match_details=?, strategy=?
+                            candidate_name=?, match_score=?, decision=?, reasoning=?, missing_skills=?, match_details=?, confidence=?, needs_review=?, low_evidence=?, strategy=?
                             WHERE id=?''',
-                        (data['candidate_name'], data['match_score'], data['decision'], reasoning_val, missing, details, strategy, match_id))
+                        (data['candidate_name'], data['match_score'], data['decision'], reasoning_val, missing, details, data.get("confidence"), data.get("needs_review"), data.get("low_evidence"), strategy, match_id))
             new_id = match_id
         else:
-            c.execute('''INSERT INTO matches (job_id, resume_id, candidate_name, match_score, standard_score, decision, reasoning, standard_reasoning, missing_skills, match_details, strategy)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                      (job_id, resume_id, data['candidate_name'], data['match_score'], standard_score, data['decision'], reasoning_val, standard_reasoning, missing, details, strategy))
+            c.execute('''INSERT INTO matches (job_id, resume_id, candidate_name, match_score, standard_score, decision, reasoning, standard_reasoning, missing_skills, match_details, confidence, needs_review, low_evidence, strategy)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                      (job_id, resume_id, data['candidate_name'], data['match_score'], standard_score, data['decision'], reasoning_val, standard_reasoning, missing, details, data.get("confidence"), data.get("needs_review"), data.get("low_evidence"), strategy))
             new_id = c.lastrowid
 
         conn.commit()
