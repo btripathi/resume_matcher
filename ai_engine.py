@@ -19,7 +19,7 @@ class AIEngine:
 
     def analyze_jd(self, text):
         if self.use_mock:
-            return self._mock_analyze_jd(text)
+            return self._normalize_jd_schema(self._mock_analyze_jd(text), text)
         document_utils = self._document_utils()
         prompt = f"""
         You are a high-precision Technical Recruiter. Analyze the provided Job Description text.
@@ -49,7 +49,8 @@ class AIEngine:
             resp = self.client.chat.completions.create(
                 model="local-model", messages=[{"role": "user", "content": prompt}], temperature=0.0
             )
-            return document_utils.clean_json_response(resp.choices[0].message.content)
+            raw = document_utils.clean_json_response(resp.choices[0].message.content)
+            return self._normalize_jd_schema(raw, text)
         except Exception as e:
             return {"error": str(e)}
 
@@ -337,6 +338,158 @@ class AIEngine:
             except json.JSONDecodeError:
                 return {}
         return {}
+
+    def _normalize_jd_schema(self, jd_data, jd_text):
+        if not isinstance(jd_data, dict):
+            jd_data = {}
+
+        def norm_list(value):
+            if value is None:
+                return []
+            if isinstance(value, str):
+                return [value.strip()] if value.strip() else []
+            if not isinstance(value, list):
+                return []
+            out = []
+            for item in value:
+                if item is None:
+                    continue
+                if isinstance(item, str):
+                    if item.strip():
+                        out.append(item.strip())
+                    continue
+                if isinstance(item, dict):
+                    for key in ("name", "skill", "requirement", "text", "value"):
+                        if key in item and isinstance(item[key], str) and item[key].strip():
+                            out.append(item[key].strip())
+                            break
+                    continue
+            return out
+
+        def norm_int(value):
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str):
+                match = re.search(r"(\d+)", value)
+                return int(match.group(1)) if match else 0
+            return 0
+
+        role_title = jd_data.get("role_title")
+        if not isinstance(role_title, str) or not role_title.strip():
+            role_title = self._first_nonempty_line(jd_text) or "Unknown Role"
+
+        must_have = norm_list(jd_data.get("must_have_skills"))
+        nice_to_have = norm_list(jd_data.get("nice_to_have_skills"))
+        education = norm_list(jd_data.get("education_requirements"))
+        domain = norm_list(jd_data.get("domain_knowledge"))
+        soft = norm_list(jd_data.get("soft_skills"))
+        responsibilities = norm_list(jd_data.get("key_responsibilities"))
+        min_years = norm_int(jd_data.get("min_years_experience"))
+
+        if not must_have:
+            extracted = self._extract_must_haves_from_text(jd_text)
+            if extracted:
+                must_have = extracted
+
+        must_have = self._dedupe_list(must_have)
+        nice_to_have = self._dedupe_list(nice_to_have)
+        education = self._dedupe_list(education)
+        domain = self._dedupe_list(domain)
+        soft = self._dedupe_list(soft)
+        responsibilities = self._dedupe_list(responsibilities)
+
+        return {
+            "role_title": role_title.strip(),
+            "must_have_skills": must_have,
+            "nice_to_have_skills": nice_to_have,
+            "min_years_experience": min_years,
+            "education_requirements": education,
+            "domain_knowledge": domain,
+            "soft_skills": soft,
+            "key_responsibilities": responsibilities,
+        }
+
+    def _extract_must_haves_from_text(self, text):
+        sections = [
+            "requirements",
+            "required",
+            "qualifications",
+            "what we are looking for",
+            "what we're looking for",
+            "must have",
+            "must-have",
+            "experience",
+        ]
+        lines = self._extract_section_lines(text, sections, max_lines=30)
+        if not lines:
+            return []
+        candidates = []
+        for line in lines:
+            cleaned = self._clean_bullet_line(line)
+            if not cleaned:
+                continue
+            if len(cleaned) < 3:
+                continue
+            candidates.append(cleaned)
+        return self._dedupe_list(candidates)[:15]
+
+    def _extract_section_lines(self, text, headings, max_lines=25):
+        if not text:
+            return []
+        lines = [l.strip() for l in text.splitlines()]
+        lowered = [l.lower() for l in lines]
+        start_idx = None
+        for i, line in enumerate(lowered):
+            for h in headings:
+                if h in line:
+                    start_idx = i + 1
+                    break
+            if start_idx is not None:
+                break
+        if start_idx is None:
+            return []
+
+        results = []
+        for line in lines[start_idx:]:
+            if not line:
+                if results:
+                    break
+                continue
+            lower = line.lower()
+            if any(h in lower for h in headings) and results:
+                break
+            if re.match(r"^[A-Z][A-Za-z\s/&-]{3,}$", line) and results:
+                break
+            results.append(line)
+            if len(results) >= max_lines:
+                break
+        return results
+
+    def _clean_bullet_line(self, line):
+        cleaned = re.sub(r"^[\-\*]+\s*", "", line).strip()
+        cleaned = re.sub(r"^\d+\.\s*", "", cleaned).strip()
+        return cleaned
+
+    def _dedupe_list(self, items):
+        seen = set()
+        out = []
+        for item in items:
+            if not isinstance(item, str):
+                continue
+            key = item.strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(item.strip())
+        return out
+
+    def _first_nonempty_line(self, text):
+        if not text:
+            return None
+        for line in text.splitlines():
+            if line.strip():
+                return line.strip()
+        return None
 
     def _document_utils(self):
         if importlib.util.find_spec("document_utils") is None:
