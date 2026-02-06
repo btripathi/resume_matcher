@@ -53,6 +53,22 @@ if "processed_files" not in st.session_state: st.session_state.processed_files =
 if "write_mode" not in st.session_state: st.session_state.write_mode = False
 if "write_mode_warned" not in st.session_state: st.session_state.write_mode_warned = False
 
+# Auto-enable write mode locally if configured
+try:
+    auto_write = st.secrets.get("writer", {}).get("auto_write_mode", False)
+    writer_name_auto = st.secrets.get("writer", {}).get("name", "")
+    if auto_write and st.session_state.local_lm_available and not st.session_state.write_mode:
+        lock_timeout = st.secrets.get("writer", {}).get("lock_timeout_hours", 6)
+        lock_info = github_sync.get_lock(timeout_hours=lock_timeout)
+        if lock_info and isinstance(lock_info, dict) and lock_info.get("owner") == (writer_name_auto or "unknown"):
+            st.session_state.write_mode = True
+        else:
+            ok, _ = github_sync.acquire_lock(writer_name_auto or "unknown", timeout_hours=lock_timeout)
+            if ok:
+                st.session_state.write_mode = True
+except Exception:
+    pass
+
 # Analysis Run State
 if "is_running" not in st.session_state: st.session_state.is_running = False
 if "stop_requested" not in st.session_state: st.session_state.stop_requested = False
