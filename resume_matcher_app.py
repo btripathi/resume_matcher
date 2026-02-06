@@ -392,15 +392,16 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                                         bulk_reqs.extend([(k, v) for v in jd_c[k]])
 
                                 details = []
-                                num_reqs = len(priority_reqs) + (1 if bulk_reqs else 0)
+                                total_criteria = len(priority_reqs) + len(bulk_reqs)
                                 processed_count = 0
 
                                 for rt, rv in priority_reqs:
                                     if st.session_state.stop_requested: break
                                     processed_count += 1
                                     add_log(f"&nbsp;&nbsp;&nbsp;&nbsp;🔎 Checking {rt.replace('_', ' ').title()}: <i>{str(rv)[:40]}...</i>")
-                                    task_display.warning(f"🔬 Deep Scan: Checking {rt.upper()} (Priority)...")
-                                    sub_bar.progress(processed_count/num_reqs)
+                                    task_display.warning(f"🔬 Deep Scan: {processed_count}/{total_criteria} criteria checked (Priority)...")
+                                    if total_criteria > 0:
+                                        sub_bar.progress(processed_count/total_criteria)
                                     res_crit = client.evaluate_criterion(res['content'], rt, rv)
                                     if res_crit:
                                         details.append(res_crit)
@@ -410,12 +411,15 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                                 if st.session_state.stop_requested: break
 
                                 if bulk_reqs:
-                                    processed_count += 1
-                                    task_display.info(f"⚡ Bulk Scan: Checking {len(bulk_reqs)} secondary criteria...")
+                                    task_display.info(f"⚡ Bulk Scan: Checking {len(bulk_reqs)} secondary criteria... ({processed_count}/{total_criteria})")
                                     add_log(f"&nbsp;&nbsp;&nbsp;&nbsp;⚡ Bulk checking {len(bulk_reqs)} secondary items...")
-                                    sub_bar.progress(processed_count/num_reqs)
+                                    if total_criteria > 0:
+                                        sub_bar.progress(processed_count/total_criteria)
                                     bulk_results = client.evaluate_bulk_criteria(res['content'], bulk_reqs)
                                     if bulk_results: details.extend(bulk_results)
+                                    processed_count += len(bulk_reqs)
+                                    if total_criteria > 0:
+                                        sub_bar.progress(min(1.0, processed_count/total_criteria))
 
                                 sub_bar.empty()
                                 sf, df, rf = client.generate_final_decision(res['filename'], details, strategy="Deep")
