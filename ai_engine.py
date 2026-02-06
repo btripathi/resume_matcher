@@ -1,12 +1,26 @@
-from openai import OpenAI
+import importlib
+import importlib.util
 import json
-import document_utils
+import re
 
 class AIEngine:
     def __init__(self, base_url, api_key):
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
+        self.base_url = base_url
+        self.api_key = api_key
+        self.use_mock = base_url.startswith("mock://")
+
+        if not self.use_mock:
+            if importlib.util.find_spec("openai") is None:
+                raise RuntimeError(
+                    "openai is not installed. Install it or use base_url='mock://local' for the mock API."
+                )
+            openai_module = importlib.import_module("openai")
+            self.client = openai_module.OpenAI(base_url=base_url, api_key=api_key)
 
     def analyze_jd(self, text):
+        if self.use_mock:
+            return self._mock_analyze_jd(text)
+        document_utils = self._document_utils()
         prompt = f"""
         You are a high-precision Technical Recruiter. Analyze the provided Job Description text.
 
@@ -44,6 +58,9 @@ class AIEngine:
         Extracts structured profile from Resume.
         Enforces strict JSON formatting (Double Quotes).
         """
+        if self.use_mock:
+            return self._mock_analyze_resume(text)
+        document_utils = self._document_utils()
         # --- SAFETY GUARD ---
         # Prevent hallucination (John Doe) if OCR failed or text is empty
         if not text or len(text.strip()) < 50 or text.startswith("[OCR Error") or text.startswith("Error"):
@@ -113,6 +130,9 @@ class AIEngine:
             return {"candidate_name": "Error", "error_flag": True}
 
     def evaluate_standard(self, resume_text, jd_criteria, resume_profile):
+        if self.use_mock:
+            return self._mock_evaluate_standard(resume_text, jd_criteria)
+        document_utils = self._document_utils()
         system_prompt = """
         You are a very strict Technical Recruiter. Your job is to filter out candidates who do not strongly match the requirements.
 
@@ -140,6 +160,9 @@ class AIEngine:
         except: return None
 
     def evaluate_criterion(self, resume_text, category, value):
+        if self.use_mock:
+            return self._mock_evaluate_criterion(resume_text, category, value)
+        document_utils = self._document_utils()
         system_prompt = f"""
         Verify if resume meets this {category} requirement: "{value}".
         Return JSON: {{ "requirement": "{value}", "status": "Met" | "Partial" | "Missing", "evidence": "Quote or 'None'" }}
@@ -155,6 +178,9 @@ class AIEngine:
         except: return None
 
     def evaluate_bulk_criteria(self, resume_text, criteria_list):
+        if self.use_mock:
+            return [self._mock_evaluate_criterion(resume_text, cat, val) for cat, val in criteria_list]
+        document_utils = self._document_utils()
         if not criteria_list: return []
 
         reqs_str = "\n".join([f"- [{cat}] {val}" for cat, val in criteria_list])
@@ -220,3 +246,98 @@ class AIEngine:
 
         reasoning = f"Weighted {strategy} Scan: Candidate met {earned_weight:.1f}/{total_weight:.1f} weighted points."
         return score, decision, reasoning
+
+    def _mock_analyze_jd(self, text):
+        must_have = []
+        nice_to_have = []
+        min_years = 0
+
+        must_match = re.search(r"must have:(.*)", text, re.IGNORECASE)
+        pref_match = re.search(r"(preferred|plus|bonus):(.*)", text, re.IGNORECASE)
+        years_match = re.search(r"(\d+)\+?\s*years", text, re.IGNORECASE)
+
+        if must_match:
+            must_have = [s.strip() for s in must_match.group(1).split(",") if s.strip()]
+        if pref_match:
+            nice_to_have = [s.strip() for s in pref_match.group(2).split(",") if s.strip()]
+        if years_match:
+            min_years = int(years_match.group(1))
+
+        return {
+            "role_title": text.strip().splitlines()[0] if text.strip() else "Unknown Role",
+            "must_have_skills": must_have,
+            "nice_to_have_skills": nice_to_have,
+            "min_years_experience": min_years,
+            "education_requirements": [],
+            "domain_knowledge": [],
+            "soft_skills": [],
+            "key_responsibilities": []
+        }
+
+    def _mock_analyze_resume(self, text):
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        name = lines[0] if lines else "Unknown"
+        email_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", text)
+        email = email_match.group(0) if email_match else ""
+        phone_match = re.search(r"\+?\d[\d\s\-]{7,}\d", text)
+        phone = phone_match.group(0) if phone_match else ""
+
+        skills = []
+        tools_match = re.search(r"(tools|skills):(.+)", text, re.IGNORECASE)
+        if tools_match:
+            skills = [s.strip() for s in tools_match.group(2).split(",") if s.strip()]
+
+        return {
+            "candidate_name": name,
+            "email": email,
+            "phone": phone,
+            "extracted_skills": skills,
+            "years_experience": self._estimate_years(text),
+            "education_summary": "",
+            "domain_experience": [],
+            "work_history": []
+        }
+
+    def _mock_evaluate_standard(self, resume_text, jd_criteria):
+        criteria = self._parse_criteria(jd_criteria)
+        must_have = criteria.get("must_have_skills", [])
+        missing = [skill for skill in must_have if skill.lower() not in resume_text.lower()]
+        score = 85 if not missing else 40
+        decision = "Move Forward" if score >= 80 else "Reject"
+        reasoning = "Mock evaluation based on keyword presence."
+        return {
+            "candidate_name": "Mock Candidate",
+            "match_score": score,
+            "decision": decision,
+            "reasoning": reasoning,
+            "missing_skills": missing
+        }
+
+    def _mock_evaluate_criterion(self, resume_text, category, value):
+        status = "Met" if value.lower() in resume_text.lower() else "Missing"
+        evidence = value if status == "Met" else "None"
+        return {
+            "requirement": value,
+            "category": category,
+            "status": status,
+            "evidence": evidence
+        }
+
+    def _parse_criteria(self, jd_criteria):
+        if isinstance(jd_criteria, dict):
+            return jd_criteria
+        if isinstance(jd_criteria, str):
+            try:
+                return json.loads(jd_criteria)
+            except json.JSONDecodeError:
+                return {}
+        return {}
+
+    def _document_utils(self):
+        if importlib.util.find_spec("document_utils") is None:
+            raise RuntimeError("document_utils is unavailable; install project dependencies.")
+        return importlib.import_module("document_utils")
+
+    def _estimate_years(self, text):
+        match = re.search(r"(\d+)\+?\s*years", text, re.IGNORECASE)
+        return int(match.group(1)) if match else 0

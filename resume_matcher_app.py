@@ -884,11 +884,25 @@ with tab3:
     runs = db.fetch_dataframe("SELECT * FROM runs ORDER BY id DESC")
     if not runs.empty:
         runs['label'] = runs['name'] + " (" + runs['created_at'] + ")"
-        sel_run_label = st.selectbox("Select Run Batch:", runs['label'])
+
+        # Split layout for Selection and Rename
+        c_sel, c_ren = st.columns([3, 1])
+        with c_sel:
+            sel_run_label = st.selectbox("Select Run Batch:", runs['label'])
+
         run_row = runs[runs['label'] == sel_run_label].iloc[0]
         run_id = int(run_row['id'])
         run_name_base = run_row['name']
         run_threshold = int(run_row['threshold']) if 'threshold' in run_row and pd.notna(run_row['threshold']) else 50
+
+        with c_ren:
+            # Rename Logic
+            new_run_name = st.text_input("Rename Batch:", value=run_name_base, key=f"ren_{run_id}")
+            if new_run_name != run_name_base:
+                db.execute_query("UPDATE runs SET name=? WHERE id=?", (new_run_name, run_id))
+                with st.spinner("Syncing rename to GitHub..."):
+                    github_sync.push_db()
+                st.rerun()  # <--- CRITICAL: Refreshes the dropdown immediately
 
         # --- RERUN SECTION ---
         with st.expander("🔄 Rerun this Batch with New Settings", expanded=False):
