@@ -726,14 +726,23 @@ with tab1:
                 if new_jd_tag.strip() not in jd_tag_assign:
                     jd_tag_assign.append(new_jd_tag.strip())
                 tag_options = sorted(set(db.list_tags()))
+            jd_tag_assign = [t.strip() for t in jd_tag_assign if t.strip()]
             jd_tag_val = ",".join(jd_tag_assign) if jd_tag_assign else None
             jd_up = st.file_uploader("Upload JDs (PDF/DOCX/TXT)", accept_multiple_files=True, key=f"jd_up_{st.session_state.jd_uploader_key}")
             force_reparse_jd = st.checkbox("Force Reparse Existing JDs", value=False)
 
             if jd_up:
+                has_jd_tag = bool(jd_tag_assign)
                 if not st.session_state.is_uploading_jd:
-                    st.button("Process New JDs", type="primary", on_click=start_jd_upload)
+                    st.button("Process New JDs", type="primary", on_click=start_jd_upload, disabled=not has_jd_tag)
+                    if not has_jd_tag:
+                        st.error("Please select an existing tag or create a new tag before uploading JDs.")
                 else:
+                    if not has_jd_tag:
+                        st.error("Please select an existing tag or create a new tag before uploading JDs.")
+                        st.session_state.is_uploading_jd = False
+                        st.session_state.stop_upload_jd = False
+                        st.rerun()
                     st.button("🛑 STOP UPLOAD", type="primary", on_click=stop_jd_upload)
 
                     with st.status("Processing JDs...", expanded=True) as status:
