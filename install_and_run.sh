@@ -91,6 +91,21 @@ else
     echo -e "\n${GREEN}✅ Connection established!${NC}"
 fi
 
-# 6. Launch App
-echo -e "\n${GREEN}[4/4] 🚀 Launching Resume Matcher App...${NC}"
-streamlit run resume_matcher_app.py
+# 6. Choose Write Mode (flag-based)
+WRITE_MODE=0
+if [[ "$1" == "-write" ]]; then
+    WRITE_MODE=1
+fi
+
+STREAMLIT_ENV=""
+if [[ "$WRITE_MODE" -eq 1 ]]; then
+    echo -e "${GREEN}Write mode ENABLED via -write.${NC}"
+    STREAMLIT_ENV="RESUME_MATCHER_WRITE_MODE=1"
+else
+    echo -e "${YELLOW}Read-only mode (default). Use -write to enable shared DB updates.${NC}"
+    STREAMLIT_ENV="RESUME_MATCHER_READ_ONLY=1"
+fi
+
+# 7. Launch App
+echo -e "\n${GREEN}[5/5] 🚀 Launching Resume Matcher App...${NC}"
+env $STREAMLIT_ENV streamlit run resume_matcher_app.py

@@ -3,6 +3,7 @@ import pandas as pd
 import json
 import re
 import unicodedata
+import os
 import time
 import datetime
 import logging
@@ -54,12 +55,20 @@ if "ocr_enabled" not in st.session_state: st.session_state.ocr_enabled = True
 if "processed_files" not in st.session_state: st.session_state.processed_files = set()
 if "write_mode" not in st.session_state: st.session_state.write_mode = False
 if "write_mode_warned" not in st.session_state: st.session_state.write_mode_warned = False
+if "write_mode_locked" not in st.session_state: st.session_state.write_mode_locked = False
+
+# Respect explicit read-only mode from launcher
+env_read_only = os.getenv("RESUME_MATCHER_READ_ONLY", "").lower() in ("1", "true", "yes")
+env_write = os.getenv("RESUME_MATCHER_WRITE_MODE", "").lower() in ("1", "true", "yes")
+if env_read_only and not env_write:
+    st.session_state.write_mode = False
+    st.session_state.write_mode_locked = True
 
 # Auto-enable write mode locally if configured
 try:
     auto_write = st.secrets.get("writer", {}).get("auto_write_mode", False)
     writer_name_auto = st.secrets.get("writer", {}).get("name", "")
-    if auto_write and st.session_state.local_lm_available and not st.session_state.write_mode:
+    if not st.session_state.write_mode_locked and auto_write and st.session_state.local_lm_available and not st.session_state.write_mode:
         lock_timeout = st.secrets.get("writer", {}).get("lock_timeout_hours", 6)
         lock_info = github_sync.get_lock(timeout_hours=lock_timeout)
         if lock_info and isinstance(lock_info, dict) and lock_info.get("owner") == (writer_name_auto or "unknown"):
@@ -595,7 +604,10 @@ with col_set:
 
         st.caption(f"Lock auto-expires after {lock_timeout} hours. Use Release before closing if possible.")
 
-        if st.button("Enable Write Mode"):
+        if st.session_state.write_mode_locked:
+            st.info("Write mode is locked by the launcher. Re-run with write mode enabled to allow shared DB updates.")
+
+        if st.button("Enable Write Mode", disabled=st.session_state.write_mode_locked):
             expected = None
             try:
                 expected = st.secrets.get("writer", {}).get("password")
@@ -624,7 +636,7 @@ with col_set:
                     else:
                         st.error(msg)
 
-        if st.session_state.write_mode:
+        if st.session_state.write_mode and not st.session_state.write_mode_locked:
             if st.button("Disable Write Mode / Release Lock"):
                 ok, msg = github_sync.release_lock(writer_name or "unknown")
                 if ok:
@@ -1154,7 +1166,10 @@ with tab1:
                 except Exception:
                     pass
                 s = s.replace("\u2022", " ")
+                # Collapse sequences of single-letter tokens into words
+                s = re.sub(r"(?:\b\w\s+){2,}\w\b", lambda m: m.group(0).replace(" ", ""), s)
                 s = s.replace("\u2010", "-").replace("\u2011", "-").replace("\u2012", "-").replace("\u2013", "-").replace("\u2014", "-")
+                s = re.sub(r"(?<=\w)\s+(?=\w)", " ", s)
                 s = re.sub(r"\s+", " ", s)
                 s = re.sub(r"\s*-\s*", "-", s)
                 s = re.sub(r"\s*,\s*", ", ", s)
@@ -1166,7 +1181,30 @@ with tab1:
             norm_query = _normalize(query)
             idx = norm_text.find(norm_query)
             if idx == -1:
-                return ""
+                # Fallback: ignore all whitespace/punctuation for heavily broken text
+                compact_text = re.sub(r"[^a-z0-9]", "", norm_text)
+                compact_query = re.sub(r"[^a-z0-9]", "", norm_query)
+                idx = compact_text.find(compact_query)
+                if idx == -1:
+                    # Token-based fallback: require all significant tokens to appear
+                    tokens = [t for t in re.split(r"\W+", norm_query) if len(t) > 3]
+                    text_tokens = [t for t in re.split(r"\W+", norm_text) if len(t) > 3]
+                    if tokens and text_tokens:
+                        def _token_match(qt, tt):
+                            if qt == tt:
+                                return True
+                            if qt.startswith(tt[:4]) or tt.startswith(qt[:4]):
+                                return True
+                            return False
+                        matched = 0
+                        for qt in tokens:
+                            if any(_token_match(qt, tt) for tt in text_tokens):
+                                matched += 1
+                        coverage = matched / max(1, len(tokens))
+                        if coverage >= 0.6:
+                            return norm_query
+                    return ""
+                return norm_query
             # Approximate snippet from original text (best-effort)
             start = max(0, idx - window)
             end = min(len(norm_text), idx + len(norm_query) + window)
