@@ -712,7 +712,20 @@ with tab1:
     with subtab_jd:
         with st.expander("📤 Upload New Job Descriptions", expanded=False):
             tag_options = sorted(set(db.list_tags()))
-            jd_tag_assign = st.multiselect("Assign Tag(s) to JDs (Optional):", tag_options)
+            create_tag_option = "➕ Create new tag…"
+            jd_tag_assign = st.multiselect(
+                "Assign Tag(s) to JDs (Optional):",
+                tag_options + [create_tag_option]
+            )
+            new_jd_tag = ""
+            if create_tag_option in jd_tag_assign:
+                new_jd_tag = st.text_input("New Tag Name", key="new_jd_tag")
+                jd_tag_assign = [t for t in jd_tag_assign if t != create_tag_option]
+            if new_jd_tag.strip():
+                db.add_tag(new_jd_tag.strip())
+                if new_jd_tag.strip() not in jd_tag_assign:
+                    jd_tag_assign.append(new_jd_tag.strip())
+                tag_options = sorted(set(db.list_tags()))
             jd_tag_val = ",".join(jd_tag_assign) if jd_tag_assign else None
             jd_up = st.file_uploader("Upload JDs (PDF/DOCX/TXT)", accept_multiple_files=True, key=f"jd_up_{st.session_state.jd_uploader_key}")
             force_reparse_jd = st.checkbox("Force Reparse Existing JDs", value=False)
@@ -850,15 +863,28 @@ with tab1:
     # --- RESUMES SUB-TAB ---
     with subtab_res:
         # Available tags for logic
-        avail_jds = db.fetch_dataframe("SELECT id, filename FROM jobs")
+        avail_jds = db.fetch_dataframe("SELECT id, filename, tags FROM jobs")
         jd_options = {row['filename']: str(row['filename']) for idx, row in avail_jds.iterrows()}
-        tag_options = sorted(set(db.list_tags() + list(jd_options.keys())))
+        tag_options = sorted(set(db.list_tags()))
 
         with st.expander("📤 Upload / Import Resumes", expanded=False):
             c1, c2 = st.columns(2)
             with c1:
                 st.write("#### File Upload")
-                selected_tags = st.multiselect("Assign Tag(s) (Optional):", tag_options)
+                create_tag_option = "➕ Create new tag…"
+                selected_tags = st.multiselect(
+                    "Assign Tag(s) (Optional):",
+                    tag_options + [create_tag_option]
+                )
+                new_res_tag = ""
+                if create_tag_option in selected_tags:
+                    new_res_tag = st.text_input("New Tag Name", key="new_res_tag")
+                    selected_tags = [t for t in selected_tags if t != create_tag_option]
+                if new_res_tag.strip():
+                    db.add_tag(new_res_tag.strip())
+                    if new_res_tag.strip() not in selected_tags:
+                        selected_tags.append(new_res_tag.strip())
+                    tag_options = sorted(set(db.list_tags()))
                 tag_val = ",".join(selected_tags) if selected_tags else None
 
                 res_up = st.file_uploader("Upload Resumes (PDF/DOCX)", accept_multiple_files=True, key=f"res_up_{st.session_state.res_uploader_key}")
@@ -961,12 +987,7 @@ with tab1:
 
         if not ress.empty:
             # --- FILTER LIST ---
-            all_tags = set()
-            for t_str in ress['tags'].dropna().unique():
-                for t in t_str.split(','):
-                    all_tags.add(t.strip())
-
-            list_filter = st.multiselect("Filter List by Tag:", sorted(list(all_tags)), key="list_tag_filter")
+            list_filter = st.multiselect("Filter List by Tag:", tag_options, key="list_tag_filter")
 
             if list_filter:
                 mask = ress['tags'].apply(lambda x: any(tag in [t.strip() for t in x.split(',')] for tag in list_filter))
@@ -1119,12 +1140,8 @@ with tab2:
         st.markdown("#### 2. Select Resumes")
 
         if 'tags' in r_data.columns:
-            all_used_tags = set()
-            for t_str in r_data['tags'].dropna().unique():
-                for t in t_str.split(','):
-                    all_used_tags.add(t.strip())
-
-            filter_tag = st.selectbox("Filter by JD Tag (Optional):", ["All"] + sorted(list(all_used_tags)))
+            filter_tag_options = ["All"] + sorted(db.list_tags())
+            filter_tag = st.selectbox("Filter by JD Tag (Optional):", filter_tag_options)
 
             if filter_tag != "All":
                 r_data = r_data[r_data['tags'].fillna('').astype(str).apply(lambda x: filter_tag in [t.strip() for t in x.split(',')])]
