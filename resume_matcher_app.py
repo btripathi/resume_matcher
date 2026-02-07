@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import json
+import re
+import unicodedata
 import time
 import datetime
 import logging
@@ -706,7 +708,7 @@ with tab1:
     client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
 
     # SPLIT TAB INTO SUB-TABS
-    subtab_jd, subtab_res, subtab_tags = st.tabs(["📂 Job Descriptions", "📄 Candidate Resumes", "🏷️ Tag Manager"])
+    subtab_jd, subtab_res, subtab_tags, subtab_verify = st.tabs(["📂 Job Descriptions", "📄 Candidate Resumes", "🏷️ Tag Manager", "✅ Data Verification"])
 
     # --- JOB DESCRIPTIONS SUB-TAB ---
     with subtab_jd:
@@ -1131,6 +1133,216 @@ with tab1:
                     st.rerun()
             else:
                 st.info("No tags available to delete.")
+
+    # --- DATA VERIFICATION SUB-TAB ---
+    with subtab_verify:
+        st.subheader("Data Verification")
+        st.caption("Compare extracted text with JSON to verify accuracy.")
+
+        verify_mode = st.radio("Verify", ["Job Description", "Resume"], horizontal=True)
+
+        def _find_evidence(text, query, window=80):
+            if not text or not query:
+                return ""
+            def _normalize(s):
+                if not s:
+                    return ""
+                s = str(s)
+                # Normalize unicode (e.g., ﬁ ligature) and whitespace
+                try:
+                    s = unicodedata.normalize("NFKC", s)
+                except Exception:
+                    pass
+                s = s.replace("\u2022", " ")
+                s = s.replace("\u2010", "-").replace("\u2011", "-").replace("\u2012", "-").replace("\u2013", "-").replace("\u2014", "-")
+                s = re.sub(r"\s+", " ", s)
+                s = re.sub(r"\s*-\s*", "-", s)
+                s = re.sub(r"\s*,\s*", ", ", s)
+                s = re.sub(r"\(\s*", "(", s)
+                s = re.sub(r"\s*\)", ")", s)
+                return s.lower().strip()
+
+            norm_text = _normalize(text)
+            norm_query = _normalize(query)
+            idx = norm_text.find(norm_query)
+            if idx == -1:
+                return ""
+            # Approximate snippet from original text (best-effort)
+            start = max(0, idx - window)
+            end = min(len(norm_text), idx + len(norm_query) + window)
+            snippet = norm_text[start:end]
+            return snippet
+
+        def _highlight_text(text, query):
+            if not text or not query:
+                return text or ""
+            pattern = re.escape(query)
+            return re.sub(pattern, lambda m: f"<mark>{m.group(0)}</mark>", text, flags=re.IGNORECASE)
+
+        def _rank_json_items_by_query(items, query):
+            if not query:
+                return []
+            q = query.lower()
+            results = []
+            for item in items:
+                if not isinstance(item, str):
+                    continue
+                score = 0
+                if q in item.lower():
+                    score += 3
+                score += sum(1 for token in q.split() if token in item.lower())
+                if score > 0:
+                    results.append((score, item))
+            return [item for score, item in sorted(results, key=lambda x: -x[0])]
+
+        if verify_mode == "Job Description":
+            jds_v = db.fetch_dataframe("SELECT id, filename, criteria, content, tags, upload_date FROM jobs")
+            if jds_v.empty:
+                st.info("No Job Descriptions available.")
+            else:
+                tag_options = ["All"] + sorted(db.list_tags())
+                tag_filter = st.selectbox("Filter by Tag", tag_options, key="verify_jd_tag")
+                if tag_filter != "All":
+                    jds_v = jds_v[jds_v['tags'].fillna('').astype(str).apply(lambda x: tag_filter in [t.strip() for t in x.split(',')])]
+
+                jd_choice = st.selectbox("Select JD", jds_v['filename'].tolist())
+                jd_row = jds_v[jds_v['filename'] == jd_choice].iloc[0]
+                jd_text = jd_row['content'] or ""
+                jd_criteria_raw = jd_row['criteria'] or "{}"
+                try:
+                    jd_criteria = json.loads(jd_criteria_raw)
+                except:
+                    jd_criteria = {}
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**Extracted Text**")
+                    st.markdown(
+                        "<div style='border:1px solid #eee; padding:8px; height:400px; overflow:auto; white-space:pre-wrap;'>"
+                        f"{jd_text}</div>",
+                        unsafe_allow_html=True
+                    )
+                with c2:
+                    st.markdown("**Parsed JSON**")
+                    st.text_area("JD JSON", value=jd_criteria_raw, height=400, disabled=True)
+
+                st.divider()
+                st.markdown("**Evidence Check**")
+                rows = []
+                all_items = []
+                for section in ["must_have_skills", "nice_to_have_skills", "education_requirements", "domain_knowledge", "soft_skills", "key_responsibilities"]:
+                    items = jd_criteria.get(section, [])
+                    if not isinstance(items, list):
+                        continue
+                    for item in items:
+                        if isinstance(item, str):
+                            all_items.append((section, item))
+                            evidence = _find_evidence(jd_text, item)
+                            status = "Found" if evidence else "Not Found"
+                            rows.append({
+                                "section": section,
+                                "item": item,
+                                "status": status,
+                                "evidence": evidence[:200]
+                            })
+
+                if all_items:
+                    item_labels = [f"{sec}: {val}" for sec, val in all_items]
+                    selected_item = st.selectbox("Find JSON item in raw text", item_labels, key="jd_find_item")
+                    selected_text = selected_item.split(": ", 1)[1] if ": " in selected_item else selected_item
+                    evidence = _find_evidence(jd_text, selected_text)
+                    if evidence:
+                        st.markdown("**Evidence Snippet**")
+                        st.markdown(_highlight_text(evidence, selected_text), unsafe_allow_html=True)
+                    else:
+                        st.warning("No exact evidence found in raw text.")
+
+                    st.markdown("**Paste sentence to find matching JSON items**")
+                    query = st.text_input("Sentence or phrase", key="jd_query")
+                    if query.strip():
+                        ranked = _rank_json_items_by_query([v for _, v in all_items], query.strip())
+                        if ranked:
+                            st.write("Closest JSON items:")
+                            for item in ranked[:10]:
+                                st.write(f"- {item}")
+                        else:
+                            st.info("No similar JSON items found.")
+                if rows:
+                    st.dataframe(pd.DataFrame(rows), width="stretch")
+                else:
+                    st.info("No criteria items found to verify.")
+
+        else:
+            ress_v = db.fetch_dataframe("SELECT id, filename, profile, content, tags, upload_date FROM resumes")
+            if ress_v.empty:
+                st.info("No Resumes available.")
+            else:
+                tag_options = ["All"] + sorted(db.list_tags())
+                tag_filter = st.selectbox("Filter by Tag", tag_options, key="verify_res_tag")
+                if tag_filter != "All":
+                    ress_v = ress_v[ress_v['tags'].fillna('').astype(str).apply(lambda x: tag_filter in [t.strip() for t in x.split(',')])]
+
+                res_choice = st.selectbox("Select Resume", ress_v['filename'].tolist())
+                res_row = ress_v[ress_v['filename'] == res_choice].iloc[0]
+                res_text = res_row['content'] or ""
+                res_profile_raw = res_row['profile'] or "{}"
+                try:
+                    res_profile = json.loads(res_profile_raw)
+                except:
+                    res_profile = {}
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**Extracted Text**")
+                    st.markdown(
+                        "<div style='border:1px solid #eee; padding:8px; height:400px; overflow:auto; white-space:pre-wrap;'>"
+                        f"{res_text}</div>",
+                        unsafe_allow_html=True
+                    )
+                with c2:
+                    st.markdown("**Parsed JSON**")
+                    st.text_area("Resume JSON", value=res_profile_raw, height=400, disabled=True)
+
+                st.divider()
+                st.markdown("**Evidence Check**")
+                rows = []
+                skills = res_profile.get("extracted_skills", [])
+                skill_items = [s for s in skills if isinstance(s, str)]
+                if skill_items:
+                    selected_skill = st.selectbox("Find skill in raw text", skill_items, key="res_find_skill")
+                    evidence = _find_evidence(res_text, selected_skill)
+                    if evidence:
+                        st.markdown("**Evidence Snippet**")
+                        st.markdown(_highlight_text(evidence, selected_skill), unsafe_allow_html=True)
+                    else:
+                        st.warning("No exact evidence found in raw text.")
+
+                    st.markdown("**Paste sentence to find matching skills**")
+                    query = st.text_input("Sentence or phrase", key="res_query")
+                    if query.strip():
+                        ranked = _rank_json_items_by_query(skill_items, query.strip())
+                        if ranked:
+                            st.write("Closest skills:")
+                            for item in ranked[:10]:
+                                st.write(f"- {item}")
+                        else:
+                            st.info("No similar skills found.")
+                if isinstance(skills, list):
+                    for item in skills:
+                        if not isinstance(item, str):
+                            continue
+                        evidence = _find_evidence(res_text, item)
+                        status = "Found" if evidence else "Not Found"
+                        rows.append({
+                            "section": "extracted_skills",
+                            "item": item,
+                            "status": status,
+                            "evidence": evidence[:200]
+                        })
+                if rows:
+                    st.dataframe(pd.DataFrame(rows), width="stretch")
+                else:
+                    st.info("No skills found to verify.")
 
 # --- TAB 2: RUN ANALYSIS ---
 with tab2:
