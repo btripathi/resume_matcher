@@ -480,6 +480,14 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                                         sub_bar.progress(min(1.0, processed_count/total_criteria))
 
                                 sub_bar.empty()
+                                if not details:
+                                    add_log("&nbsp;&nbsp;⚠️ Deep scan returned no evaluated criteria. Keeping Pass 1 results.")
+                                    # Keep existing standard result; do not overwrite with a Deep result.
+                                    if not mid and data and isinstance(data, dict):
+                                        std_reasoning = data.get('reasoning', "No reasoning provided.")
+                                        std_reasoning = "\n".join(std_reasoning) if isinstance(std_reasoning, list) else str(std_reasoning)
+                                        mid = db.save_match(int(job['id']), int(res['id']), data, mid, strategy="Standard", standard_score=data.get('match_score', 0), standard_reasoning=std_reasoning)
+                                    continue
                                 sf, df, rf = client.generate_final_decision(res['filename'], details, strategy="Deep")
 
                                 std_score_saved = exist.get('standard_score', score)

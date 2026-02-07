@@ -154,7 +154,21 @@ class AIEngine:
 
         Return JSON: {candidate_name, match_score, decision, reasoning, missing_skills}
         """
-        user_prompt = f"JD CRITERIA:\n{jd_criteria}\n\nRESUME PROFILE:\n{resume_profile}\n\nRESUME TEXT:\n{resume_text[:6000]}"
+        jd_str = jd_criteria if isinstance(jd_criteria, str) else json.dumps(jd_criteria, indent=2)
+        profile_str = resume_profile if isinstance(resume_profile, str) else json.dumps(resume_profile, indent=2)
+        max_total = 12000
+        max_jd = 3500
+        max_profile = 3500
+        max_resume = 4000
+        jd_str = jd_str[:max_jd]
+        profile_str = profile_str[:max_profile]
+        resume_str = resume_text[:max_resume] if isinstance(resume_text, str) else str(resume_text)[:max_resume]
+        user_prompt = f"JD CRITERIA:\n{jd_str}\n\nRESUME PROFILE:\n{profile_str}\n\nRESUME TEXT:\n{resume_str}"
+        if len(user_prompt) > max_total:
+            overflow = len(user_prompt) - max_total
+            if len(resume_str) > overflow:
+                resume_str = resume_str[:max_resume - overflow]
+            user_prompt = f"JD CRITERIA:\n{jd_str}\n\nRESUME PROFILE:\n{profile_str}\n\nRESUME TEXT:\n{resume_str}"
         try:
             resp = self.client.chat.completions.create(
                 model="local-model",
