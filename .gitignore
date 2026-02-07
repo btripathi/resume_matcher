@@ -20,3 +20,6 @@ resume_matcher.db
 
 .vscode/
 .idea/
+
+# Python version manager
+.python-version
