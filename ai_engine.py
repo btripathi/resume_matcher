@@ -152,6 +152,10 @@ class AIEngine:
         - Do NOT include explanations, markdown, or multiple JSON blocks.
         - Use double quotes for all keys and strings.
 
+        NORMALIZATION RULES:
+        - Degree equivalence: B.Tech/BTech/B.E./BE/B.S./BS/B.Sc counts as Bachelor's. M.Tech/MTech/M.E./ME/M.S./MS/M.Sc counts as Master's.
+        - Cloud platforms: AWS, Azure, GCP, Google Cloud count as cloud platform experience.
+
         Return JSON: {candidate_name, match_score, decision, reasoning, missing_skills}
         """
         jd_str = jd_criteria if isinstance(jd_criteria, str) else json.dumps(jd_criteria, indent=2)
@@ -185,6 +189,9 @@ class AIEngine:
         document_utils = self._document_utils()
         system_prompt = f"""
         Verify if resume meets this {category} requirement: "{value}".
+        NORMALIZATION RULES:
+        - Degree equivalence: B.Tech/BTech/B.E./BE/B.S./BS/B.Sc counts as Bachelor's. M.Tech/MTech/M.E./ME/M.S./MS/M.Sc counts as Master's.
+        - Cloud platforms: AWS, Azure, GCP, Google Cloud count as cloud platform experience.
         Return JSON: {{ "requirement": "{value}", "status": "Met" | "Partial" | "Missing", "evidence": "Quote or 'None'" }}
         """
         user_prompt = f"TEXT:\n{resume_text[:15000]}"
@@ -208,6 +215,10 @@ class AIEngine:
         system_prompt = """
         You are a Technical Auditor. Evaluate the candidate against the list of requirements provided.
         For EACH requirement, determine if it is Met, Partial, or Missing based on the resume text.
+
+        NORMALIZATION RULES:
+        - Degree equivalence: B.Tech/BTech/B.E./BE/B.S./BS/B.Sc counts as Bachelor's. M.Tech/MTech/M.E./ME/M.S./MS/M.Sc counts as Master's.
+        - Cloud platforms: AWS, Azure, GCP, Google Cloud count as cloud platform experience.
 
         RETURN ONLY A JSON ARRAY of objects:
         [
