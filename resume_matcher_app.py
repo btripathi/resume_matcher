@@ -57,10 +57,14 @@ if "write_mode" not in st.session_state: st.session_state.write_mode = False
 if "write_mode_warned" not in st.session_state: st.session_state.write_mode_warned = False
 if "write_mode_locked" not in st.session_state: st.session_state.write_mode_locked = False
 
-# Respect explicit read-only mode from launcher
+# Respect explicit read-only / write mode from launcher
 env_read_only = os.getenv("RESUME_MATCHER_READ_ONLY", "").lower() in ("1", "true", "yes")
 env_write = os.getenv("RESUME_MATCHER_WRITE_MODE", "").lower() in ("1", "true", "yes")
-if env_read_only and not env_write:
+if env_write:
+    st.session_state.write_mode = True
+    st.session_state.write_mode_warned = False
+    st.session_state.write_mode_locked = False
+elif env_read_only:
     st.session_state.write_mode = False
     st.session_state.write_mode_locked = True
 
@@ -1074,7 +1078,6 @@ with tab1:
                     if new_tags_list:
                         for t in [t.strip() for t in new_tags_list if t.strip()]:
                             db.add_tag(t)
-                    st.session_state[tag_key] = list(new_tags_list)
                     st.session_state.res_table_refresh_id = st.session_state.get("res_table_refresh_id", 0) + 1
 
                     # --- AUTO SAVE TRIGGER ---
