@@ -5,14 +5,18 @@ import streamlit as st
 
 def init_log_ui(height=300, full_width=False, placeholder=None):
     log_lines = []
+    last_message = {"text": ""}
     log_placeholder = placeholder or st.empty()
 
     def add_log(message):
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         log_lines.append(f"<div style='margin-bottom:2px;'><span style='color:#888; font-size:0.8em;'>[{ts}]</span> {message}</div>")
+        last_message["text"] = f"[{ts}] {message}"
         html_content = (
             f"<div style='width:100%; height:{height}px; overflow-y:auto; background-color:#f8f9fa; border:1px solid #dee2e6; "
             f"padding:10px; border-radius:4px; font-family:monospace; font-size:0.9em; color:#212529;'>"
+            f"<div style='margin-bottom:6px; padding:6px 8px; background:#eef3ff; border:1px solid #dbe6ff; border-radius:4px;'>"
+            f"<span style='color:#555; font-size:0.85em;'>Latest:</span> {last_message['text']}</div>"
             f"{''.join(log_lines)}</div>"
         )
         if full_width:
