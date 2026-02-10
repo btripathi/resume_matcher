@@ -100,10 +100,10 @@ fi
 STREAMLIT_ENV=""
 if [[ "$WRITE_MODE" -eq 1 ]]; then
     echo -e "${GREEN}Write mode ENABLED via -write.${NC}"
-    STREAMLIT_ENV="RESUME_MATCHER_WRITE_MODE=1"
+    STREAMLIT_ENV="RESUME_MATCHER_WRITE_MODE=1 RESUME_MATCHER_READ_ONLY=0"
 else
     echo -e "${YELLOW}Read-only mode (default). Use -write to enable shared DB updates.${NC}"
-    STREAMLIT_ENV="RESUME_MATCHER_READ_ONLY=1"
+    STREAMLIT_ENV="RESUME_MATCHER_READ_ONLY=1 RESUME_MATCHER_WRITE_MODE=0"
 fi
 
 # 7. Launch App
