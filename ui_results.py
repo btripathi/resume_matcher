@@ -15,7 +15,25 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
         if jobs_df.empty:
             st.info("No Job Descriptions available yet.")
         else:
-            jd_label = st.selectbox("Select Job Description:", jobs_df["filename"].tolist(), key="simple_jd_select")
+            last_match_job = db.fetch_dataframe("""
+                SELECT j.filename
+                FROM matches m
+                JOIN jobs j ON m.job_id = j.id
+                ORDER BY m.id DESC
+                LIMIT 1
+            """)
+            default_idx = 0
+            if not last_match_job.empty:
+                last_name = last_match_job.iloc[0]["filename"]
+                if last_name in jobs_df["filename"].values:
+                    default_idx = int(jobs_df.index[jobs_df["filename"] == last_name][0])
+
+            jd_label = st.selectbox(
+                "Select Job Description:",
+                jobs_df["filename"].tolist(),
+                index=default_idx,
+                key="simple_jd_select",
+            )
             selected_job = jobs_df[jobs_df["filename"] == jd_label].iloc[0]
             jd_id = int(selected_job["id"])
 

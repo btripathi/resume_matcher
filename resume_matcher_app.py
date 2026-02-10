@@ -326,11 +326,24 @@ with col_set:
             st.rerun()
 
 # --- TABS DEFINITION ---
-tab1, tab2, tab3 = st.tabs(["1. Manage Data", "2. Run Analysis", "3. Match Results"])
+tab_results, tab_manage, tab_run = st.tabs(["Match Results", "Manage Data", "Run Analysis"])
 
 client = ai_engine.AIEngine(st.session_state.lm_base_url, st.session_state.lm_api_key)
 
-with tab1:
+with tab_results:
+    ui_results.render_results(
+        db,
+        client,
+        sync_db_if_allowed,
+        run_analysis_batch,
+        prepare_rerun_callback,
+        stop_run_callback,
+        utils,
+        document_utils,
+        match_flow,
+    )
+
+with tab_manage:
     ui_manage_data.render_manage_data(
         db,
         client,
@@ -342,23 +355,10 @@ with tab1:
         stop_res_upload,
     )
 
-with tab2:
+with tab_run:
     ui_run_analysis.render_run_analysis(
         db,
         run_analysis_batch,
         start_run_callback,
         stop_run_callback,
-    )
-
-with tab3:
-    ui_results.render_results(
-        db,
-        client,
-        sync_db_if_allowed,
-        run_analysis_batch,
-        prepare_rerun_callback,
-        stop_run_callback,
-        utils,
-        document_utils,
-        match_flow,
     )
