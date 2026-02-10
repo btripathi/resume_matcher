@@ -52,7 +52,7 @@ def generate_criteria_html(details):
     """
 
 
-def generate_candidate_list_html(df, threshold=75, is_deep=False):
+def generate_candidate_list_html(df, threshold=75, is_deep=False, threshold_map=None):
     if df.empty:
         return "<p style='color: #666;'>No results found.</p>"
     rows = ""
@@ -93,7 +93,19 @@ def generate_candidate_list_html(df, threshold=75, is_deep=False):
 
         std_score_display = ""
         if "standard_score" in row and pd.notna(row["standard_score"]) and row["strategy"] == "Deep":
-            std_score_display = f"<br><span style='font-size: 10px; color: #666;'>Pass 1: {safe_int(row['standard_score'])}%</span>"
+            deep_th = None
+            if threshold_map and "id" in row and row["id"] in threshold_map:
+                deep_th = threshold_map.get(row["id"])
+            if deep_th is None:
+                deep_th = threshold
+            if deep_th is not None:
+                std_score_display = (
+                    f"<br><span style='font-size: 10px; color: #666;'>"
+                    f"Pass 1: {safe_int(row['standard_score'])}% (Deep Match Th: {safe_int(deep_th)}%)"
+                    f"</span>"
+                )
+            else:
+                std_score_display = f"<br><span style='font-size: 10px; color: #666;'>Pass 1: {safe_int(row['standard_score'])}%</span>"
 
         job_display = (
             f"<br><span style='font-size: 11px; color: #007bff; font-weight:bold;'>Job: {job_name}</span>"

@@ -49,12 +49,38 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
             if jd_results.empty:
                 st.info("No matches found for this JD yet.")
             else:
+                threshold_rows = db.fetch_dataframe(f"""
+                    SELECT rm.match_id, r.threshold
+                    FROM run_matches rm
+                    JOIN runs r ON r.id = rm.run_id
+                    JOIN matches m ON m.id = rm.match_id
+                    WHERE m.job_id = {jd_id}
+                """)
+                threshold_map = {}
+                if not threshold_rows.empty:
+                    for _, row in threshold_rows.iterrows():
+                        try:
+                            threshold_map[int(row["match_id"])] = int(row["threshold"])
+                        except Exception:
+                            continue
+
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Total Matches", len(jd_results))
                 c2.metric("Deep Matches", len(jd_results[jd_results["strategy"] == "Deep"]))
                 c3.metric("Standard Only", len(jd_results[jd_results["strategy"] != "Deep"]))
 
-                label_threshold = st.slider("Deep Threshold (labels only)", 0, 100, 50, key="simple_jd_thresh")
+                thresh_row = db.fetch_dataframe(f"""
+                    SELECT r.threshold
+                    FROM runs r
+                    JOIN run_matches rm ON rm.run_id = r.id
+                    JOIN matches m ON m.id = rm.match_id
+                    WHERE m.job_id = {jd_id}
+                    ORDER BY r.id DESC
+                    LIMIT 1
+                """)
+                label_threshold = 50
+                if not thresh_row.empty and "threshold" in thresh_row.columns and pd.notna(thresh_row.iloc[0]["threshold"]):
+                    label_threshold = int(thresh_row.iloc[0]["threshold"])
                 deep_df = jd_results[jd_results["strategy"] == "Deep"]
                 std_df = jd_results[jd_results["strategy"] != "Deep"]
 
@@ -62,7 +88,12 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
                 if deep_df.empty:
                     st.info("No Deep matches for this JD.")
                 else:
-                    st.markdown(utils.generate_candidate_list_html(deep_df, threshold=label_threshold, is_deep=True), unsafe_allow_html=True)
+                    st.markdown(
+                        utils.generate_candidate_list_html(
+                            deep_df, threshold=label_threshold, is_deep=True, threshold_map=threshold_map
+                        ),
+                        unsafe_allow_html=True,
+                    )
 
                 st.markdown("#### 🧠 Standard Matches")
                 if std_df.empty:
@@ -176,6 +207,7 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
             return
 
         st.caption(f"Results showing against Deep Match Threshold of **{run_threshold}%** used in this run.")
+        threshold_map = {int(mid): int(run_threshold) for mid in results["id"].tolist()}
         total_matches = len(results)
         deep_count = len(results[results["strategy"] == "Deep"])
         std_count = total_matches - deep_count
@@ -223,9 +255,17 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
                 for i, job in enumerate(unique_job_names):
                     with tabs[i]:
                         job_subset = deep_df[deep_df["job_name"] == job]
-                        st.markdown(utils.generate_candidate_list_html(job_subset, threshold=run_threshold, is_deep=True), unsafe_allow_html=True)
+                        st.markdown(
+                            utils.generate_candidate_list_html(
+                                job_subset, threshold=run_threshold, is_deep=True, threshold_map=threshold_map
+                            ),
+                            unsafe_allow_html=True,
+                        )
             else:
-                st.markdown(utils.generate_candidate_list_html(deep_df, threshold=run_threshold, is_deep=True), unsafe_allow_html=True)
+                st.markdown(
+                    utils.generate_candidate_list_html(deep_df, threshold=run_threshold, is_deep=True, threshold_map=threshold_map),
+                    unsafe_allow_html=True,
+                )
 
         st.divider()
 
