@@ -12,7 +12,17 @@ def safe_int(val, default=0):
         return default
 
 
-def generate_criteria_html(details):
+def generate_criteria_html(details, weights=None):
+    if weights is None:
+        weights = {
+            "must_have_skills": 3.0,
+            "experience": 3.0,
+            "education_requirements": 1.0,
+            "domain_knowledge": 3.0,
+            "nice_to_have_skills": 1.0,
+            "soft_skills": 0.5,
+            "key_responsibilities": 0.5,
+        }
     rows = ""
     cat_order = ["must_have_skills", "experience", "domain_knowledge", "nice_to_have_skills", "education_requirements", "soft_skills"]
     sorted_details = sorted(details, key=lambda x: cat_order.index(x.get("category")) if x.get("category") in cat_order else 99)
@@ -21,7 +31,9 @@ def generate_criteria_html(details):
         if not item:
             continue
         status = item.get("status", "Unknown")
-        cat = item.get("category", "").replace("_", " ").upper()
+        raw_cat = item.get("category", "")
+        cat = raw_cat.replace("_", " ").upper()
+        weight_val = weights.get(raw_cat, 1.0)
 
         color = "color: #333; background-color: #e0e0e0;"
         if "Met" in status:
@@ -34,6 +46,7 @@ def generate_criteria_html(details):
         rows += (
             f'<tr><td style="font-size:10px; font-weight:bold; color:#666;">{cat}</td>'
             f'<td>{item.get("requirement", "")}</td><td>{item.get("evidence", "")}</td>'
+            f'<td style="font-size:12px; color:#444;">{weight_val}</td>'
             f'<td><span class="status-badge" style="{color}">{status}</span></td></tr>'
         )
 
@@ -46,7 +59,7 @@ def generate_criteria_html(details):
         .status-badge {{padding: 4px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; display: inline-block;}}
     </style>
     <table class="match-table">
-        <thead><tr><th>Category</th><th>Requirement</th><th>Evidence Found</th><th>Status</th></tr></thead>
+        <thead><tr><th>Category</th><th>Requirement</th><th>Evidence Found</th><th>Weight</th><th>Status</th></tr></thead>
         <tbody>{rows}</tbody>
     </table>
     """

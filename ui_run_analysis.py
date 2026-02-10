@@ -49,11 +49,21 @@ def render_run_analysis(db, run_analysis_batch, start_run_callback, stop_run_cal
             deep_match_thresh = c2.slider("Deep Match Threshold (%)", 0, 100, 50, key="deep_match_threshold")
             run_name = st.text_input("Run Name", value=default_run_name)
 
+            force_deep = st.checkbox("Force Re-run Deep Scan", value=False)
             f_rerun = st.checkbox("Force Re-run Pass 1 (Standard Match)", value=False)
 
             c3, c4 = st.columns([1, 3])
             if st.session_state.is_running and st.session_state.rerun_config is None:
                 c4.button("🛑 STOP ANALYSIS", type="primary", use_container_width=True, on_click=stop_run_callback)
-                run_analysis_batch(run_name, sel_j, sel_r, deep_match_thresh, auto_deep, force_rerun_pass1=f_rerun, match_by_tags=match_tags)
+                run_analysis_batch(
+                    run_name,
+                    sel_j,
+                    sel_r,
+                    deep_match_thresh,
+                    auto_deep,
+                    force_rerun_pass1=f_rerun,
+                    match_by_tags=match_tags,
+                    force_rerun_deep=force_deep,
+                )
             elif not st.session_state.is_running:
                 c4.button("🚀 START ANALYSIS", type="primary", use_container_width=True, on_click=start_run_callback)

@@ -423,6 +423,38 @@ class AIEngine:
         soft = self._dedupe_list(soft)
         responsibilities = self._dedupe_list(responsibilities)
 
+        # Cross-category dedupe: keep highest-priority category for identical requirements
+        def norm_key(s):
+            return " ".join(str(s).strip().lower().split())
+
+        category_order = [
+            ("must_have_skills", must_have),
+            ("experience", [f"Minimum {min_years} years relevant experience"] if min_years > 0 else []),
+            ("domain_knowledge", domain),
+            ("nice_to_have_skills", nice_to_have),
+            ("education_requirements", education),
+            ("soft_skills", soft),
+            ("key_responsibilities", responsibilities),
+        ]
+
+        seen = set()
+        deduped = {k: [] for k, _ in category_order}
+        for cat, items in category_order:
+            for item in items:
+                k = norm_key(item)
+                if not k or k in seen:
+                    continue
+                seen.add(k)
+                if cat in deduped:
+                    deduped[cat].append(item)
+
+        must_have = deduped["must_have_skills"]
+        domain = deduped["domain_knowledge"]
+        nice_to_have = deduped["nice_to_have_skills"]
+        education = deduped["education_requirements"]
+        soft = deduped["soft_skills"]
+        responsibilities = deduped["key_responsibilities"]
+
         return {
             "role_title": role_title.strip(),
             "must_have_skills": must_have,

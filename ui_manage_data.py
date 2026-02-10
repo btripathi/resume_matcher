@@ -15,6 +15,39 @@ def render_manage_data(db, client, document_utils, sync_db_if_allowed, start_jd_
 
     # --- JOB DESCRIPTIONS SUB-TAB ---
     with subtab_jd:
+        with st.expander("♻️ Reparse Existing JDs", expanded=False):
+            jds_all = db.fetch_dataframe("SELECT id, filename, content, tags FROM jobs")
+            if jds_all.empty:
+                st.info("No JDs to reparse.")
+            else:
+                jds_opts = jds_all["filename"].tolist()
+                jd_scope = st.radio("Reparse Scope", ["All JDs", "Selected JDs"], horizontal=True, key="jd_reparse_scope")
+                selected_names = []
+                if jd_scope == "Selected JDs":
+                    selected_names = st.multiselect("Select JDs to reparse", jds_opts, key="jd_reparse_selected")
+
+                if st.button("Reparse JDs Now", key="reparse_jds_btn"):
+                    target_df = jds_all if jd_scope == "All JDs" else jds_all[jds_all["filename"].isin(selected_names)]
+                    if target_df.empty:
+                        st.warning("No JDs selected for reparse.")
+                    else:
+                        with st.status("Reparsing JDs...", expanded=True) as status:
+                            total = len(target_df)
+                            bar = st.progress(0)
+                            for i, (_, row) in enumerate(target_df.iterrows()):
+                                status.update(label=f"Reparsing {i+1}/{total}: {row['filename']}")
+                                analysis = client.analyze_jd(row["content"])
+                                db.update_job_content(int(row["id"]), row["content"], analysis)
+                                if row.get("tags"):
+                                    db.update_job_tags(int(row["id"]), row["tags"])
+                                bar.progress((i + 1) / total)
+                            status.update(label="Complete!", state="complete")
+                        with st.spinner("Syncing to GitHub..."):
+                            sync_db_if_allowed()
+                        st.success("JD reparse complete.")
+                        time.sleep(0.5)
+                        st.rerun()
+
         with st.expander("📤 Upload New Job Descriptions", expanded=False):
             tag_options = sorted(set(db.list_tags()))
             create_tag_option = "➕ Create new tag…"
@@ -179,6 +212,39 @@ def render_manage_data(db, client, document_utils, sync_db_if_allowed, start_jd_
 
     # --- RESUMES SUB-TAB ---
     with subtab_res:
+        with st.expander("♻️ Reparse Existing Resumes", expanded=False):
+            res_all = db.fetch_dataframe("SELECT id, filename, content, tags FROM resumes")
+            if res_all.empty:
+                st.info("No resumes to reparse.")
+            else:
+                res_opts = res_all["filename"].tolist()
+                res_scope = st.radio("Reparse Scope", ["All Resumes", "Selected Resumes"], horizontal=True, key="res_reparse_scope")
+                selected_names = []
+                if res_scope == "Selected Resumes":
+                    selected_names = st.multiselect("Select resumes to reparse", res_opts, key="res_reparse_selected")
+
+                if st.button("Reparse Resumes Now", key="reparse_res_btn"):
+                    target_df = res_all if res_scope == "All Resumes" else res_all[res_all["filename"].isin(selected_names)]
+                    if target_df.empty:
+                        st.warning("No resumes selected for reparse.")
+                    else:
+                        with st.status("Reparsing resumes...", expanded=True) as status:
+                            total = len(target_df)
+                            bar = st.progress(0)
+                            for i, (_, row) in enumerate(target_df.iterrows()):
+                                status.update(label=f"Reparsing {i+1}/{total}: {row['filename']}")
+                                analysis = client.analyze_resume(row["content"])
+                                db.update_resume_content(int(row["id"]), row["content"], analysis)
+                                if row.get("tags"):
+                                    db.update_resume_tags(int(row["id"]), row["tags"])
+                                bar.progress((i + 1) / total)
+                            status.update(label="Complete!", state="complete")
+                        with st.spinner("Syncing to GitHub..."):
+                            sync_db_if_allowed()
+                        st.success("Resume reparse complete.")
+                        time.sleep(0.5)
+                        st.rerun()
+
         avail_jds = db.fetch_dataframe("SELECT id, filename, tags FROM jobs")
         tag_options = sorted(set(db.list_tags()))
 

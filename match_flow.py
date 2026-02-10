@@ -9,7 +9,7 @@ def init_log_ui(height=300, full_width=False, placeholder=None):
 
     def add_log(message):
         ts = datetime.datetime.now().strftime("%H:%M:%S")
-        log_lines.insert(0, f"<div style='margin-bottom:2px;'><span style='color:#888; font-size:0.8em;'>[{ts}]</span> {message}</div>")
+        log_lines.append(f"<div style='margin-bottom:2px;'><span style='color:#888; font-size:0.8em;'>[{ts}]</span> {message}</div>")
         html_content = (
             f"<div style='width:100%; height:{height}px; overflow-y:auto; background-color:#f8f9fa; border:1px solid #dee2e6; "
             f"padding:10px; border-radius:4px; font-family:monospace; font-size:0.9em; color:#212529;'>"
@@ -108,12 +108,17 @@ def process_match_flow(job, res, db, client, deep_match_thresh, auto_deep, force
                 priority_reqs.append(('experience', f"Minimum {jd_c['min_years_experience']} years relevant experience"))
 
             bulk_reqs = []
-            for k in ['nice_to_have_skills', 'soft_skills', 'education_requirements', 'key_responsibilities']:
+            for k in ['nice_to_have_skills', 'soft_skills', 'education_requirements']:
                 if k in jd_c and isinstance(jd_c[k], list):
                     bulk_reqs.extend([(k, v) for v in jd_c[k]])
 
             details = []
-            total_criteria = len(priority_reqs) + len(bulk_reqs)
+            expected = []
+            for rt, rv in priority_reqs:
+                expected.append((rt, str(rv)))
+            for rt, rv in bulk_reqs:
+                expected.append((rt, str(rv)))
+            total_criteria = len(expected)
             processed_count = 0
 
             for rt, rv in priority_reqs:
@@ -149,6 +154,53 @@ def process_match_flow(job, res, db, client, deep_match_thresh, auto_deep, force
                 processed_count += len(bulk_reqs)
                 if sub_bar and total_criteria > 0:
                     sub_bar.progress(min(1.0, processed_count / total_criteria))
+
+            # Ensure deterministic criteria list per JD: backfill missing items
+            def _norm(s):
+                return " ".join(str(s).strip().lower().split())
+
+            def _rank(status):
+                if status == "Met":
+                    return 2
+                if status == "Partial":
+                    return 1
+                return 0
+
+            by_req = {}
+            for d in details:
+                if not isinstance(d, dict):
+                    continue
+                req = d.get("requirement") or d.get("criteria") or ""
+                if not req:
+                    continue
+                key = _norm(req)
+                cur = by_req.get(key)
+                if not cur or _rank(d.get("status", "Missing")) > _rank(cur.get("status", "Missing")):
+                    by_req[key] = d
+
+            normalized_expected = []
+            for cat, req in expected:
+                normalized_expected.append((_norm(req), cat, req))
+
+            deterministic = []
+            for nreq, cat, req in normalized_expected:
+                found = by_req.get(nreq)
+                if found:
+                    deterministic.append({
+                        "category": cat,
+                        "requirement": req,
+                        "status": found.get("status", "Missing"),
+                        "evidence": found.get("evidence", "")
+                    })
+                else:
+                    deterministic.append({
+                        "category": cat,
+                        "requirement": req,
+                        "status": "Missing",
+                        "evidence": ""
+                    })
+
+            details = deterministic
 
             if sub_bar:
                 sub_bar.empty()

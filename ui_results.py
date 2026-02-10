@@ -112,12 +112,15 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
         current_label = st.session_state.get("run_select_label", labels[0])
         default_idx = labels.index(current_label) if current_label in labels else 0
 
+        # Minimal selector outside; all other controls inside rerun box
+        sel_run_label = st.selectbox("Select Run Batch:", labels, index=default_idx, key="run_select_label")
+
         with st.expander("🔄 Rerun this Batch with New Settings", expanded=False):
             st.info("Re-running will process the JDs and Resumes linked to this batch using new parameters.")
 
             c_sel, c_ren = st.columns([3, 1])
             with c_sel:
-                sel_run_label = st.selectbox("Select Run Batch:", labels, index=default_idx, key="run_select_label")
+                st.caption(f"Selected Batch: {sel_run_label}")
 
             run_row = runs[runs["label"] == sel_run_label].iloc[0]
             run_id = int(run_row["id"])
@@ -325,6 +328,8 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
                 with st.status("Re-evaluating...", expanded=True) as status:
                     add_log = match_flow.init_log_ui(height=320, full_width=True, placeholder=rerun_log_placeholder)
                     if row.get("strategy") == "Deep":
+                        task_display = st.empty()
+                        sub_bar = st.progress(0)
                         action_data = db.fetch_dataframe(
                             f"SELECT r.content as resume_text, r.profile as resume_profile, "
                             f"j.criteria as job_criteria, j.id as job_id, r.id as resume_id "
@@ -346,7 +351,10 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
                             False,
                             add_log,
                             safe_int_fn=utils.safe_int,
+                            task_display=task_display,
+                            sub_bar=sub_bar,
                         )
+                        sub_bar.empty()
                         with st.spinner("Syncing to GitHub..."):
                             sync_db_if_allowed()
                         status.update(label="Complete!", state="complete")
