@@ -47,6 +47,13 @@ def render_run_analysis(db, run_analysis_batch, start_run_callback, stop_run_cal
                 default_run_name = f"Batch Run: {len(sel_j)} Jobs"
 
             deep_match_thresh = c2.slider("Deep Match Threshold (%)", 0, 100, 50, key="deep_match_threshold")
+            deep_scan_limit = c2.number_input(
+                "Deep Scan Limit (Top N Resumes per JD)",
+                min_value=0,
+                value=0,
+                step=1,
+                help="0 = no limit. Deep scan will only be run for the top N resumes (by Standard score) per JD."
+            )
             run_name = st.text_input("Run Name", value=default_run_name)
 
             force_deep = st.checkbox("Force Re-run Deep Scan", value=False)
@@ -64,6 +71,7 @@ def render_run_analysis(db, run_analysis_batch, start_run_callback, stop_run_cal
                     force_rerun_pass1=f_rerun,
                     match_by_tags=match_tags,
                     force_rerun_deep=force_deep,
+                    deep_scan_limit=deep_scan_limit,
                 )
             elif not st.session_state.is_running:
                 c4.button("🚀 START ANALYSIS", type="primary", use_container_width=True, on_click=start_run_callback)

@@ -88,7 +88,7 @@ def sync_db_if_allowed():
     return db_sync.sync_db_if_allowed(github_sync)
 
 # --- CORE MATCHING LOGIC ---
-def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, force_rerun_pass1, match_by_tags=False, deep_only=False, force_rerun_deep=False, run_id=None, create_new_run=True):
+def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, force_rerun_pass1, match_by_tags=False, deep_only=False, force_rerun_deep=False, run_id=None, create_new_run=True, deep_scan_limit=0):
     # --- SAFETY CHECK: Stop immediately if stop requested ---
     if st.session_state.stop_requested:
         st.warning("🛑 Analysis process stopped.")
@@ -147,8 +147,12 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
     total_ops = 0
     if match_by_tags:
         total_ops = sum([len(t['resumes']) for t in tasks])
+        if deep_scan_limit and auto_deep:
+            total_ops += sum([min(len(t['resumes']), int(deep_scan_limit)) for t in tasks])
     else:
         total_ops = len(jobs) * len(resumes)
+        if deep_scan_limit and auto_deep:
+            total_ops += len(jobs) * min(len(resumes), int(deep_scan_limit))
 
     count = 0
     st.session_state.is_running = True
@@ -182,6 +186,86 @@ def run_analysis_batch(run_name, jobs, resumes, deep_match_thresh, auto_deep, fo
                 resumes_to_process = task['resumes']
 
                 for _, job in jobs_to_process.iterrows():
+                    # If a deep scan limit is set, always compute standard scores first.
+                    if deep_scan_limit and auto_deep:
+                        for _, res in resumes_to_process.iterrows():
+                            if st.session_state.stop_requested:
+                                add_log("🛑 **Run stopped by user.**")
+                                status.update(label="Stopped", state="error")
+                                st.session_state.is_running = False
+                                st.session_state.rerun_config = None
+                                st.stop()
+                                return
+
+                            count += 1
+                            current_resume_name = res['filename']
+                            status.update(label=f"Match {count}/{total_ops}: {current_resume_name} vs {job['filename']}")
+                            add_log(f"<b>Standard pass for {current_resume_name}</b> vs {job['filename']}")
+
+                            mid = match_flow.process_match_flow(
+                                job,
+                                res,
+                                db,
+                                client,
+                                deep_match_thresh,
+                                auto_deep=False,
+                                force_rerun_pass1=force_rerun_pass1,
+                                force_rerun_deep=force_rerun_deep,
+                                deep_only=deep_only,
+                                add_log=add_log,
+                                task_display=task_display,
+                                sub_bar=sub_bar,
+                                safe_int_fn=utils.safe_int
+                            )
+                            if mid:
+                                db.link_run_match(rid, mid)
+                            master_bar.progress(count/total_ops)
+
+                        # Select top N resumes by standard score for deep scan
+                        scores = []
+                        for _, res in resumes_to_process.iterrows():
+                            exist = db.get_match_if_exists(int(job['id']), int(res['id']))
+                            std_score = utils.safe_int(exist.get('standard_score'), utils.safe_int(exist.get('match_score'), 0)) if exist else 0
+                            scores.append((res, std_score))
+
+                        scores.sort(key=lambda x: x[1], reverse=True)
+                        limited = scores[:int(deep_scan_limit)] if int(deep_scan_limit) > 0 else scores
+                        deep_candidates = [r for r, s in limited if utils.safe_int(s, 0) >= utils.safe_int(deep_match_thresh, 0)]
+
+                        for res in deep_candidates:
+                            if st.session_state.stop_requested:
+                                add_log("🛑 **Run stopped by user.**")
+                                status.update(label="Stopped", state="error")
+                                st.session_state.is_running = False
+                                st.session_state.rerun_config = None
+                                st.stop()
+                                return
+
+                            count += 1
+                            current_resume_name = res['filename']
+                            status.update(label=f"Deep scan {count}/{total_ops}: {current_resume_name} vs {job['filename']}")
+                            add_log(f"<b>Deep scan for {current_resume_name}</b> vs {job['filename']}")
+
+                            mid = match_flow.process_match_flow(
+                                job,
+                                res,
+                                db,
+                                client,
+                                deep_match_thresh,
+                                auto_deep=True,
+                                force_rerun_pass1=force_rerun_pass1,
+                                force_rerun_deep=force_rerun_deep,
+                                deep_only=True,
+                                add_log=add_log,
+                                task_display=task_display,
+                                sub_bar=sub_bar,
+                                safe_int_fn=utils.safe_int
+                            )
+                            if mid:
+                                db.link_run_match(rid, mid)
+                            master_bar.progress(count/total_ops)
+                        continue
+
                     for _, res in resumes_to_process.iterrows():
                         # --- CHECK STOP REQUEST INSIDE LOOP ---
                         if st.session_state.stop_requested:
@@ -240,7 +324,7 @@ def start_run_callback():
 def stop_run_callback():
     st.session_state.stop_requested = True
 
-def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_rerun, match_by_tags=False, deep_only=False, force_rerun_deep=False, create_new_run=False, run_id=None):
+def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_rerun, match_by_tags=False, deep_only=False, force_rerun_deep=False, create_new_run=False, run_id=None, deep_scan_limit=0):
     st.session_state.rerun_config = {
         "run_name": name,
         "jobs": jobs_df,
@@ -252,7 +336,8 @@ def prepare_rerun_callback(name, jobs_df, resumes_df, thresh, auto_deep, force_r
         "deep_only": deep_only,
         "force_rerun_deep": force_rerun_deep,
         "create_new_run": create_new_run,
-        "run_id": run_id
+        "run_id": run_id,
+        "deep_scan_limit": deep_scan_limit
     }
     st.session_state.is_running = True
     st.session_state.stop_requested = False

@@ -147,6 +147,14 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
             if new_match_tags and not create_new_run:
                 st.caption("Tag-based reruns always create new runs.")
 
+            deep_scan_limit = st.number_input(
+                "Deep Scan Limit (Top N Resumes per JD)",
+                min_value=0,
+                value=0,
+                step=1,
+                help="0 = no limit. Deep scan will only be run for the top N resumes (by Standard score) per JD.",
+                key="rerun_deep_limit",
+            )
             deep_only = st.checkbox("Deep Scan Only (reuse existing Standard scores)", value=False, help="Only re-run Deep Scan. If a Standard score is missing, it will be computed once.")
             force_rerun_deep = st.checkbox("Force Re-run Deep Scan", value=False, help="Re-run Deep Scan even if a deep result already exists.")
             f_rerun_p1 = st.checkbox("Force Re-run Pass 1 (Standard Match)", value=False, help="If unchecked, existing standard match scores will be reused to save time.", disabled=deep_only)
@@ -181,6 +189,7 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
                         force_rerun_deep=cfg.get("force_rerun_deep", False),
                         run_id=cfg.get("run_id"),
                         create_new_run=cfg.get("create_new_run", True),
+                        deep_scan_limit=cfg.get("deep_scan_limit", 0),
                     )
                 elif not st.session_state.is_running:
                     name_to_use = rerun_name_input if create_new_run else run_name_base
@@ -189,7 +198,7 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
                         "🚀 Rerun Batch",
                         type="primary",
                         on_click=prepare_rerun_callback,
-                        args=(name_to_use, rerun_j, rerun_r, new_thresh, new_auto_deep, f_rerun_p1, new_match_tags, deep_only, force_rerun_deep, create_new_run_effective, run_id),
+                        args=(name_to_use, rerun_j, rerun_r, new_thresh, new_auto_deep, f_rerun_p1, new_match_tags, deep_only, force_rerun_deep, create_new_run_effective, run_id, deep_scan_limit),
                     )
             else:
                 st.error("Could not find original JDs/Resumes for this run.")

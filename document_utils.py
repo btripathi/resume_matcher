@@ -25,6 +25,10 @@ def clean_extracted_text(text):
     printable = set(string.printable)
     text = "".join(filter(lambda x: x in printable or x.isspace(), text))
 
+    # Fix spaced-out letters (e.g., "S I L A M B A R A S A N") -> "SILAMBARASAN"
+    # Only collapses sequences of 3+ single-letter tokens to avoid harming normal text.
+    text = re.sub(r"(?:\\b[A-Za-z]\\s+){2,}[A-Za-z]\\b", lambda m: m.group(0).replace(" ", ""), text)
+
     # Normalize line breaks: replace multiple newlines with double newlines
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()

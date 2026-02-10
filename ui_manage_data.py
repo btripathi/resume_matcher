@@ -24,7 +24,12 @@ def render_manage_data(db, client, document_utils, sync_db_if_allowed, start_jd_
                 jd_scope = st.radio("Reparse Scope", ["All JDs", "Selected JDs"], horizontal=True, key="jd_reparse_scope")
                 selected_names = []
                 if jd_scope == "Selected JDs":
-                    selected_names = st.multiselect("Select JDs to reparse", jds_opts, key="jd_reparse_selected")
+                    jd_search = st.text_input("Search JDs", key="jd_reparse_search")
+                    if jd_search:
+                        jds_opts_filtered = [n for n in jds_opts if jd_search.lower() in n.lower()]
+                    else:
+                        jds_opts_filtered = jds_opts
+                    selected_names = st.multiselect("Select JDs to reparse", jds_opts_filtered, key="jd_reparse_selected")
 
                 if st.button("Reparse JDs Now", key="reparse_jds_btn"):
                     target_df = jds_all if jd_scope == "All JDs" else jds_all[jds_all["filename"].isin(selected_names)]
@@ -221,7 +226,12 @@ def render_manage_data(db, client, document_utils, sync_db_if_allowed, start_jd_
                 res_scope = st.radio("Reparse Scope", ["All Resumes", "Selected Resumes"], horizontal=True, key="res_reparse_scope")
                 selected_names = []
                 if res_scope == "Selected Resumes":
-                    selected_names = st.multiselect("Select resumes to reparse", res_opts, key="res_reparse_selected")
+                    res_search = st.text_input("Search Resumes", key="res_reparse_search")
+                    if res_search:
+                        res_opts_filtered = [n for n in res_opts if res_search.lower() in n.lower()]
+                    else:
+                        res_opts_filtered = res_opts
+                    selected_names = st.multiselect("Select resumes to reparse", res_opts_filtered, key="res_reparse_selected")
 
                 if st.button("Reparse Resumes Now", key="reparse_res_btn"):
                     target_df = res_all if res_scope == "All Resumes" else res_all[res_all["filename"].isin(selected_names)]
