@@ -108,92 +108,102 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
             return
 
         runs["label"] = runs["name"] + " (" + runs["created_at"] + ")"
-        c_sel, c_ren = st.columns([3, 1])
-        with c_sel:
-            sel_run_label = st.selectbox("Select Run Batch:", runs["label"])
-
-        run_row = runs[runs["label"] == sel_run_label].iloc[0]
-        run_id = int(run_row["id"])
-        run_name_base = run_row["name"]
-        run_threshold = utils.safe_int(run_row["threshold"], 50) if "threshold" in run_row and pd.notna(run_row["threshold"]) else 50
-
-        with c_ren:
-            new_run_name = st.text_input("Rename Batch:", value=run_name_base, key=f"ren_{run_id}")
-            if new_run_name != run_name_base:
-                db.execute_query("UPDATE runs SET name=? WHERE id=?", (new_run_name, run_id))
-                with st.spinner("Syncing rename to GitHub..."):
-                    sync_db_if_allowed()
-                st.rerun()
+        labels = runs["label"].tolist()
+        current_label = st.session_state.get("run_select_label", labels[0])
+        default_idx = labels.index(current_label) if current_label in labels else 0
 
         with st.expander("🔄 Rerun this Batch with New Settings", expanded=False):
             st.info("Re-running will process the JDs and Resumes linked to this batch using new parameters.")
 
-        c_r1, c_r2 = st.columns(2)
-        create_new_run = c_r1.checkbox("Create new run (separate history)", value=False)
-        rerun_name_input = c_r1.text_input("New Batch Name", value=f"Rerun of {run_name_base}", disabled=not create_new_run)
-        new_auto_deep = c_r1.checkbox("Auto-Upgrade to Deep Match", value=True, key="rerun_auto")
-        new_thresh = 50
-        if new_auto_deep:
-            new_thresh = c_r2.slider("New Deep Match Threshold (%)", 0, 100, run_threshold, key="rerun_thresh")
+            c_sel, c_ren = st.columns([3, 1])
+            with c_sel:
+                sel_run_label = st.selectbox("Select Run Batch:", labels, index=default_idx, key="run_select_label")
 
-        new_match_tags = st.checkbox("Auto-match based on JD Tags", value=False, key="rerun_tags")
-        if new_match_tags and not create_new_run:
-            st.caption("Tag-based reruns always create new runs.")
+            run_row = runs[runs["label"] == sel_run_label].iloc[0]
+            run_id = int(run_row["id"])
+            run_name_base = run_row["name"]
+            run_threshold = utils.safe_int(run_row["threshold"], 50) if "threshold" in run_row and pd.notna(run_row["threshold"]) else 50
 
-        deep_only = st.checkbox("Deep Scan Only (reuse existing Standard scores)", value=False, help="Only re-run Deep Scan. If a Standard score is missing, it will be computed once.")
-        force_rerun_deep = st.checkbox("Force Re-run Deep Scan", value=False, help="Re-run Deep Scan even if a deep result already exists.")
-        f_rerun_p1 = st.checkbox("Force Re-run Pass 1 (Standard Match)", value=False, help="If unchecked, existing standard match scores will be reused to save time.", disabled=deep_only)
+            with c_ren:
+                new_run_name = st.text_input("Rename Batch:", value=run_name_base, key=f"ren_{run_id}")
+                if new_run_name != run_name_base:
+                    db.execute_query("UPDATE runs SET name=? WHERE id=?", (new_run_name, run_id))
+                    with st.spinner("Syncing rename to GitHub..."):
+                        sync_db_if_allowed()
+                    st.rerun()
 
-        linked_data = db.fetch_dataframe(f"""
-            SELECT DISTINCT m.job_id, m.resume_id
-            FROM run_matches rm JOIN matches m ON rm.match_id = m.id
-            WHERE rm.run_id = {run_id}
-        """)
+            c_r1, c_r2 = st.columns(2)
+            create_new_run = c_r1.checkbox("Create new run (separate history)", value=False)
+            rerun_name_input = c_r1.text_input("New Batch Name", value=f"Rerun of {run_name_base}", disabled=not create_new_run)
+            new_auto_deep = c_r1.checkbox("Auto-Upgrade to Deep Match", value=True, key="rerun_auto")
+            new_thresh = 50
+            if new_auto_deep:
+                new_thresh = c_r2.slider("New Deep Match Threshold (%)", 0, 100, run_threshold, key="rerun_thresh")
 
-        if not linked_data.empty:
-            job_ids = list(linked_data["job_id"].unique())
-            res_ids = list(linked_data["resume_id"].unique())
-            j_ids_str = ",".join(map(str, job_ids))
-            r_ids_str = ",".join(map(str, res_ids))
+            new_match_tags = st.checkbox("Auto-match based on JD Tags", value=False, key="rerun_tags")
+            if new_match_tags and not create_new_run:
+                st.caption("Tag-based reruns always create new runs.")
 
-            rerun_j = db.fetch_dataframe(f"SELECT * FROM jobs WHERE id IN ({j_ids_str})")
-            rerun_r = db.fetch_dataframe(f"SELECT * FROM resumes WHERE id IN ({r_ids_str})")
+            deep_only = st.checkbox("Deep Scan Only (reuse existing Standard scores)", value=False, help="Only re-run Deep Scan. If a Standard score is missing, it will be computed once.")
+            force_rerun_deep = st.checkbox("Force Re-run Deep Scan", value=False, help="Re-run Deep Scan even if a deep result already exists.")
+            f_rerun_p1 = st.checkbox("Force Re-run Pass 1 (Standard Match)", value=False, help="If unchecked, existing standard match scores will be reused to save time.", disabled=deep_only)
 
-            if st.session_state.is_running and st.session_state.rerun_config:
-                st.button("🛑 STOP RERUN", type="primary", on_click=stop_run_callback)
-                cfg = st.session_state.rerun_config
-                run_analysis_batch(
-                    cfg["run_name"],
-                    cfg["jobs"],
-                    cfg["resumes"],
-                    cfg["thresh"],
-                    cfg["auto"],
-                    cfg["force"],
-                    match_by_tags=cfg.get("tags", False),
-                    deep_only=cfg.get("deep_only", False),
-                    force_rerun_deep=cfg.get("force_rerun_deep", False),
-                    run_id=cfg.get("run_id"),
-                    create_new_run=cfg.get("create_new_run", True),
-                )
-            elif not st.session_state.is_running:
-                name_to_use = rerun_name_input if create_new_run else run_name_base
-                create_new_run_effective = create_new_run if not new_match_tags else True
-                st.button(
-                    "🚀 Rerun Batch",
-                    type="primary",
-                    on_click=prepare_rerun_callback,
-                    args=(name_to_use, rerun_j, rerun_r, new_thresh, new_auto_deep, f_rerun_p1, new_match_tags, deep_only, force_rerun_deep, create_new_run_effective, run_id),
-                )
-        else:
-            st.error("Could not find original JDs/Resumes for this run.")
+            linked_data = db.fetch_dataframe(f"""
+                SELECT DISTINCT m.job_id, m.resume_id
+                FROM run_matches rm JOIN matches m ON rm.match_id = m.id
+                WHERE rm.run_id = {run_id}
+            """)
 
-        if st.button("🗑️ Delete Run History", type="secondary"):
-            db.execute_query("DELETE FROM runs WHERE id=?", (run_id,))
-            db.execute_query("DELETE FROM run_matches WHERE run_id=?", (run_id,))
-            with st.spinner("Syncing deletion to GitHub..."):
-                sync_db_if_allowed()
-            st.success("Deleted")
-            st.rerun()
+            if not linked_data.empty:
+                job_ids = list(linked_data["job_id"].unique())
+                res_ids = list(linked_data["resume_id"].unique())
+                j_ids_str = ",".join(map(str, job_ids))
+                r_ids_str = ",".join(map(str, res_ids))
+
+                rerun_j = db.fetch_dataframe(f"SELECT * FROM jobs WHERE id IN ({j_ids_str})")
+                rerun_r = db.fetch_dataframe(f"SELECT * FROM resumes WHERE id IN ({r_ids_str})")
+
+                if st.session_state.is_running and st.session_state.rerun_config:
+                    st.button("🛑 STOP RERUN", type="primary", on_click=stop_run_callback)
+                    cfg = st.session_state.rerun_config
+                    run_analysis_batch(
+                        cfg["run_name"],
+                        cfg["jobs"],
+                        cfg["resumes"],
+                        cfg["thresh"],
+                        cfg["auto"],
+                        cfg["force"],
+                        match_by_tags=cfg.get("tags", False),
+                        deep_only=cfg.get("deep_only", False),
+                        force_rerun_deep=cfg.get("force_rerun_deep", False),
+                        run_id=cfg.get("run_id"),
+                        create_new_run=cfg.get("create_new_run", True),
+                    )
+                elif not st.session_state.is_running:
+                    name_to_use = rerun_name_input if create_new_run else run_name_base
+                    create_new_run_effective = create_new_run if not new_match_tags else True
+                    st.button(
+                        "🚀 Rerun Batch",
+                        type="primary",
+                        on_click=prepare_rerun_callback,
+                        args=(name_to_use, rerun_j, rerun_r, new_thresh, new_auto_deep, f_rerun_p1, new_match_tags, deep_only, force_rerun_deep, create_new_run_effective, run_id),
+                    )
+            else:
+                st.error("Could not find original JDs/Resumes for this run.")
+
+            if st.button("🗑️ Delete Run History", type="secondary"):
+                db.execute_query("DELETE FROM runs WHERE id=?", (run_id,))
+                db.execute_query("DELETE FROM run_matches WHERE run_id=?", (run_id,))
+                with st.spinner("Syncing deletion to GitHub..."):
+                    sync_db_if_allowed()
+                st.success("Deleted")
+                st.rerun()
+
+        sel_run_label = st.session_state.get("run_select_label", labels[0])
+        run_row = runs[runs["label"] == sel_run_label].iloc[0]
+        run_id = int(run_row["id"])
+        run_name_base = run_row["name"]
+        run_threshold = utils.safe_int(run_row["threshold"], 50) if "threshold" in run_row and pd.notna(run_row["threshold"]) else 50
 
         results = db.fetch_dataframe(f"""
             SELECT m.*, r.filename as res_name, j.filename as job_name
