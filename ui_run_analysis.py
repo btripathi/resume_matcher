@@ -34,7 +34,11 @@ def render_run_analysis(db, run_analysis_batch, start_run_callback, stop_run_cal
         with st.container(border=True):
             st.markdown("#### ⚙️ Smart Match Configuration")
 
-            match_tags = st.checkbox("🎯 Auto-match based on JD Tags", help="When enabled, creates a separate Run for each JD, checking ONLY resumes tagged with that JD's filename.")
+            match_tags = st.checkbox(
+                "🎯 Auto-match based on JD Tags",
+                value=True,
+                help="When enabled, creates a separate Run for each JD, checking ONLY resumes tagged with that JD's filename."
+            )
 
             c1, c2 = st.columns([2, 2])
             auto_deep = c1.checkbox("✨ Auto-Upgrade to Deep Match", value=True, help="Automatically run a Deep Scan if the Standard Match score is high enough.")

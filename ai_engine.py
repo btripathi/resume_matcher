@@ -2,6 +2,8 @@ import importlib
 import importlib.util
 import json
 import re
+import os
+import time
 
 class AIEngine:
     def __init__(self, base_url, api_key):
@@ -118,8 +120,10 @@ class AIEngine:
                 max_tokens=1500  # Strict limit to prevent infinite generation
             )
             # If null, return a fallback object to prevent app crash
-            result = document_utils.clean_json_response(resp.choices[0].message.content)
+            raw_content = resp.choices[0].message.content
+            result = document_utils.clean_json_response(raw_content)
             if not result:
+                 self._log_parse_failure(raw_content, reason="clean_json_response returned None")
                  return {
                     "candidate_name": "Parsing Error",
                     "extracted_skills": [],
@@ -162,7 +166,22 @@ class AIEngine:
                 pass
             return result
         except Exception as e:
+            self._log_parse_failure(f"[EXCEPTION] {e}", reason="exception during analyze_resume")
             return {"candidate_name": "Error", "error_flag": True}
+
+    def _log_parse_failure(self, raw_content, reason="unknown"):
+        try:
+            log_dir = os.path.join(os.getcwd(), "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, "ai_parse_errors.log")
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] PARSE_FAILURE reason={reason}\n")
+                f.write("----- RAW START -----\n")
+                f.write(str(raw_content))
+                f.write("\n----- RAW END -----\n\n")
+        except Exception:
+            pass
 
     def evaluate_standard(self, resume_text, jd_criteria, resume_profile):
         if self.use_mock:

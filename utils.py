@@ -1,4 +1,42 @@
+import os
 import pandas as pd
+
+
+def read_last_parse_error(log_path=None, max_chars=4000):
+    try:
+        if log_path is None:
+            log_path = os.path.join(os.getcwd(), "logs", "ai_parse_errors.log")
+        if not os.path.isfile(log_path):
+            return None
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        if not content.strip():
+            return None
+        # Entries are separated by blank lines; take the last non-empty block
+        blocks = [b for b in content.strip().split("\n\n") if b.strip()]
+        last = blocks[-1] if blocks else ""
+        if "PARSE_FAILURE" not in last:
+            return {"raw": last[-max_chars:], "meta": "PARSE_FAILURE not found"}
+        lines = last.splitlines()
+        meta = lines[0] if lines else ""
+        raw_start = None
+        raw_end = None
+        for i, line in enumerate(lines):
+            if line.strip() == "----- RAW START -----":
+                raw_start = i + 1
+            if line.strip() == "----- RAW END -----":
+                raw_end = i
+                break
+        raw = ""
+        if raw_start is not None and raw_end is not None and raw_end >= raw_start:
+            raw = "\n".join(lines[raw_start:raw_end])
+        else:
+            raw = "\n".join(lines[1:])
+        if len(raw) > max_chars:
+            raw = raw[-max_chars:]
+        return {"meta": meta, "raw": raw, "path": log_path}
+    except Exception:
+        return None
 
 
 def safe_int(val, default=0):

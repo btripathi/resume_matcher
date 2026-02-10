@@ -3,6 +3,7 @@ import time
 import re
 import pandas as pd
 import streamlit as st
+import utils
 
 
 def render_manage_data(db, client, document_utils, sync_db_if_allowed, start_jd_upload, stop_jd_upload, start_res_upload, stop_res_upload):
@@ -421,15 +422,23 @@ def render_manage_data(db, client, document_utils, sync_db_if_allowed, start_jd_
 
                 tag_key = f"tag_ed_{row['id']}"
                 if st.session_state.get("selected_res_filename_prev") != current_filename:
-                    st.session_state[tag_key] = list(curr_tags_list)
+                    st.session_state.pop(tag_key, None)
                     st.session_state.selected_res_filename_prev = current_filename
-                elif tag_key not in st.session_state:
-                    st.session_state[tag_key] = list(curr_tags_list)
-                new_tags_list = st.multiselect("Edit Tags", options=all_opts, key=tag_key)
+                new_tags_list = st.multiselect("Edit Tags", options=all_opts, default=curr_tags_list, key=tag_key)
                 new_tags_val = ",".join(new_tags_list) if new_tags_list else None
 
                 with st.expander("🔍 Inspect Raw Extracted Text", expanded=False):
                     st.text_area("Raw Text Content", value=row['content'], height=300, disabled=True, key=f"raw_{row['id']}")
+
+                with st.expander("🧪 Last LLM Parse Failure (Local Log)", expanded=False):
+                    last_err = utils.read_last_parse_error()
+                    if last_err:
+                        meta = last_err.get("meta", "Parse failure")
+                        st.caption(meta)
+                        st.text_area("Raw LLM Output (last failure)", value=last_err.get("raw", ""), height=220, disabled=True)
+                        st.caption(f"Source: {last_err.get('path')}")
+                    else:
+                        st.caption("No parse failure log found.")
 
                 new_prof = st.text_area("JSON Profile", value=row['profile'], height=300, key=f"res_ed_{row['id']}")
 
