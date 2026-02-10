@@ -134,7 +134,11 @@ def process_match_flow(job, res, db, client, deep_match_thresh, auto_deep, force
                     task_display.warning(f"🔬 Deep Scan: {processed_count}/{total_criteria} criteria checked (Priority)...")
                 if sub_bar and total_criteria > 0:
                     sub_bar.progress(processed_count / total_criteria)
-                res_crit = client.evaluate_criterion(res['content'], rt, rv)
+                crit_text = res['content']
+                if rt == "experience":
+                    # Include structured profile to help detect explicit years experience.
+                    crit_text = f"{res['content']}\n\nRESUME_PROFILE:\n{res.get('profile','')}"
+                res_crit = client.evaluate_criterion(crit_text, rt, rv)
                 if res_crit:
                     details.append(res_crit)
                     icon = "✅" if res_crit['status'] == 'Met' else "⚠️" if res_crit['status'] == 'Partial' else "❌"

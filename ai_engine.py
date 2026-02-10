@@ -126,6 +126,40 @@ class AIEngine:
                     "years_experience": 0,
                     "error_flag": True
                 }
+            # Post-process to ground years_experience and enrich skills from explicit text
+            try:
+                lowered = text.lower()
+                # Extract explicit years statements
+                yrs = [int(m.group(1)) for m in re.finditer(r"\b(\d{1,2})\s+years?\b", lowered)]
+                # Handle "X years ... alongside Y years" style
+                alongside = re.search(r"\b(\d{1,2})\s+years?\b.*\balongside\b.*\b(\d{1,2})\s+years?\b", lowered)
+                explicit_years = None
+                if alongside:
+                    explicit_years = int(alongside.group(1)) + int(alongside.group(2))
+                elif yrs:
+                    explicit_years = max(yrs)
+
+                if explicit_years is not None:
+                    # Use explicit years from text when available
+                    result["years_experience"] = explicit_years
+
+                # Enrich extracted_skills with explicit HR/ops keywords found in text
+                skill_keywords = [
+                    "payroll", "compensation", "benefits", "hr policies", "employee relations",
+                    "people operations", "onboarding", "offboarding", "attendance", "leave management",
+                    "performance management", "confidential", "compliance", "statutory compliance"
+                ]
+                found = []
+                for kw in skill_keywords:
+                    if kw in lowered:
+                        found.append(kw.title() if kw.islower() else kw)
+                existing = result.get("extracted_skills") or []
+                if isinstance(existing, str):
+                    existing = [existing]
+                merged = list(dict.fromkeys([*existing, *found]))
+                result["extracted_skills"] = merged
+            except Exception:
+                pass
             return result
         except Exception as e:
             return {"candidate_name": "Error", "error_flag": True}
@@ -187,6 +221,40 @@ class AIEngine:
         if self.use_mock:
             return self._mock_evaluate_criterion(resume_text, category, value)
         document_utils = self._document_utils()
+        # Heuristic: allow partial match for India HR ops/statutory compliance when resume shows payroll/HR policies
+        try:
+            cat = str(category or "").lower()
+            req = str(value or "").lower()
+            resume_l = str(resume_text or "").lower()
+            # Heuristic: experience requirement like "Minimum X years"
+            if cat == "experience" and ("minimum" in req and "years" in req):
+                m = re.search(r"(\\d{1,2})\\s*\\+?\\s*years?", req)
+                if m:
+                    required = int(m.group(1))
+                    # Find explicit years in resume text (e.g., "11 years", "10+ years", "10 yrs")
+                    years = [int(x) for x in re.findall(r"\\b(\\d{1,2})\\s*\\+?\\s*(?:years?|yrs?)\\b", resume_l)]
+                    # If we included RESUME_PROFILE, use years_experience as a signal too
+                    if "years_experience" in resume_l and not years:
+                        m2 = re.search(r"years_experience[^0-9]*(\\d{1,2})", resume_l)
+                        if m2:
+                            years = [int(m2.group(1))]
+                    if years:
+                        if max(years) >= required:
+                            return {"requirement": value, "status": "Met", "evidence": f"Explicit years in resume: {max(years)}"}
+                        return {"requirement": value, "status": "Partial", "evidence": f"Explicit years in resume: {max(years)} (below {required})"}
+            if cat == "domain_knowledge" and ("statutory compliance" in req or "india hr operations" in req or "labor laws" in req):
+                signals = []
+                for kw in ["payroll", "hr policies", "employee relations", "compensation", "benefits"]:
+                    if kw in resume_l:
+                        signals.append(kw)
+                if signals:
+                    return {
+                        "requirement": value,
+                        "status": "Partial",
+                        "evidence": f"Matched keywords in resume: {', '.join(signals[:4])}"
+                    }
+        except Exception:
+            pass
         system_prompt = f"""
         Verify if resume meets this {category} requirement: "{value}".
         NORMALIZATION RULES:
