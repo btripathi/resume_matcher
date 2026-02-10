@@ -2,7 +2,7 @@ import datetime
 import streamlit as st
 
 
-def render_run_analysis(db, run_analysis_batch, _safe_int, start_run_callback, stop_run_callback):
+def render_run_analysis(db, run_analysis_batch, start_run_callback, stop_run_callback):
     if not st.session_state.write_mode:
         st.info("Read-only mode: run results are local only and won't sync to the shared DB.", icon="🔒")
 

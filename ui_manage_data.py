@@ -26,13 +26,19 @@ def render_manage_data(db, client, document_utils, sync_db_if_allowed, start_jd_
             if create_tag_option in jd_tag_assign:
                 new_jd_tag = st.text_input("New Tag Name", key="new_jd_tag")
                 jd_tag_assign = [t for t in jd_tag_assign if t != create_tag_option]
-            if new_jd_tag.strip():
-                db.add_tag(new_jd_tag.strip())
-                if new_jd_tag.strip() not in jd_tag_assign:
-                    jd_tag_assign.append(new_jd_tag.strip())
+            new_jd_tag = new_jd_tag.strip()
+            entered_new_tag = st.session_state.get("new_jd_tag", "").strip()
+            if new_jd_tag:
+                db.add_tag(new_jd_tag)
+                if new_jd_tag not in jd_tag_assign:
+                    jd_tag_assign.append(new_jd_tag)
                 tag_options = sorted(set(db.list_tags()))
             jd_tag_assign = [t.strip() for t in jd_tag_assign if t.strip()]
-            jd_tag_val = ",".join(jd_tag_assign) if jd_tag_assign else None
+            effective_jd_tags = list(jd_tag_assign)
+            for tag_val in [new_jd_tag, entered_new_tag]:
+                if tag_val and tag_val not in effective_jd_tags:
+                    effective_jd_tags.append(tag_val)
+            jd_tag_val = ",".join(effective_jd_tags) if effective_jd_tags else None
 
             jd_up = st.file_uploader(
                 "Upload JDs (PDF/DOCX/TXT)",
@@ -42,7 +48,7 @@ def render_manage_data(db, client, document_utils, sync_db_if_allowed, start_jd_
             force_reparse_jd = st.checkbox("Force Reparse Existing JDs", value=False)
 
             if jd_up:
-                has_jd_tag = bool(jd_tag_assign)
+                has_jd_tag = bool(effective_jd_tags)
                 if not st.session_state.is_uploading_jd:
                     st.button("Process New JDs", type="primary", on_click=start_jd_upload, disabled=not has_jd_tag)
                     if not has_jd_tag:

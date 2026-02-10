@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 
-def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_rerun_callback, stop_run_callback, _safe_int, generate_candidate_list_html, generate_criteria_html, generate_matrix_view, document_utils, match_flow):
+def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_rerun_callback, stop_run_callback, utils, document_utils, match_flow):
     if not st.session_state.write_mode:
         st.info("Read-only mode: reruns/edits are local only and won't sync to the shared DB.", icon="🔒")
 
@@ -21,7 +21,7 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
     run_row = runs[runs["label"] == sel_run_label].iloc[0]
     run_id = int(run_row["id"])
     run_name_base = run_row["name"]
-    run_threshold = _safe_int(run_row["threshold"], 50) if "threshold" in run_row and pd.notna(run_row["threshold"]) else 50
+    run_threshold = utils.safe_int(run_row["threshold"], 50) if "threshold" in run_row and pd.notna(run_row["threshold"]) else 50
 
     with c_ren:
         new_run_name = st.text_input("Rename Batch:", value=run_name_base, key=f"ren_{run_id}")
@@ -138,11 +138,14 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
 
     if unique_jobs > 1:
         matrix_filter = st.radio("Matrix Data View:", ["All Scores", "Deep Match Only", "Standard Match Only"], horizontal=True)
-        generate_matrix_view(results, view_mode=matrix_filter)
+        matrix_html = utils.generate_matrix_view(results, view_mode=matrix_filter)
+        if matrix_html:
+            st.markdown("### 📊 Cross-Job Match Matrix")
+            st.markdown(matrix_html, unsafe_allow_html=True)
         st.divider()
 
     run_name_base = run_row["name"]
-    run_threshold = _safe_int(run_row["threshold"], 50) if "threshold" in run_row and pd.notna(run_row["threshold"]) else 50
+    run_threshold = utils.safe_int(run_row["threshold"], 50) if "threshold" in run_row and pd.notna(run_row["threshold"]) else 50
     unique_jobs = results["job_name"].nunique()
     unique_job_names = results["job_name"].unique()
     deep_df = results[results["strategy"] == "Deep"]
@@ -157,9 +160,9 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
             for i, job in enumerate(unique_job_names):
                 with tabs[i]:
                     job_subset = deep_df[deep_df["job_name"] == job]
-                    st.markdown(generate_candidate_list_html(job_subset, threshold=run_threshold, is_deep=True), unsafe_allow_html=True)
+                    st.markdown(utils.generate_candidate_list_html(job_subset, threshold=run_threshold, is_deep=True), unsafe_allow_html=True)
         else:
-            st.markdown(generate_candidate_list_html(deep_df, threshold=run_threshold, is_deep=True), unsafe_allow_html=True)
+            st.markdown(utils.generate_candidate_list_html(deep_df, threshold=run_threshold, is_deep=True), unsafe_allow_html=True)
 
     st.divider()
 
@@ -172,9 +175,9 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
             for i, job in enumerate(unique_job_names):
                 with tabs_std[i]:
                     job_subset = std_df[std_df["job_name"] == job]
-                    st.markdown(generate_candidate_list_html(job_subset, threshold=run_threshold, is_deep=False), unsafe_allow_html=True)
+                    st.markdown(utils.generate_candidate_list_html(job_subset, threshold=run_threshold, is_deep=False), unsafe_allow_html=True)
         else:
-            st.markdown(generate_candidate_list_html(std_df, threshold=run_threshold, is_deep=False), unsafe_allow_html=True)
+            st.markdown(utils.generate_candidate_list_html(std_df, threshold=run_threshold, is_deep=False), unsafe_allow_html=True)
 
     st.divider()
 
@@ -229,7 +232,7 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
                         True,
                         False,
                         add_log,
-                        safe_int_fn=_safe_int,
+                        safe_int_fn=utils.safe_int,
                     )
                     with st.spinner("Syncing to GitHub..."):
                         sync_db_if_allowed()
@@ -260,10 +263,10 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
         with st.container(border=True):
             c1, c2 = st.columns([3, 1])
             c1.title(row["candidate_name"])
-            c2.metric("Weighted Score", f"{_safe_int(row['match_score'], 0)}%")
+            c2.metric("Weighted Score", f"{utils.safe_int(row['match_score'], 0)}%")
 
             if pd.notna(row.get("standard_score")) and row["strategy"] == "Deep":
-                st.caption(f"Pass 1 (Standard) Score: **{_safe_int(row['standard_score'], 0)}%**")
+                st.caption(f"Pass 1 (Standard) Score: **{utils.safe_int(row['standard_score'], 0)}%**")
 
             if row["strategy"] == "Deep":
                 st.caption("✨ Evaluated with High-Precision Multi-Pass Tiered Weighting")
@@ -277,6 +280,6 @@ def render_results(db, client, sync_db_if_allowed, run_analysis_batch, prepare_r
             try:
                 dets = json.loads(row["match_details"])
                 if dets:
-                    st.markdown(generate_criteria_html(dets), unsafe_allow_html=True)
+                    st.markdown(utils.generate_criteria_html(dets), unsafe_allow_html=True)
             except Exception:
                 st.warning("Detailed requirement breakdown unavailable for this match.")
