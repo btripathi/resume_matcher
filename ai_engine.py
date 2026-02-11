@@ -226,6 +226,35 @@ class AIEngine:
             cat = str(category or "").lower()
             req = str(value or "").lower()
             resume_l = str(resume_text or "").lower()
+            # Deterministic gate for stack-specific MUST-HAVE requirements:
+            # do not infer from adjacent tools; require explicit token overlap.
+            if cat == "must_have_skills":
+                tech_terms = [
+                    "react", "python", "fastapi", "pydantic", "sqlmodel", "async",
+                    "vite", "bun", "react-query", "react query", "react-table", "react table",
+                    "grpc", "protobuf", "kubernetes", "docker"
+                ]
+                req_terms = [t for t in tech_terms if t in req]
+                if len(req_terms) >= 2:
+                    matched = []
+                    for t in req_terms:
+                        # normalize dashed/spaced variants for react-query/react-table
+                        variants = {t, t.replace("-", " "), t.replace(" ", "-")}
+                        if any(v in resume_l for v in variants):
+                            matched.append(t)
+                    if not matched:
+                        return {"requirement": value, "status": "Missing", "evidence": "None"}
+                    if len(matched) < len(set(req_terms)):
+                        return {
+                            "requirement": value,
+                            "status": "Partial",
+                            "evidence": f"Explicitly matched: {', '.join(sorted(set(matched)))}"
+                        }
+                    return {
+                        "requirement": value,
+                        "status": "Met",
+                        "evidence": f"Explicitly matched: {', '.join(sorted(set(matched)))}"
+                    }
             # Heuristic: experience requirement like "Minimum X years"
             if cat == "experience" and ("minimum" in req and "years" in req):
                 m = re.search(r"(\\d{1,2})\\s*\\+?\\s*years?", req)
