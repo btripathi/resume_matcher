@@ -3,6 +3,7 @@ import time
 import traceback
 import json
 import base64
+import os
 from dataclasses import dataclass, field
 
 import document_utils
@@ -18,6 +19,9 @@ class JobRunner:
     poll_seconds: float = 0.6
     _stop_event: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
+    _heartbeat_interval_sec: float = field(
+        default_factory=lambda: max(5.0, float(os.getenv("RESUME_MATCHER_RUN_HEARTBEAT_SEC", "20") or 20.0))
+    )
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -39,6 +43,14 @@ class JobRunner:
                 continue
             run_id = int(run["id"])
             self.repo.add_run_log(run_id, "info", f"Run picked up: {run['job_type']}")
+            heartbeat_stop = threading.Event()
+            heartbeat_thread = threading.Thread(
+                target=self._run_heartbeat_loop,
+                name=f"run-heartbeat-{run_id}",
+                args=(run_id, heartbeat_stop),
+                daemon=True,
+            )
+            heartbeat_thread.start()
             try:
                 result = self._execute(run_id=run_id, job_type=run["job_type"], payload=run.get("payload") or {})
                 self.repo.complete_run(run_id=run_id, result=result)
@@ -46,6 +58,28 @@ class JobRunner:
             except Exception as exc:
                 self.repo.fail_run(run_id=run_id, error=str(exc))
                 self.repo.add_run_log(run_id, "error", f"{exc}\n{traceback.format_exc()}")
+            finally:
+                heartbeat_stop.set()
+                heartbeat_thread.join(timeout=1.0)
+
+    def _run_heartbeat_loop(self, run_id: int, stop_event: threading.Event) -> None:
+        while not stop_event.wait(self._heartbeat_interval_sec):
+            try:
+                row = self.repo.get_run(run_id)
+                if not row:
+                    return
+                if str(row.get("status") or "") != "running":
+                    return
+                step = str(row.get("current_step") or "-")
+                progress = int(row.get("progress") or 0)
+                self.repo.add_run_log(
+                    run_id,
+                    "debug",
+                    f"Heartbeat: run active at {progress}% (step={step}). Waiting on LLM/IO if no new requirement log yet.",
+                )
+            except Exception:
+                # Heartbeat should never interrupt the worker.
+                return
 
     def _execute(self, run_id: int, job_type: str, payload: dict) -> dict:
         if job_type == "ingest_job":
@@ -190,6 +224,8 @@ class JobRunner:
             auto_deep = bool(payload.get("auto_deep", False))
             force_rerun_pass1 = bool(payload.get("force_rerun_pass1", False))
             force_rerun_deep = bool(payload.get("force_rerun_deep", False))
+            deep_resume_from = int(payload.get("deep_resume_from", 0) or 0)
+            deep_partial_details = payload.get("deep_partial_details") or []
 
             self.repo.add_run_log(
                 run_id,
@@ -212,10 +248,11 @@ class JobRunner:
 
             existing_before = self.repo.get_existing_match(job_id, resume_id)
             predicted_reuse = False
-            if existing_before and not force_rerun_pass1:
-                if (not auto_deep) or (
-                    auto_deep and existing_before.get("strategy") == "Deep" and not force_rerun_deep
-                ):
+            force_any = bool(force_rerun_pass1 or force_rerun_deep)
+            wants_deep = bool(auto_deep or force_rerun_deep)
+            if existing_before and not force_any:
+                existing_strategy = str(existing_before.get("strategy") or "Standard")
+                if (not wants_deep) or (wants_deep and existing_strategy == "Deep"):
                     predicted_reuse = True
             if predicted_reuse and existing_before:
                 self.repo.add_run_log(
@@ -244,6 +281,16 @@ class JobRunner:
                 run_name=payload.get("run_name"),
                 force_rerun_pass1=force_rerun_pass1,
                 force_rerun_deep=force_rerun_deep,
+                log_fn=lambda msg: self.repo.add_run_log(run_id, "info", str(msg)),
+                deep_resume_from=deep_resume_from,
+                deep_partial_details=deep_partial_details if isinstance(deep_partial_details, list) else [],
+                progress_fn=lambda idx, total, details: self._checkpoint_deep_progress(
+                    run_id=run_id,
+                    payload=payload,
+                    idx=idx,
+                    total=total,
+                    details=details,
+                ),
             )
             if predicted_reuse and existing_before and int(row["id"]) == int(existing_before["id"]):
                 self.repo.add_run_log(
@@ -267,3 +314,11 @@ class JobRunner:
             return {"match_id": row["id"], "score": row["match_score"], "decision": row["decision"]}
 
         raise ValueError(f"Unsupported job_type: {job_type}")
+
+    def _checkpoint_deep_progress(self, run_id: int, payload: dict, idx: int, total: int, details: list) -> None:
+        payload["deep_resume_from"] = int(idx)
+        payload["deep_partial_details"] = list(details or [])
+        pct = 10 + int((max(0, min(idx, total)) / max(1, total)) * 85)
+        self.repo.update_run_payload(run_id=run_id, payload=payload)
+        self.repo.update_run_result(run_id=run_id, result={"deep_partial_details": payload["deep_partial_details"]})
+        self.repo.update_run_progress(run_id=run_id, progress=min(95, pct), current_step=f"deep_scan_{idx}_of_{total}")

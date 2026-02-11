@@ -231,6 +231,50 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
         return RunOut(**row)
 
+    @app.post("/v1/runs/{run_id}/resume")
+    def resume_run(run_id: int) -> dict:
+        row = repo.get_run(run_id)
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        status = str(row.get("status") or "")
+        if status == "queued":
+            return {"ok": True, "message": f"Run {run_id} is already queued.", "run_id": run_id}
+        if status == "completed":
+            raise HTTPException(status_code=400, detail="Completed run cannot be resumed.")
+        if status == "running" and not bool(row.get("is_stuck")):
+            raise HTTPException(status_code=409, detail="Run is currently active (not stuck).")
+        payload = dict(row.get("payload") or {})
+        if str(row.get("job_type") or "") == "score_match":
+            checkpoint_idx = int(payload.get("deep_resume_from", 0) or 0)
+            checkpoint_details = payload.get("deep_partial_details") or []
+            has_checkpoint = checkpoint_idx > 0 or (isinstance(checkpoint_details, list) and len(checkpoint_details) > 0)
+            payload["force_rerun_deep"] = bool(
+                payload.get("force_rerun_deep", False)
+                or payload.get("auto_deep", False)
+                or has_checkpoint
+            )
+            # When checkpoint exists, continue deep scan from saved requirement index.
+            if has_checkpoint:
+                payload["force_rerun_pass1"] = False
+            else:
+                payload["force_rerun_pass1"] = True
+        ok = repo.requeue_run(run_id=run_id, payload=payload, current_step="resume_requested")
+        if not ok:
+            raise HTTPException(status_code=500, detail="Failed to requeue run.")
+        if str(row.get("job_type") or "") == "score_match":
+            resumed_from = int(payload.get("deep_resume_from", 0) or 0)
+            if resumed_from > 0:
+                repo.add_run_log(
+                    run_id,
+                    "warn",
+                    f"Run resumed from checkpoint at deep requirement {resumed_from + 1} using existing run id.",
+                )
+            else:
+                repo.add_run_log(run_id, "warn", "Run resumed from queue using existing run id.")
+        else:
+            repo.add_run_log(run_id, "warn", "Run resumed from queue using existing run id.")
+        return {"ok": True, "message": f"Run {run_id} requeued.", "run_id": run_id}
+
     @app.get("/v1/runs/{run_id}/logs", response_model=list[RunLogOut])
     def get_run_logs(run_id: int) -> list[RunLogOut]:
         row = repo.get_run(run_id)
@@ -273,6 +317,7 @@ def create_app() -> FastAPI:
         writer_cfg = gh_sync.writer_config()
         lock_timeout = int(writer_cfg.get("lock_timeout_hours", 6) or 6)
         lock_info = gh_sync.get_lock(timeout_hours=lock_timeout)
+        writer_users = [str(u.get("name") or "").strip() for u in (writer_cfg.get("users") or []) if str(u.get("name") or "").strip()]
         return {
             "lm_base_url": runtime_settings["lm_base_url"],
             "lm_api_key": runtime_settings["lm_api_key"],
@@ -281,10 +326,40 @@ def create_app() -> FastAPI:
             "write_mode": bool(runtime_settings["write_mode"]),
             "write_mode_locked": bool(runtime_settings["write_mode_locked"]),
             "writer_default_name": writer_cfg.get("default_name", ""),
+            "writer_users": writer_users,
             "lock_timeout_hours": lock_timeout,
             "lock_info": lock_info,
             "github_configured": bool(gh_sync._credentials()[0] and gh_sync._credentials()[1]),
         }
+
+    def _resolve_writer_identity(payload: dict, require_password: bool = True) -> tuple[str, str]:
+        writer_cfg = gh_sync.writer_config()
+        writer_name = str(payload.get("writer_name") or writer_cfg.get("default_name") or "unknown").strip()
+        writer_password = str(payload.get("writer_password") or "")
+        users = writer_cfg.get("users") or []
+
+        if users:
+            match = None
+            for row in users:
+                name = str((row or {}).get("name") or "").strip()
+                if name.lower() == writer_name.lower():
+                    match = row
+                    writer_name = name
+                    break
+            if not match:
+                raise HTTPException(status_code=401, detail="Writer is not authorized for write mode.")
+            expected = str(match.get("password") or "")
+            if require_password and writer_password != expected:
+                raise HTTPException(status_code=401, detail="Incorrect write password.")
+            return writer_name, writer_password
+
+        expected = str(writer_cfg.get("password") or "").strip()
+        if require_password:
+            if not expected:
+                raise HTTPException(status_code=400, detail="Write password is not configured in secrets.")
+            if writer_password != expected:
+                raise HTTPException(status_code=401, detail="Incorrect write password.")
+        return writer_name, writer_password
 
     @app.put("/v1/settings/runtime")
     def update_runtime_settings(payload: dict) -> dict:
@@ -318,13 +393,7 @@ def create_app() -> FastAPI:
         if runtime_settings["write_mode_locked"]:
             raise HTTPException(status_code=403, detail="Write mode is locked by launcher/env.")
         writer_cfg = gh_sync.writer_config()
-        expected = str(writer_cfg.get("password") or "").strip()
-        writer_name = str(payload.get("writer_name") or writer_cfg.get("default_name") or "unknown").strip()
-        writer_password = str(payload.get("writer_password") or "")
-        if not expected:
-            raise HTTPException(status_code=400, detail="Write password is not configured in secrets.")
-        if writer_password != expected:
-            raise HTTPException(status_code=401, detail="Incorrect write password.")
+        writer_name, _ = _resolve_writer_identity(payload, require_password=True)
         timeout_hours = int(writer_cfg.get("lock_timeout_hours", 6) or 6)
         lock = gh_sync.get_lock(timeout_hours=timeout_hours)
         if lock and isinstance(lock, dict) and lock.get("owner") == (writer_name or "unknown"):
@@ -340,7 +409,7 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/settings/write-mode/disable")
     def disable_write_mode(payload: dict) -> dict:
-        writer_name = str(payload.get("writer_name") or "unknown").strip()
+        writer_name, _ = _resolve_writer_identity(payload, require_password=True)
         ok, msg = gh_sync.release_lock(writer_name or "unknown")
         if not ok:
             raise HTTPException(status_code=409, detail=msg)
@@ -350,14 +419,7 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/settings/write-mode/force-unlock")
     def force_unlock_write_mode(payload: dict) -> dict:
-        writer_cfg = gh_sync.writer_config()
-        expected = str(writer_cfg.get("password") or "").strip()
-        writer_password = str(payload.get("writer_password") or "")
-        writer_name = str(payload.get("writer_name") or "unknown").strip()
-        if not expected:
-            raise HTTPException(status_code=400, detail="Write password is not configured in secrets.")
-        if writer_password != expected:
-            raise HTTPException(status_code=401, detail="Incorrect write password.")
+        writer_name, _ = _resolve_writer_identity(payload, require_password=True)
         ok, msg = gh_sync.release_lock(writer_name or "unknown", force=True)
         if not ok:
             raise HTTPException(status_code=409, detail=msg)

@@ -437,8 +437,10 @@ class DBManager:
         conn = self.get_connection()
         c = conn.cursor()
         c.execute(
-            '''SELECT id, job_type, payload_json, status, progress, current_step, error, result_json, created_at, started_at, finished_at
-               FROM job_runs
+            '''SELECT jr.id, jr.job_type, jr.payload_json, jr.status, jr.progress, jr.current_step, jr.error,
+                      jr.result_json, jr.created_at, jr.started_at, jr.finished_at,
+                      (SELECT MAX(l.created_at) FROM job_run_logs l WHERE l.run_id = jr.id) AS last_log_at
+               FROM job_runs jr
                ORDER BY id DESC
                LIMIT ?''',
             (int(limit),),
@@ -459,6 +461,7 @@ class DBManager:
                 "created_at": row[8],
                 "started_at": row[9],
                 "finished_at": row[10],
+                "last_log_at": row[11],
             })
         return out
 
@@ -466,9 +469,11 @@ class DBManager:
         conn = self.get_connection()
         c = conn.cursor()
         c.execute(
-            '''SELECT id, job_type, payload_json, status, progress, current_step, error, result_json, created_at, started_at, finished_at
-               FROM job_runs
-               WHERE id = ?
+            '''SELECT jr.id, jr.job_type, jr.payload_json, jr.status, jr.progress, jr.current_step, jr.error,
+                      jr.result_json, jr.created_at, jr.started_at, jr.finished_at,
+                      (SELECT MAX(l.created_at) FROM job_run_logs l WHERE l.run_id = jr.id) AS last_log_at
+               FROM job_runs jr
+               WHERE jr.id = ?
                LIMIT 1''',
             (int(run_id),),
         )
@@ -488,6 +493,7 @@ class DBManager:
             "created_at": row[8],
             "started_at": row[9],
             "finished_at": row[10],
+            "last_log_at": row[11],
         }
 
     def claim_next_job_run(self):
@@ -525,6 +531,26 @@ class DBManager:
         conn.commit()
         conn.close()
 
+    def update_job_run_payload(self, run_id, payload):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE job_runs SET payload_json = ? WHERE id = ?",
+            (json.dumps(payload or {}), int(run_id)),
+        )
+        conn.commit()
+        conn.close()
+
+    def update_job_run_result(self, run_id, result):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE job_runs SET result_json = ? WHERE id = ?",
+            (json.dumps(result or {}), int(run_id)),
+        )
+        conn.commit()
+        conn.close()
+
     def complete_job_run(self, run_id, result=None):
         conn = self.get_connection()
         c = conn.cursor()
@@ -548,6 +574,28 @@ class DBManager:
         )
         conn.commit()
         conn.close()
+
+    def requeue_job_run(self, run_id, payload=None, current_step="requeued"):
+        conn = self.get_connection()
+        c = conn.cursor()
+        if payload is None:
+            c.execute(
+                '''UPDATE job_runs
+                   SET status = 'queued', error = NULL, current_step = ?, started_at = NULL, finished_at = NULL
+                   WHERE id = ?''',
+                (str(current_step), int(run_id)),
+            )
+        else:
+            c.execute(
+                '''UPDATE job_runs
+                   SET status = 'queued', payload_json = ?, error = NULL, current_step = ?, started_at = NULL, finished_at = NULL
+                   WHERE id = ?''',
+                (json.dumps(payload or {}), str(current_step), int(run_id)),
+            )
+        changed = c.rowcount
+        conn.commit()
+        conn.close()
+        return changed == 1
 
     def append_job_run_log(self, run_id, level, message):
         conn = self.get_connection()

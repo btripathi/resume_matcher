@@ -10,6 +10,9 @@ class AIEngine:
         self.base_url = base_url
         self.api_key = api_key
         self.use_mock = base_url.startswith("mock://")
+        self.request_timeout_sec = int(os.getenv("RESUME_MATCHER_LLM_TIMEOUT_SEC", "30") or 30)
+        self.preferred_model = str(os.getenv("RESUME_MATCHER_LM_MODEL", "") or "").strip()
+        self._resolved_chat_model = None
 
         if not self.use_mock:
             if importlib.util.find_spec("openai") is None:
@@ -18,6 +21,43 @@ class AIEngine:
                 )
             openai_module = importlib.import_module("openai")
             self.client = openai_module.OpenAI(base_url=base_url, api_key=api_key)
+
+    def _chat_model(self):
+        if self.use_mock:
+            return "local-model"
+        if self.preferred_model:
+            return self.preferred_model
+        if self._resolved_chat_model:
+            return self._resolved_chat_model
+
+        try:
+            models = self.client.models.list()
+            data = list(getattr(models, "data", []) or [])
+            ids = [str(getattr(m, "id", "") or "").strip() for m in data]
+            ids = [m for m in ids if m]
+            non_embedding = [m for m in ids if "embed" not in m.lower()]
+            ranked = non_embedding or ids
+            preferred = [
+                "qwen2.5-7b-instruct",
+                "qwen2.5-3b-instruct",
+                "gpt",
+                "llama",
+                "instruct",
+                "chat",
+            ]
+            for token in preferred:
+                hit = next((m for m in ranked if token in m.lower()), None)
+                if hit:
+                    self._resolved_chat_model = hit
+                    return hit
+            if ranked:
+                self._resolved_chat_model = ranked[0]
+                return ranked[0]
+        except Exception:
+            pass
+
+        # Last fallback for OpenAI-compatible local gateways.
+        return "local-model"
 
     def analyze_jd(self, text):
         if self.use_mock:
@@ -49,7 +89,10 @@ class AIEngine:
         """
         try:
             resp = self.client.chat.completions.create(
-                model="local-model", messages=[{"role": "user", "content": prompt}], temperature=0.0
+                model=self._chat_model(),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                timeout=self.request_timeout_sec,
             )
             raw = document_utils.clean_json_response(resp.choices[0].message.content)
             return self._normalize_jd_schema(raw, text)
@@ -111,13 +154,14 @@ class AIEngine:
         """
         try:
             resp = self.client.chat.completions.create(
-                model="local-model",
+                model=self._chat_model(),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.0,
-                max_tokens=1500  # Strict limit to prevent infinite generation
+                max_tokens=1500,  # Strict limit to prevent infinite generation
+                timeout=self.request_timeout_sec,
             )
             # If null, return a fallback object to prevent app crash
             raw_content = resp.choices[0].message.content
@@ -228,10 +272,11 @@ class AIEngine:
             user_prompt = f"JD CRITERIA:\n{jd_str}\n\nRESUME PROFILE:\n{profile_str}\n\nRESUME TEXT:\n{resume_str}"
         try:
             resp = self.client.chat.completions.create(
-                model="local-model",
+                model=self._chat_model(),
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                 temperature=0.1,
-                max_tokens=1024
+                max_tokens=1024,
+                timeout=self.request_timeout_sec,
             )
             return document_utils.clean_json_response(resp.choices[0].message.content)
         except: return None
@@ -313,7 +358,10 @@ class AIEngine:
         user_prompt = f"TEXT:\n{resume_text[:15000]}"
         try:
             resp = self.client.chat.completions.create(
-                model="local-model", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], temperature=0.0
+                model=self._chat_model(),
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                temperature=0.0,
+                timeout=self.request_timeout_sec,
             )
             data = document_utils.clean_json_response(resp.choices[0].message.content)
             if data: data['category'] = category
@@ -346,7 +394,10 @@ class AIEngine:
 
         try:
             resp = self.client.chat.completions.create(
-                model="local-model", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], temperature=0.0
+                model=self._chat_model(),
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                temperature=0.0,
+                timeout=self.request_timeout_sec,
             )
             data = document_utils.clean_json_response(resp.choices[0].message.content)
             if isinstance(data, list): return data

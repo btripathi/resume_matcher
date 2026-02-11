@@ -80,17 +80,28 @@ def render_console() -> HTMLResponse:
       position: absolute;
       right: 0;
       top: calc(100% + 8px);
-      min-width: 220px;
+      width: min(620px, calc(100vw - 40px));
       background: #fff;
       border: 1px solid var(--line);
       border-radius: 10px;
       box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
-      padding: 6px;
+      padding: 10px;
       z-index: 20;
       display: none;
     }
     .settings-menu.open {
       display: block;
+    }
+    .settings-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      align-items: start;
+    }
+    .settings-col {
+      display: grid;
+      gap: 8px;
+      align-content: start;
     }
     .settings-item {
       width: 100%;
@@ -98,7 +109,7 @@ def render_console() -> HTMLResponse:
       background: transparent;
       border: none;
       border-radius: 8px;
-      padding: 8px 10px;
+      padding: 7px 9px;
       color: #334155;
       cursor: pointer;
     }
@@ -109,25 +120,60 @@ def render_console() -> HTMLResponse:
       border: 1px solid #eef2f7;
       border-radius: 8px;
       padding: 8px;
-      margin-bottom: 8px;
+      margin-bottom: 0;
     }
     .settings-title {
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
       color: #475569;
-      margin-bottom: 6px;
+      margin-bottom: 5px;
     }
     .settings-help {
-      font-size: 12px;
+      font-size: 11px;
       color: #64748b;
-      margin-top: 4px;
+      margin-top: 3px;
     }
     .settings-msg {
-      font-size: 12px;
-      margin-top: 6px;
+      font-size: 11px;
+      margin-top: 8px;
       color: #0f5132;
     }
     .settings-msg.err {
+      color: #991b1b;
+    }
+    .settings-inline-status {
+      border: 1px solid #dbeafe;
+      background: #eff6ff;
+      color: #1e3a8a;
+      border-radius: 8px;
+      padding: 7px 8px;
+      font-size: 12px;
+      line-height: 1.25;
+      margin-bottom: 6px;
+    }
+    .settings-inline-status.ok {
+      border-color: #bbf7d0;
+      background: #ecfdf3;
+      color: #166534;
+    }
+    .settings-inline-status.warn {
+      border-color: #fde68a;
+      background: #fffbeb;
+      color: #92400e;
+    }
+    .settings-inline-status.err {
+      border-color: #fecaca;
+      background: #fef2f2;
+      color: #991b1b;
+    }
+    .settings-action-msg {
+      font-size: 12px;
+      line-height: 1.3;
+      margin-top: 6px;
+      color: #166534;
+      min-height: 16px;
+    }
+    .settings-action-msg.err {
       color: #991b1b;
     }
 
@@ -192,16 +238,16 @@ def render_console() -> HTMLResponse:
 
     h2 {
       margin: 0 0 10px;
-      font-size: 35px;
-      line-height: 1.1;
-      font-weight: 700;
+      font-size: 31px;
+      line-height: 1.16;
+      font-weight: 650;
       letter-spacing: -0.01em;
     }
 
     h3 {
       margin: 0 0 8px;
-      font-size: 20px;
-      font-weight: 600;
+      font-size: 18px;
+      font-weight: 620;
     }
 
     .caption { color: var(--muted); font-size: 14px; }
@@ -301,24 +347,52 @@ def render_console() -> HTMLResponse:
     .metrics3 {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
-      margin: 10px 0;
+      gap: 14px;
+      margin: 14px 0;
     }
     .metrics5 {
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 12px;
-      margin: 10px 0;
+      gap: 14px;
+      margin: 14px 0;
     }
 
     .metric {
       border: 1px solid var(--line);
       border-radius: 10px;
-      padding: 10px;
-      background: #fafafa;
+      padding: 14px 12px;
+      background: #fcfcfd;
     }
-    .metric .k { color: #374151; font-size: 22px; }
-    .metric .v { font-size: 48px; line-height: 1; margin-top: 4px; font-weight: 600; }
+    .metric .k {
+      color: #475569;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      text-transform: uppercase;
+    }
+    .metric .v {
+      font-size: 27px;
+      line-height: 1.12;
+      margin-top: 8px;
+      font-weight: 640;
+      color: #0f172a;
+    }
+    .run-results-panel .section {
+      margin-bottom: 20px;
+    }
+    .export-block {
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      background: #f8fbff;
+      padding: 12px;
+      margin: 8px 0 14px;
+    }
+    .export-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 8px;
+    }
 
     .table-wrap {
       border: 1px solid var(--line);
@@ -386,6 +460,101 @@ def render_console() -> HTMLResponse:
       font-size: 13px;
       white-space: pre-wrap;
       line-height: 1.45;
+    }
+    .status-bars {
+      display: grid;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .status-bar-card {
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      background: #f8fbff;
+      padding: 8px 10px;
+    }
+    .status-bar-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .status-bar-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #334155;
+      letter-spacing: 0.01em;
+      text-transform: uppercase;
+    }
+    .status-bar-meta {
+      font-size: 12px;
+      color: #475569;
+      white-space: nowrap;
+    }
+    .status-track {
+      height: 8px;
+      border-radius: 999px;
+      background: #e2e8f0;
+      overflow: hidden;
+    }
+    .status-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #38bdf8, #0284c7);
+      transition: width 180ms ease;
+    }
+    #batchProgressFill {
+      background: linear-gradient(90deg, #34d399, #059669);
+    }
+    .run-health {
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      background: #f8fafc;
+      padding: 8px 10px;
+      margin-top: 8px;
+      display: grid;
+      gap: 6px;
+    }
+    .run-health.stuck {
+      border-color: #fecaca;
+      background: #fef2f2;
+    }
+    .run-health-title {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.01em;
+      color: #334155;
+    }
+    .run-health-meta {
+      font-size: 13px;
+      color: #1f2937;
+    }
+    .run-health.stuck .run-health-meta {
+      color: #991b1b;
+      font-weight: 600;
+    }
+    .run-health-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .run-health-actions button {
+      width: auto;
+      min-width: 180px;
+    }
+    .run-stuck-alert {
+      display: none;
+      margin-top: 8px;
+      margin-bottom: 8px;
+      border: 1px solid #fecaca;
+      background: #fff1f2;
+      color: #9f1239;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+      line-height: 1.35;
+      font-weight: 600;
     }
 
     .detail {
@@ -503,6 +672,127 @@ def render_console() -> HTMLResponse:
       font-size: 12px;
       cursor: pointer;
     }
+    .tag-manager-grid {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr;
+      gap: 14px;
+    }
+    .tag-manager-pane {
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 10px;
+      background: #fbfdff;
+    }
+    .tag-pane-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #334155;
+      margin-bottom: 6px;
+    }
+    .tag-catalog {
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      background: #fff;
+      max-height: 340px;
+      overflow: auto;
+      margin-top: 8px;
+    }
+    .tag-catalog-item {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+      border: none;
+      border-bottom: 1px solid #f1f5f9;
+      border-radius: 0;
+      background: #fff;
+      color: #1f2937;
+      padding: 10px 11px;
+      cursor: pointer;
+      text-align: left;
+    }
+    .tag-catalog-item:hover {
+      background: #f8fafc;
+    }
+    .tag-catalog-item:last-child {
+      border-bottom: none;
+    }
+    .tag-catalog-name {
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1.2;
+      word-break: break-word;
+    }
+    .tag-catalog-meta {
+      font-size: 12px;
+      color: #64748b;
+      margin-top: 3px;
+      line-height: 1.25;
+    }
+    .tag-catalog-total {
+      font-size: 12px;
+      font-weight: 700;
+      color: #0f172a;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 999px;
+      padding: 3px 8px;
+      white-space: nowrap;
+    }
+    .tag-action {
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      background: #fff;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    .tag-action:last-child {
+      margin-bottom: 0;
+    }
+    .tag-action h4 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      font-weight: 700;
+      color: #334155;
+    }
+    .tag-action.danger-zone {
+      border-color: #fecaca;
+      background: #fff7f7;
+    }
+    .verify-snippet mark {
+      background: #fef08a;
+      color: #1f2937;
+      padding: 0 2px;
+      border-radius: 3px;
+    }
+    .verify-list {
+      margin: 0;
+      padding-left: 18px;
+      line-height: 1.45;
+      color: #334155;
+    }
+    .debug-tools {
+      margin-top: 14px;
+      border: 1px dashed #cbd5e1;
+      border-radius: 10px;
+      padding: 10px;
+      background: #f8fbff;
+    }
+    .debug-log {
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      min-height: 120px;
+      max-height: 260px;
+      overflow: auto;
+      padding: 8px;
+      background: #0f172a;
+      color: #dbeafe;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      line-height: 1.4;
+    }
 
     .msg { margin-top: 6px; font-size: 14px; }
     .msg.ok { color: var(--ok); }
@@ -541,6 +831,7 @@ def render_console() -> HTMLResponse:
       .grid2, .grid3, .row2, .row3, .metrics3, .metrics5 { grid-template-columns: 1fr; }
       .investigator-controls { grid-template-columns: 1fr; }
       .investigator-controls button { width: 100%; min-width: 0; justify-self: stretch; }
+      .settings-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -553,38 +844,47 @@ def render_console() -> HTMLResponse:
       <div class="settings-wrap">
         <button class="settings-btn" id="settingsBtn" onclick="toggleSettingsMenu(event)">⚙️ Settings ▾</button>
         <div class="settings-menu" id="settingsMenu">
-          <div class="settings-section">
-            <div class="settings-title">Configuration</div>
-            <input id="setLmUrl" placeholder="LM URL" />
-            <input id="setApiKey" class="row" placeholder="API Key" />
-            <label class="settings-help check-inline row"><input id="setOcrEnabled" type="checkbox" /> Enable OCR</label>
-            <div class="row2 row">
-              <button class="settings-item" onclick="saveSettingsConfig()">Save Config</button>
-              <button class="settings-item" onclick="testSettingsConnection()">Test Connection</button>
+          <div class="settings-grid">
+            <div class="settings-col">
+              <div class="settings-section">
+                <div class="settings-title">Configuration</div>
+                <input id="setLmUrl" placeholder="LM URL" />
+                <input id="setApiKey" class="row" placeholder="API Key" />
+                <label class="settings-help check-inline row"><input id="setOcrEnabled" type="checkbox" /> Enable OCR</label>
+                <div class="row2 row">
+                  <button class="settings-item" onclick="saveSettingsConfig()">Save Config</button>
+                  <button class="settings-item" onclick="testSettingsConnection()">Test Connection</button>
+                </div>
+              </div>
+              <div class="settings-section">
+                <div class="settings-title">Sync</div>
+                <div class="row2">
+                  <button class="settings-item" onclick="pushToGithub()">💾 Push to GitHub</button>
+                  <button class="settings-item" onclick="pullFromGithub()">📥 Force Pull</button>
+                </div>
+                <button class="settings-item row" onclick="resetDatabase()">🗑️ Reset DB</button>
+              </div>
             </div>
-          </div>
-          <div class="settings-section">
-            <div class="settings-title">Write Mode</div>
-            <div class="settings-help" id="setWriteLockInfo">Write lock: unknown</div>
-            <input id="setWriterName" class="row" placeholder="Writer name" />
-            <input id="setWriterPassword" class="row" type="password" placeholder="Write password" />
-            <div class="row2 row">
-              <button class="settings-item" onclick="enableWriteMode()">Enable Write Mode</button>
-              <button class="settings-item" onclick="disableWriteMode()">Disable / Release Lock</button>
+            <div class="settings-col">
+              <div class="settings-section">
+                <div class="settings-title">Write Mode</div>
+                <div class="settings-inline-status" id="setWriteModeStatus">Checking write mode status...</div>
+                <div class="settings-help" id="setWriteLockInfo">Write lock: unknown</div>
+                <input id="setWriterName" class="row" placeholder="Writer name" />
+                <div class="settings-help" id="setWriterUsersHint"></div>
+                <input id="setWriterPassword" class="row" type="password" placeholder="Write password" />
+                <div class="row2 row">
+                  <button class="settings-item" onclick="enableWriteMode()">Enable Write Mode</button>
+                  <button class="settings-item" onclick="disableWriteMode()">Disable / Release Lock</button>
+                </div>
+                <button class="settings-item row" onclick="forceUnlockWriteMode()">Force Unlock (Admin)</button>
+                <div class="settings-action-msg" id="setWriteModeActionMsg"></div>
+              </div>
+              <div class="settings-section">
+                <div class="settings-title">Utilities</div>
+                <button class="settings-item" onclick="settingsAction('refresh')">Refresh All Data</button>
+              </div>
             </div>
-            <button class="settings-item row" onclick="forceUnlockWriteMode()">Force Unlock (Admin)</button>
-          </div>
-          <div class="settings-section">
-            <div class="settings-title">Sync</div>
-            <div class="row2">
-              <button class="settings-item" onclick="pushToGithub()">💾 Push to GitHub</button>
-              <button class="settings-item" onclick="pullFromGithub()">📥 Force Pull</button>
-            </div>
-            <button class="settings-item row" onclick="resetDatabase()">🗑️ Reset DB</button>
-          </div>
-          <div class="settings-section">
-            <div class="settings-title">Utilities</div>
-            <button class="settings-item" onclick="settingsAction('refresh')">Refresh All Data</button>
           </div>
           <div class="settings-msg" id="settingsMsg"></div>
         </div>
@@ -598,8 +898,6 @@ def render_console() -> HTMLResponse:
     </div>
 
     <section class="panel active" id="panel-results">
-      <div class="info" id="resultsReadOnlyInfo">🔒 Read-only mode: reruns/edits are local only and won't sync to the shared DB.</div>
-
       <div class="subtabs">
         <button class="subtab active" id="sub-results-simple" onclick="switchResults('simple')">📌 Simple JD View</button>
         <button class="subtab" id="sub-results-run" onclick="switchResults('run')">📊 Run-Based Results</button>
@@ -609,6 +907,8 @@ def render_console() -> HTMLResponse:
         <div class="section">
           <label style="font-size:18px; display:block; margin-bottom:6px;">Select Job Description:</label>
           <select id="simpleJobSelect" onchange="renderSimpleResults()"></select>
+          <label class="caption row check-inline"><input id="simpleFilterByJdTags" type="checkbox" checked onchange="renderSimpleResults()" /> Show only resumes matching selected JD tag(s)</label>
+          <div class="caption" id="simpleResultScope">Showing all saved matches for selected JD.</div>
         </div>
 
         <div class="metrics3">
@@ -623,11 +923,11 @@ def render_console() -> HTMLResponse:
         </div>
         <div class="section">
           <h3>🧠 Standard Matches</h3>
-          <div class="table-wrap no-scroll" id="simpleStdTable"></div>
+          <div class="table-wrap" id="simpleStdTable"></div>
         </div>
       </div>
 
-      <div class="subpanel" id="panel-results-run">
+      <div class="subpanel run-results-panel" id="panel-results-run">
         <div class="section">
           <label style="font-size:18px; display:block; margin-bottom:6px;">Select Run Batch:</label>
           <select id="legacyRunSelect" onchange="loadLegacyRunResults()"></select>
@@ -649,7 +949,7 @@ def render_console() -> HTMLResponse:
           <label class="caption row check-inline"><input id="legacyRerunMatchTags" type="checkbox" /> 🎯 Auto-match based on JD Tags</label>
           <div class="row3 row">
             <label class="caption check-inline"><input id="legacyRerunForcePass1" type="checkbox" /> Force Re-run Pass 1</label>
-            <label class="caption check-inline"><input id="legacyRerunForceDeep" type="checkbox" /> Force Re-run Deep Scan</label>
+          <label class="caption check-inline"><input id="legacyRerunForceDeep" type="checkbox" onchange="syncLegacyDeepForce()" /> Force Re-run Deep Scan</label>
             <div></div>
           </div>
           <button class="primary row" onclick="queueLegacyBatchRerun()">🚀 Rerun Batch</button>
@@ -663,8 +963,13 @@ def render_console() -> HTMLResponse:
           <div class="metric"><div class="k">Unique Candidates</div><div class="v" id="runUniqueCandidates">0</div></div>
           <div class="metric"><div class="k">Unique Jobs</div><div class="v" id="runUniqueJobs">0</div></div>
         </div>
-        <div class="row" style="max-width:220px;">
-          <button class="secondary" onclick="downloadLegacyCsv()">📥 Download Results CSV</button>
+        <div class="export-block">
+          <div style="font-size:14px; font-weight:600; color:#334155;">Export Run Results</div>
+          <div class="caption">Download selected run data for sharing or audits.</div>
+          <div class="export-actions">
+            <button class="secondary" onclick="downloadLegacyCsv()">📥 Download CSV</button>
+            <button class="secondary" onclick="downloadLegacyJson()">🧾 Download JSON</button>
+          </div>
         </div>
         <div class="section">
           <h3 id="legacyDeepHeading">✨ Deep Matches for Selected Run</h3>
@@ -672,7 +977,7 @@ def render_console() -> HTMLResponse:
         </div>
         <div class="section">
           <h3>🧠 Standard Matches (Pass 1 Only)</h3>
-          <div class="table-wrap no-scroll" id="legacyStdTable"></div>
+          <div class="table-wrap" id="legacyStdTable"></div>
         </div>
         <div class="section row">
           <h3>🔎 Match Evidence Investigator</h3>
@@ -728,7 +1033,7 @@ def render_console() -> HTMLResponse:
         <label class="caption row check-inline"><input id="autoDeep" type="checkbox" /> ✨ Auto-Upgrade to Deep Match</label>
         <div class="row3 row">
           <label class="caption check-inline"><input id="forceRerunPass1" type="checkbox" /> Force Re-run Pass 1 (Standard Match)</label>
-          <label class="caption check-inline"><input id="forceRerunDeep" type="checkbox" /> Force Re-run Deep Scan</label>
+          <label class="caption check-inline"><input id="forceRerunDeep" type="checkbox" onchange="syncAnalysisDeepForce()" /> Force Re-run Deep Scan</label>
           <div></div>
         </div>
         <button class="primary row" onclick="queueScoreMatch()">🚀 START ANALYSIS</button>
@@ -738,15 +1043,39 @@ def render_console() -> HTMLResponse:
       <div class="card">
         <h3>Live Run Logs</h3>
         <div class="caption" id="runCounts">Running: 0 | Queued: 0 | Completed: 0 | Failed: 0</div>
+        <div class="run-stuck-alert" id="runStuckAlert"></div>
+        <div class="run-health" id="runHealthBox">
+          <div class="run-health-title">Selected Run Status</div>
+          <div class="run-health-meta" id="runHealthMeta">No active run selected.</div>
+          <div class="run-health-actions">
+            <button class="danger" id="resumeRunBtn" style="display:none;" onclick="resumeSelectedRun()">Resume Stuck Run</button>
+          </div>
+        </div>
+        <div class="status-bars">
+          <div class="status-bar-card">
+            <div class="status-bar-head">
+              <div class="status-bar-title" id="jobProgressLabel">Current Job</div>
+              <div class="status-bar-meta" id="jobProgressMeta">0%</div>
+            </div>
+            <div class="status-track"><div class="status-fill" id="jobProgressFill"></div></div>
+          </div>
+          <div class="status-bar-card">
+            <div class="status-bar-head">
+              <div class="status-bar-title" id="batchProgressLabel">Batch Progress</div>
+              <div class="status-bar-meta" id="batchProgressMeta">0/0 complete</div>
+            </div>
+            <div class="status-track"><div class="status-fill" id="batchProgressFill"></div></div>
+          </div>
+        </div>
         <div class="row2 row">
-          <select id="selectedRunId" onchange="loadLogs()"></select>
+          <select id="selectedRunId" onchange="onActiveRunSelection()"></select>
           <button class="secondary" onclick="refreshRunPanels()">Refresh Runs & Logs</button>
         </div>
         <div class="logs row" id="runLogs">No active run selected.</div>
         <details class="expander row">
           <summary>History Runs (Completed / Failed)</summary>
           <div class="row2 row">
-            <select id="historyRunId" onchange="loadHistoryLogs()"></select>
+            <select id="historyRunId" onchange="onHistoryRunSelection()"></select>
             <button class="secondary" onclick="loadHistoryLogs()">View Selected History Log</button>
           </div>
           <div class="caption row">Use this dropdown to inspect completed or failed runs.</div>
@@ -920,20 +1249,41 @@ def render_console() -> HTMLResponse:
 
       <div class="subpanel" id="panel-manage-tags">
         <div class="card">
-          <h3>Manage Tags</h3>
+          <h3>Tag Manager</h3>
           <div class="caption" id="tagCount">Total Tags: 0</div>
-          <div class="row2 row">
-            <input id="newTag" placeholder="New Tag" />
-            <button class="primary" onclick="addTag()">Add Tag</button>
-          </div>
-          <div class="row2 row">
-            <select id="renameTagOld"></select>
-            <input id="renameTagNew" placeholder="New Name" />
-          </div>
-          <button class="secondary row" onclick="renameTag()">Rename Tag</button>
-          <div class="row2 row">
-            <select id="deleteTagSel"></select>
-            <button class="danger" onclick="deleteTag()">Delete Tag</button>
+          <div class="tag-manager-grid row">
+            <div class="tag-manager-pane">
+              <div class="tag-pane-title">Tag Directory</div>
+              <div class="caption">Click a tag to prefill rename/delete actions.</div>
+              <input class="row" id="tagSearch" placeholder="Search tags..." oninput="renderTagCatalog()" />
+              <div class="tag-catalog" id="tagCatalog"></div>
+            </div>
+            <div class="tag-manager-pane">
+              <div class="tag-action">
+                <h4>Create Tag</h4>
+                <div class="row2">
+                  <input id="newTag" placeholder="New tag name" />
+                  <button class="primary" onclick="addTag()">Add Tag</button>
+                </div>
+              </div>
+              <div class="tag-action">
+                <h4>Rename Tag</h4>
+                <div class="row2">
+                  <select id="renameTagOld" onchange="prefillRenameTag()"></select>
+                  <input id="renameTagNew" placeholder="New name" />
+                </div>
+                <div class="caption row" id="renameTagImpact">Select a tag to rename.</div>
+                <button class="secondary row" onclick="renameTag()">Rename Tag</button>
+              </div>
+              <div class="tag-action danger-zone">
+                <h4>Delete Tag</h4>
+                <div class="row2">
+                  <select id="deleteTagSel" onchange="updateDeleteTagImpact()"></select>
+                  <button class="danger" onclick="deleteTag()">Delete Tag</button>
+                </div>
+                <div class="caption row" id="deleteTagImpact">Select a tag to see impact.</div>
+              </div>
+            </div>
           </div>
           <div class="msg" id="msgTag"></div>
         </div>
@@ -951,34 +1301,55 @@ def render_console() -> HTMLResponse:
             <select id="verifyTagFilter" onchange="renderVerifySelectors()"></select>
             <select id="verifyItem" onchange="loadVerifyItem()"></select>
           </div>
-          <div class="grid2 row">
-            <div>
-              <h3>Extracted Text</h3>
-              <div class="detail" id="verifyRaw"></div>
-            </div>
+              <div class="grid2 row">
+                <div>
+                  <h3>Extracted Text</h3>
+                  <div class="detail" id="verifyRaw"></div>
+                </div>
             <div>
               <h3>Parsed JSON</h3>
-              <div class="detail" id="verifyJson"></div>
+                  <div class="detail" id="verifyJson"></div>
+                </div>
+              </div>
+              <div class="row2 row">
+                <select id="verifyEvidenceTarget" onchange="runEvidenceCheck()"></select>
+                <button class="secondary" onclick="runEvidenceCheck()">Evidence Check</button>
+              </div>
+              <div class="detail verify-snippet row" id="verifyEvidence">Select an item to inspect evidence.</div>
+              <h3 class="row">Paste sentence to find matching items</h3>
+              <div class="row2">
+                <input id="verifyQuery" placeholder="Sentence or phrase" />
+                <button class="secondary" onclick="runVerifySimilarity()">Find Closest Items</button>
+              </div>
+              <div class="detail row" id="verifyClosest">No query yet.</div>
+              <h3 class="row">Verification Results</h3>
+              <div class="table-wrap no-scroll row" id="verifyTable"></div>
+              <details class="expander row">
+                <summary>🛠️ Debug Tools</summary>
+                <div class="debug-tools">
+                  <div class="row2">
+                    <button class="secondary" onclick="runDebugHealthCheck()">Run Health Check</button>
+                    <button class="secondary" onclick="copyDebugLog()">Copy Debug Log</button>
+                  </div>
+                  <div class="caption row">Recent client-side errors and API failures appear here.</div>
+                  <div class="debug-log row" id="debugLog">Diagnostics ready.</div>
+                </div>
+              </details>
             </div>
           </div>
-          <div class="row2 row">
-            <input id="verifyQuery" placeholder="Find JSON item in raw text" />
-            <button class="secondary" onclick="runEvidenceCheck()">Evidence Check</button>
-          </div>
-          <div class="detail row" id="verifyEvidence"></div>
-        </div>
+        </section>
       </div>
-    </section>
-  </div>
 
 <script>
   const state = {
     jobs: [], resumes: [], tags: [], matches: [], runs: [], legacyRuns: [], legacyRunResults: [], verifyData: null,
+    verifyItems: [],
     selectedLegacyRunId: null,
     selectedLegacyMatchId: null,
     lastAutoRunName: null,
     analysisQueuedRunIds: [],
     analysisAutoPollEnabled: false,
+    logPinnedRunId: null,
     settings: null,
     selectedEditJdId: null,
     selectedEditResId: null,
@@ -986,11 +1357,42 @@ def render_console() -> HTMLResponse:
 
   const q = (id) => document.getElementById(id);
   const tagsFrom = (s) => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
+  const escapeHtml = (s) => String(s || '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  const DEBUG_LOG_LIMIT = 300;
+  const debugLines = [];
+
+  function debugLog(message, level = 'info') {
+    const line = `[${new Date().toISOString()}] [${String(level || 'info').toUpperCase()}] ${String(message || '')}`;
+    debugLines.push(line);
+    if (debugLines.length > DEBUG_LOG_LIMIT) debugLines.shift();
+    const el = q('debugLog');
+    if (el) {
+      el.textContent = debugLines.join('\\n');
+      el.scrollTop = el.scrollHeight;
+    }
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    else console.log(line);
+  }
+
+  window.addEventListener('error', (e) => {
+    const msg = `JS error: ${e.message || 'unknown'} @ ${e.filename || 'inline'}:${e.lineno || 0}:${e.colno || 0}`;
+    debugLog(msg, 'error');
+  });
+
+  window.addEventListener('unhandledrejection', (e) => {
+    const reason = e && e.reason ? (e.reason.message || String(e.reason)) : 'unknown';
+    debugLog(`Unhandled promise rejection: ${reason}`, 'error');
+  });
 
   async function getJson(url) {
     const r = await fetch(url);
     const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    if (!r.ok) {
+      const msg = d.detail || `HTTP ${r.status}`;
+      debugLog(`GET ${url} failed: ${msg}`, 'error');
+      throw new Error(msg);
+    }
     return d;
   }
 
@@ -1002,7 +1404,11 @@ def render_console() -> HTMLResponse:
     });
     let d = {};
     try { d = await r.json(); } catch (e) {}
-    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    if (!r.ok) {
+      const msg = d.detail || `HTTP ${r.status}`;
+      debugLog(`${method} ${url} failed: ${msg}`, 'error');
+      throw new Error(msg);
+    }
     return d;
   }
 
@@ -1011,6 +1417,7 @@ def render_console() -> HTMLResponse:
     if (!el) return;
     el.className = `msg ${ok ? 'ok' : 'err'}`;
     el.textContent = text;
+    if (!ok && text) debugLog(`${id}: ${text}`, 'warn');
   }
 
   function parseJsonText(raw) {
@@ -1192,14 +1599,115 @@ def render_console() -> HTMLResponse:
     el.textContent = text || '';
   }
 
+  function setWriteModeActionMsg(text, ok = true) {
+    const el = q('setWriteModeActionMsg');
+    if (!el) return;
+    el.className = `settings-action-msg${ok ? '' : ' err'}`;
+    el.textContent = text || '';
+  }
+
+  function updateRunStatusBars() {
+    const runs = state.runs || [];
+    const active = runs
+      .filter((r) => r.status === 'queued' || r.status === 'running')
+      .sort((a, b) => {
+        const pa = a.status === 'running' ? 0 : 1;
+        const pb = b.status === 'running' ? 0 : 1;
+        if (pa !== pb) return pa - pb;
+        return Number(b.id || 0) - Number(a.id || 0);
+      });
+
+    const selectedRunId = Number((q('selectedRunId') && q('selectedRunId').value) || 0);
+    const selected = runs.find((r) => Number(r.id) === selectedRunId) || active[0] || null;
+    const jobPct = selected ? Math.max(0, Math.min(100, Number(selected.progress || 0))) : 0;
+    const jobLabel = selected ? `Current Job • #${selected.id} • ${selected.status || 'unknown'}` : 'Current Job • idle';
+    const jobStep = selected ? String(selected.current_step || '-') : 'No active run';
+
+    if (q('jobProgressLabel')) q('jobProgressLabel').textContent = jobLabel;
+    if (q('jobProgressMeta')) q('jobProgressMeta').textContent = `${jobPct}% • ${jobStep}`;
+    if (q('jobProgressFill')) q('jobProgressFill').style.width = `${jobPct}%`;
+
+    const ids = (state.analysisQueuedRunIds || []).map((x) => Number(x)).filter(Boolean);
+    if (ids.length) {
+      const rows = ids.map((id) => runs.find((r) => Number(r.id) === id)).filter(Boolean);
+      const known = rows.length;
+      const total = ids.length;
+      const completed = rows.filter((r) => r.status === 'completed').length;
+      const failed = rows.filter((r) => r.status === 'failed').length;
+      const running = rows.filter((r) => r.status === 'running').length;
+      const queuedKnown = rows.filter((r) => r.status === 'queued').length;
+      const queuedUnknown = Math.max(0, total - known);
+      const queued = queuedKnown + queuedUnknown;
+      const done = completed + failed;
+      const pct = total ? Math.round((done / total) * 100) : 0;
+      const failPart = failed ? `, ${failed} failed` : '';
+      const runPart = running ? `, ${running} running` : '';
+      const queuePart = queued ? `, ${queued} queued` : '';
+
+      if (q('batchProgressLabel')) q('batchProgressLabel').textContent = `Batch Progress • ${total} job(s)`;
+      if (q('batchProgressMeta')) q('batchProgressMeta').textContent = `${completed}/${total} complete${failPart}${runPart}${queuePart}`;
+      if (q('batchProgressFill')) q('batchProgressFill').style.width = `${pct}%`;
+      return;
+    }
+
+    if (q('batchProgressLabel')) q('batchProgressLabel').textContent = 'Batch Progress';
+    if (q('batchProgressMeta')) q('batchProgressMeta').textContent = 'No submitted batch';
+    if (q('batchProgressFill')) q('batchProgressFill').style.width = '0%';
+  }
+
+  function updateRunHealthBanner() {
+    const box = q('runHealthBox');
+    const meta = q('runHealthMeta');
+    const btn = q('resumeRunBtn');
+    if (!box || !meta || !btn) return;
+    const selectedRunId = Number((q('selectedRunId') && q('selectedRunId').value) || 0);
+    const run = (state.runs || []).find((r) => Number(r.id) === selectedRunId) || null;
+    btn.style.display = 'none';
+    box.classList.remove('stuck');
+    if (!run) {
+      meta.textContent = 'No active run selected.';
+      return;
+    }
+    const status = String(run.status || 'unknown');
+    const step = String(run.current_step || '-');
+    const pct = Number(run.progress || 0);
+    const stuck = !!run.is_stuck;
+    const marker = run.last_log_at || run.started_at || run.created_at || '';
+    let lagSec = 0;
+    if (marker) {
+      const ts = Date.parse(String(marker));
+      if (!Number.isNaN(ts)) {
+        lagSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+      }
+    }
+    if (stuck) {
+      const sec = Number(run.stuck_seconds || 0);
+      meta.textContent = `Run #${run.id} appears stuck (${sec}s without progress). Last step: ${step}.`;
+      box.classList.add('stuck');
+      btn.style.display = 'inline-flex';
+      return;
+    }
+    if (status === 'running' && lagSec >= 45) {
+      meta.textContent = `Run #${run.id} is active at ${pct}% • waiting on model response for ~${lagSec}s • step: ${step}`;
+      return;
+    }
+    meta.textContent = `Run #${run.id} is ${status} at ${pct}% • step: ${step}`;
+  }
+
   function updateAnalysisQueueMessage() {
     const ids = (state.analysisQueuedRunIds || []).map((x) => Number(x)).filter(Boolean);
-    if (!ids.length) return;
+    if (!ids.length) {
+      updateRunStatusBars();
+      return;
+    }
 
     const rows = ids
       .map((id) => state.runs.find((r) => Number(r.id) === id))
       .filter(Boolean);
-    if (!rows.length) return;
+    if (!rows.length) {
+      updateRunStatusBars();
+      return;
+    }
 
     const completed = rows.filter((r) => r.status === 'completed').length;
     const running = rows.filter((r) => r.status === 'running').length;
@@ -1210,16 +1718,13 @@ def render_console() -> HTMLResponse:
     const total = ids.length;
     if (completed === total && failed === 0) {
       setMsg('msgMatch', '', true);
-      state.analysisQueuedRunIds = [];
+      updateRunStatusBars();
       return;
     }
 
     const text = `Submitted ${total} analysis job(s): completed ${completed}, running ${running}, queued ${queued}, failed ${failed}. Runs #${idPreview}.`;
     setMsg('msgMatch', text, failed === 0);
-
-    if (completed + failed >= total) {
-      state.analysisQueuedRunIds = [];
-    }
+    updateRunStatusBars();
   }
 
   function startAnalysisAutoPoll() {
@@ -1228,6 +1733,30 @@ def render_console() -> HTMLResponse:
 
   function stopAnalysisAutoPoll() {
     state.analysisAutoPollEnabled = false;
+  }
+
+  function getPinnedRunId() {
+    const pinned = Number(state.logPinnedRunId || 0);
+    if (!pinned) return 0;
+    const exists = (state.runs || []).some((r) => Number(r.id) === pinned);
+    if (!exists) {
+      state.logPinnedRunId = null;
+      return 0;
+    }
+    return pinned;
+  }
+
+  async function onActiveRunSelection() {
+    const id = Number((q('selectedRunId') && q('selectedRunId').value) || 0);
+    state.logPinnedRunId = id || null;
+    if (q('historyRunId') && id) q('historyRunId').value = '';
+    await loadLogs(id || null);
+  }
+
+  async function onHistoryRunSelection() {
+    const id = Number((q('historyRunId') && q('historyRunId').value) || 0);
+    state.logPinnedRunId = id || null;
+    await loadLogs(id || null);
   }
 
   function switchTop(name) {
@@ -1259,13 +1788,10 @@ def render_console() -> HTMLResponse:
   function updateReadOnlyInfo() {
     const writeMode = !!(state.settings && state.settings.write_mode);
     const top = q('topReadOnlyInfo');
-    const results = q('resultsReadOnlyInfo');
     if (writeMode) {
       if (top) top.textContent = '✅ Write mode enabled: local changes can be pushed to shared DB.';
-      if (results) results.textContent = '✅ Write mode enabled: reruns/edits can be synced to shared DB.';
     } else {
       if (top) top.textContent = '🔒 Read-only mode: changes are local only and will NOT sync to the shared DB. Enable Write Mode to share results.';
-      if (results) results.textContent = "🔒 Read-only mode: reruns/edits are local only and won't sync to the shared DB.";
     }
   }
 
@@ -1275,6 +1801,12 @@ def render_console() -> HTMLResponse:
     q('setApiKey').value = s.lm_api_key || '';
     q('setOcrEnabled').checked = !!s.ocr_enabled;
     q('setWriterName').value = q('setWriterName').value || s.writer_default_name || '';
+    const users = Array.isArray(s.writer_users) ? s.writer_users.filter(Boolean) : [];
+    const usersHint = q('setWriterUsersHint');
+    if (usersHint) {
+      usersHint.textContent = users.length ? `Allowed users: ${users.join(', ')}` : '';
+    }
+    if (users.length && !q('setWriterName').value) q('setWriterName').value = users[0];
 
     const lock = s.lock_info || null;
     let lockText = 'Write lock: none';
@@ -1286,6 +1818,23 @@ def render_console() -> HTMLResponse:
       lockText = `Write lock: ${lock.error}`;
     }
     q('setWriteLockInfo').textContent = lockText;
+
+    const statusEl = q('setWriteModeStatus');
+    if (statusEl) {
+      const lockOwner = lock && typeof lock === 'object' ? String(lock.owner || '').trim() : '';
+      if (s.write_mode) {
+        statusEl.className = 'settings-inline-status ok';
+        statusEl.textContent = lockOwner
+          ? `Write Mode Active. Lock owner: ${lockOwner}.`
+          : 'Write Mode Active. You can push local changes.';
+      } else if (s.write_mode_locked) {
+        statusEl.className = 'settings-inline-status err';
+        statusEl.textContent = 'Write Mode Locked by environment.';
+      } else {
+        statusEl.className = 'settings-inline-status warn';
+        statusEl.textContent = 'Read-Only Mode. Enable Write Mode to allow push.';
+      }
+    }
     updateReadOnlyInfo();
   }
 
@@ -1331,8 +1880,10 @@ def render_console() -> HTMLResponse:
         writer_password: q('setWriterPassword').value,
       });
       await loadSettings();
+      setWriteModeActionMsg(`✅ ${r.message || 'Write mode enabled.'}`, true);
       setSettingsMsg(r.message || 'Write mode enabled.');
     } catch (e) {
+      setWriteModeActionMsg(`❌ ${e.message}`, false);
       setSettingsMsg(e.message, false);
     }
   }
@@ -1341,10 +1892,13 @@ def render_console() -> HTMLResponse:
     try {
       const r = await send('/v1/settings/write-mode/disable', 'POST', {
         writer_name: q('setWriterName').value.trim(),
+        writer_password: q('setWriterPassword').value,
       });
       await loadSettings();
+      setWriteModeActionMsg(`✅ ${r.message || 'Write mode disabled.'}`, true);
       setSettingsMsg(r.message || 'Write mode disabled.');
     } catch (e) {
+      setWriteModeActionMsg(`❌ ${e.message}`, false);
       setSettingsMsg(e.message, false);
     }
   }
@@ -1356,8 +1910,10 @@ def render_console() -> HTMLResponse:
         writer_password: q('setWriterPassword').value,
       });
       await loadSettings();
+      setWriteModeActionMsg(`✅ ${r.message || 'Lock released.'}`, true);
       setSettingsMsg(r.message || 'Lock released.');
     } catch (e) {
+      setWriteModeActionMsg(`❌ ${e.message}`, false);
       setSettingsMsg(e.message, false);
     }
   }
@@ -1580,24 +2136,35 @@ def render_console() -> HTMLResponse:
   }
 
   function renderTags() {
+    if (!q('tagCount')) return;
     q('tagCount').textContent = `Total Tags: ${state.tags.length}`;
-    const opts = '<option value="">Select</option>' + state.tags.map((t) => `<option value="${t}">${t}</option>`).join('');
-    q('renameTagOld').innerHTML = opts;
-    q('deleteTagSel').innerHTML = opts;
+    const renameSelect = q('renameTagOld');
+    const deleteSelect = q('deleteTagSel');
+    const prevRenameOld = renameSelect ? renameSelect.value : '';
+    const prevDelete = deleteSelect ? deleteSelect.value : '';
+    const opts = '<option value="">Select</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+    if (renameSelect) renameSelect.innerHTML = opts;
+    if (deleteSelect) deleteSelect.innerHTML = opts;
+    if (renameSelect && prevRenameOld && Array.from(renameSelect.options).some((o) => o.value === prevRenameOld)) {
+      renameSelect.value = prevRenameOld;
+    }
+    if (deleteSelect && prevDelete && Array.from(deleteSelect.options).some((o) => o.value === prevDelete)) {
+      deleteSelect.value = prevDelete;
+    }
     const prevJdAssign = q('jdTagAssign').value;
-    q('jdTagAssign').innerHTML = '<option value="">Select tag</option>' + state.tags.map((t) => `<option value="${t}">${t}</option>`).join('');
+    q('jdTagAssign').innerHTML = '<option value="">Select tag</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
     if (prevJdAssign && Array.from(q('jdTagAssign').options).some((o) => o.value === prevJdAssign)) {
       q('jdTagAssign').value = prevJdAssign;
     }
 
     const prevJdEdit = q('editJdTagSelect').value;
-    q('editJdTagSelect').innerHTML = '<option value="">Select tag</option>' + state.tags.map((t) => `<option value="${t}">${t}</option>`).join('');
+    q('editJdTagSelect').innerHTML = '<option value="">Select tag</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
     if (prevJdEdit && Array.from(q('editJdTagSelect').options).some((o) => o.value === prevJdEdit)) {
       q('editJdTagSelect').value = prevJdEdit;
     }
 
     const prevResAssign = q('resTagAssign').value;
-    q('resTagAssign').innerHTML = '<option value="">Select tag</option>' + state.tags.map((t) => `<option value="${t}">${t}</option>`).join('');
+    q('resTagAssign').innerHTML = '<option value="">Select tag</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
     if (prevResAssign && Array.from(q('resTagAssign').options).some((o) => o.value === prevResAssign)) {
       q('resTagAssign').value = prevResAssign;
     }
@@ -1605,23 +2172,94 @@ def render_console() -> HTMLResponse:
     renderResUploadTagChips();
 
     const prevResEdit = q('editResTagSelect').value;
-    q('editResTagSelect').innerHTML = '<option value="">Select tag</option>' + state.tags.map((t) => `<option value="${t}">${t}</option>`).join('');
+    q('editResTagSelect').innerHTML = '<option value="">Select tag</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
     if (prevResEdit && Array.from(q('editResTagSelect').options).some((o) => o.value === prevResEdit)) {
       q('editResTagSelect').value = prevResEdit;
     }
 
-    q('verifyTagFilter').innerHTML = '<option value="All">All Tags</option>' + state.tags.map((t) => `<option value="${t}">${t}</option>`).join('');
+    q('verifyTagFilter').innerHTML = '<option value="All">All Tags</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
     const resFilter = q('resTagFilter');
     if (resFilter) {
       const selected = resFilter.value || 'All';
-      resFilter.innerHTML = '<option value="All">All Tags</option>' + state.tags.map((t) => `<option value="${t}">${t}</option>`).join('');
+      resFilter.innerHTML = '<option value="All">All Tags</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
       if (Array.from(resFilter.options).some((o) => o.value === selected)) resFilter.value = selected;
     }
+    renderTagCatalog();
+    prefillRenameTag();
+    updateDeleteTagImpact();
+  }
+
+  function getTagUsage(tag) {
+    const normalized = String(tag || '').trim();
+    if (!normalized) return { jd: 0, resume: 0, total: 0 };
+    const jdCount = state.jobs.filter((j) => (j.tags || []).map((t) => String(t).trim()).includes(normalized)).length;
+    const resumeCount = state.resumes.filter((r) => (r.tags || []).map((t) => String(t).trim()).includes(normalized)).length;
+    return { jd: jdCount, resume: resumeCount, total: jdCount + resumeCount };
+  }
+
+  function renderTagCatalog() {
+    const wrap = q('tagCatalog');
+    if (!wrap) return;
+    const search = String((q('tagSearch') && q('tagSearch').value) || '').trim().toLowerCase();
+    const rows = state.tags.filter((t) => !search || String(t).toLowerCase().includes(search));
+    if (!rows.length) {
+      wrap.innerHTML = '<div class="caption" style="padding:10px;">No tags found.</div>';
+      return;
+    }
+    wrap.innerHTML = rows.map((tag) => {
+      const usage = getTagUsage(tag);
+      const encodedTag = encodeURIComponent(String(tag));
+      return `<button class="tag-catalog-item" data-tag="${encodedTag}" onclick="selectTagForActions(decodeURIComponent(this.dataset.tag))">
+        <div>
+          <div class="tag-catalog-name">${escapeHtml(tag)}</div>
+          <div class="tag-catalog-meta">Used in ${usage.jd} JD(s), ${usage.resume} resume(s)</div>
+        </div>
+        <span class="tag-catalog-total">${usage.total}</span>
+      </button>`;
+    }).join('');
+  }
+
+  function selectTagForActions(tag) {
+    if (q('renameTagOld')) q('renameTagOld').value = tag;
+    if (q('deleteTagSel')) q('deleteTagSel').value = tag;
+    prefillRenameTag();
+    updateDeleteTagImpact();
+  }
+
+  function prefillRenameTag() {
+    const old = q('renameTagOld') ? q('renameTagOld').value : '';
+    const impact = q('renameTagImpact');
+    if (!impact) return;
+    if (!old) {
+      impact.textContent = 'Select a tag to rename.';
+      return;
+    }
+    const usage = getTagUsage(old);
+    impact.textContent = `Current tag "${old}" appears in ${usage.jd} JD(s) and ${usage.resume} resume(s).`;
+  }
+
+  function updateDeleteTagImpact() {
+    const name = q('deleteTagSel') ? q('deleteTagSel').value : '';
+    const impact = q('deleteTagImpact');
+    if (!impact) return;
+    if (!name) {
+      impact.textContent = 'Select a tag to see impact.';
+      return;
+    }
+    const usage = getTagUsage(name);
+    impact.textContent = `Deleting "${name}" removes it from ${usage.jd} JD(s) and ${usage.resume} resume(s).`;
   }
 
   function renderRuns() {
     const runs = state.runs || [];
-    const active = runs.filter((r) => r.status === 'queued' || r.status === 'running');
+    const active = runs
+      .filter((r) => r.status === 'queued' || r.status === 'running')
+      .sort((a, b) => {
+        const pa = a.status === 'running' ? 0 : 1;
+        const pb = b.status === 'running' ? 0 : 1;
+        if (pa !== pb) return pa - pb;
+        return Number(b.id || 0) - Number(a.id || 0);
+      });
     const history = runs.filter((r) => r.status === 'completed' || r.status === 'failed');
 
     const activeSel = q('selectedRunId');
@@ -1631,12 +2269,23 @@ def render_console() -> HTMLResponse:
     const prevActive = activeSel.value;
     const prevHistory = historySel.value;
 
-    const fmt = (r) => `#${r.id} | ${r.job_type} | ${r.status} | ${r.progress || 0}% | ${r.current_step || '-'}`;
+    const fmt = (r) => {
+      const stuckTag = r.is_stuck ? ' | STUCK' : '';
+      return `#${r.id} | ${r.job_type} | ${r.status}${stuckTag} | ${r.progress || 0}% | ${r.current_step || '-'}`;
+    };
 
     if (active.length) {
       activeSel.innerHTML = active.map((r) => `<option value="${r.id}">${fmt(r)}</option>`).join('');
+      const stuckActive = active
+        .filter((r) => r.status === 'running' && r.is_stuck)
+        .sort((a, b) => Number(b.stuck_seconds || 0) - Number(a.stuck_seconds || 0));
       if (prevActive && active.some((r) => String(r.id) === String(prevActive))) {
         activeSel.value = String(prevActive);
+      } else if (state.logPinnedRunId && active.some((r) => Number(r.id) === Number(state.logPinnedRunId))) {
+        activeSel.value = String(state.logPinnedRunId);
+      } else {
+        // Focus stuck run first so blocked work is immediately visible.
+        activeSel.value = String((stuckActive[0] || active[0]).id);
       }
     } else {
       activeSel.innerHTML = '<option value="">No active runs</option>';
@@ -1645,7 +2294,9 @@ def render_console() -> HTMLResponse:
     if (history.length) {
       historySel.innerHTML = '<option value="">Select completed/failed run</option>' +
         history.map((r) => `<option value="${r.id}">${fmt(r)}</option>`).join('');
-      if (prevHistory && history.some((r) => String(r.id) === String(prevHistory))) {
+      if (state.logPinnedRunId && history.some((r) => Number(r.id) === Number(state.logPinnedRunId))) {
+        historySel.value = String(state.logPinnedRunId);
+      } else if (prevHistory && history.some((r) => String(r.id) === String(prevHistory))) {
         historySel.value = String(prevHistory);
       }
     } else {
@@ -1656,18 +2307,67 @@ def render_console() -> HTMLResponse:
     const queued = runs.filter((r) => r.status === 'queued').length;
     const completed = runs.filter((r) => r.status === 'completed').length;
     const failed = runs.filter((r) => r.status === 'failed').length;
-    q('runCounts').textContent = `Running: ${running} | Queued: ${queued} | Completed: ${completed} | Failed: ${failed}`;
+    const stuckRuns = runs.filter((r) => r.status === 'running' && r.is_stuck);
+    const stuck = stuckRuns.length;
+    q('runCounts').textContent = `Running: ${running} | Queued: ${queued} | Completed: ${completed} | Failed: ${failed} | Stuck: ${stuck}`;
+    const stuckAlert = q('runStuckAlert');
+    if (stuckAlert) {
+      if (stuck > 0) {
+        const ids = stuckRuns.map((r) => `#${r.id}`).join(', ');
+        stuckAlert.style.display = 'block';
+        stuckAlert.textContent = `Stuck jobs detected: ${ids}. Select one and use "Resume Stuck Run".`;
+      } else {
+        stuckAlert.style.display = 'none';
+        stuckAlert.textContent = '';
+      }
+    }
+    updateRunStatusBars();
+    updateRunHealthBanner();
   }
 
   function renderSimpleResults() {
     const selectedJob = Number(q('simpleJobSelect').value);
-    const rows = state.matches.filter((m) => !selectedJob || Number(m.job_id) === selectedJob);
-    const deep = rows.filter((m) => String(m.strategy || '') === 'Deep');
-    const std = rows.filter((m) => String(m.strategy || '') !== 'Deep');
+    const onlyTagged = !!(q('simpleFilterByJdTags') && q('simpleFilterByJdTags').checked);
+    const allRows = state.matches.filter((m) => !selectedJob || Number(m.job_id) === selectedJob);
+    let rows = allRows;
+    let excludedByTag = 0;
+    if (selectedJob && onlyTagged) {
+      const job = state.jobs.find((j) => Number(j.id) === selectedJob);
+      const jdTags = (job && job.tags) ? job.tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : [];
+      if (jdTags.length) {
+        rows = allRows.filter((m) => {
+          const rs = state.resumes.find((r) => Number(r.id) === Number(m.resume_id));
+          const rsTags = (rs && rs.tags) ? rs.tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : [];
+          return jdTags.some((t) => rsTags.includes(t));
+        });
+        excludedByTag = Math.max(0, allRows.length - rows.length);
+      }
+    }
+    const byScoreDesc = (a, b) => {
+      const sa = Number(a && a.match_score ? a.match_score : 0);
+      const sb = Number(b && b.match_score ? b.match_score : 0);
+      if (sb !== sa) return sb - sa;
+      return String(a && a.candidate_name ? a.candidate_name : '').localeCompare(
+        String(b && b.candidate_name ? b.candidate_name : '')
+      );
+    };
+    const deep = rows.filter((m) => String(m.strategy || '') === 'Deep').sort(byScoreDesc);
+    const std = rows.filter((m) => String(m.strategy || '') !== 'Deep').sort(byScoreDesc);
 
     q('simpleTotal').textContent = String(rows.length);
     q('simpleDeepCount').textContent = String(deep.length);
     q('simpleStdCount').textContent = String(std.length);
+    if (q('simpleResultScope')) {
+      if (!selectedJob) {
+        q('simpleResultScope').textContent = 'Showing all saved matches.';
+      } else if (onlyTagged && excludedByTag > 0) {
+        q('simpleResultScope').textContent = `Showing tag-compatible matches for selected JD. ${excludedByTag} historical match(es) hidden by tag filter.`;
+      } else if (onlyTagged) {
+        q('simpleResultScope').textContent = 'Showing tag-compatible matches for selected JD.';
+      } else {
+        q('simpleResultScope').textContent = 'Showing all saved matches for selected JD (including historical).';
+      }
+    }
 
     const renderTable = (arr) => `<table><thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th></tr></thead><tbody>` +
       arr.map((r) => `<tr><td>${r.candidate_name || ''}</td><td><b>${r.match_score}%</b></td><td>${decisionBadge(r.decision)}</td><td>${r.reasoning || ''}</td></tr>`).join('') +
@@ -1679,8 +2379,16 @@ def render_console() -> HTMLResponse:
 
   function renderLegacyRunResults() {
     const rows = state.legacyRunResults || [];
-    const deep = rows.filter((r) => String(r.strategy || '') === 'Deep');
-    const std = rows.filter((r) => String(r.strategy || '') !== 'Deep');
+    const byScoreDesc = (a, b) => {
+      const sa = Number(a && a.match_score ? a.match_score : 0);
+      const sb = Number(b && b.match_score ? b.match_score : 0);
+      if (sb !== sa) return sb - sa;
+      return String(a && a.candidate_name ? a.candidate_name : '').localeCompare(
+        String(b && b.candidate_name ? b.candidate_name : '')
+      );
+    };
+    const deep = rows.filter((r) => String(r.strategy || '') === 'Deep').sort(byScoreDesc);
+    const std = rows.filter((r) => String(r.strategy || '') !== 'Deep').sort(byScoreDesc);
 
     q('runTotal').textContent = String(rows.length);
     q('runDeepCount').textContent = String(deep.length);
@@ -1734,7 +2442,22 @@ def render_console() -> HTMLResponse:
     await showLegacyMatch(matchId);
   }
 
+  function syncAnalysisDeepForce() {
+    const forceDeep = q('forceRerunDeep');
+    const autoDeep = q('autoDeep');
+    if (!forceDeep || !autoDeep) return;
+    if (forceDeep.checked) autoDeep.checked = true;
+  }
+
+  function syncLegacyDeepForce() {
+    const forceDeep = q('legacyRerunForceDeep');
+    const autoDeep = q('legacyRerunAutoDeep');
+    if (!forceDeep || !autoDeep) return;
+    if (forceDeep.checked) autoDeep.checked = true;
+  }
+
   function getLegacyRerunConfig() {
+    syncLegacyDeepForce();
     return {
       threshold: Number(q('legacyRerunThreshold').value || 50),
       autoDeep: !!q('legacyRerunAutoDeep').checked,
@@ -1871,7 +2594,6 @@ def render_console() -> HTMLResponse:
     const analysisActive = q('panel-analysis').classList.contains('active');
     if (!analysisActive) return;
 
-    const selectedRunId = Number(q('selectedRunId').value || 0);
     const previousRuns = state.runs || [];
     const hadActive = previousRuns.some((r) => r.status === 'queued' || r.status === 'running');
     const previousById = new Map(previousRuns.map((r) => [Number(r.id), r]));
@@ -1884,10 +2606,12 @@ def render_console() -> HTMLResponse:
     renderRuns();
     updateAnalysisQueueMessage();
 
-    const selected = selectedRunId ? runs.find((r) => Number(r.id) === selectedRunId) : null;
-    const selectedActive = selected ? (selected.status === 'queued' || selected.status === 'running') : false;
-    if (selectedRunId && (selectedActive || runChanged)) {
-      await loadLogs();
+    const pinnedRunId = getPinnedRunId();
+    if (pinnedRunId) {
+      await loadLogs(pinnedRunId);
+    } else {
+      const selectedRunId = Number(q('selectedRunId').value || 0);
+      if (selectedRunId) await loadLogs(selectedRunId);
     }
 
     if (!runChanged) return;
@@ -1920,13 +2644,15 @@ def render_console() -> HTMLResponse:
     state.runs = runs;
     renderRuns();
     updateAnalysisQueueMessage();
-    const activeRunId = Number(q('selectedRunId').value || 0);
-    if (activeRunId) {
-      await loadLogs(activeRunId);
+    const pinnedRunId = getPinnedRunId();
+    if (pinnedRunId) {
+      await loadLogs(pinnedRunId);
       return;
     }
+    const activeRunId = Number(q('selectedRunId').value || 0);
+    if (activeRunId) return loadLogs(activeRunId);
     const historyRunId = Number(q('historyRunId').value || 0);
-    if (historyRunId) await loadLogs(historyRunId);
+    if (historyRunId) return loadLogs(historyRunId);
   }
 
   async function loadLegacyRunResults(preserveSelection = false) {
@@ -1964,7 +2690,10 @@ def render_console() -> HTMLResponse:
 
   function downloadLegacyCsv() {
     const rows = state.legacyRunResults || [];
-    if (!rows.length) return;
+    if (!rows.length) {
+      setMsg('msgLegacyRerun', 'No rows available for export.', false);
+      return;
+    }
     const header = ['id', 'candidate_name', 'job_name', 'resume_name', 'match_score', 'standard_score', 'decision', 'strategy', 'reasoning'];
     const csv = [
       header.join(','),
@@ -1979,11 +2708,52 @@ def render_console() -> HTMLResponse:
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `run_results_${q('legacyRunSelect').value || 'selected'}.csv`;
+    const runId = Number(q('legacyRunSelect').value || 0);
+    const runMeta = (state.legacyRuns || []).find((r) => Number(r.id) === runId) || null;
+    const safeName = String((runMeta && runMeta.name) || `run_${runId || 'selected'}`)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 60) || 'run_selected';
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    a.download = `${safeName}_${stamp}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    setMsg('msgLegacyRerun', `CSV exported (${rows.length} rows).`);
+  }
+
+  function downloadLegacyJson() {
+    const rows = state.legacyRunResults || [];
+    if (!rows.length) {
+      setMsg('msgLegacyRerun', 'No rows available for export.', false);
+      return;
+    }
+    const runId = Number(q('legacyRunSelect').value || 0);
+    const runMeta = (state.legacyRuns || []).find((r) => Number(r.id) === runId) || null;
+    const payload = {
+      exported_at: new Date().toISOString(),
+      run: runMeta || { id: runId || null },
+      total_rows: rows.length,
+      results: rows,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = String((runMeta && runMeta.name) || `run_${runId || 'selected'}`)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 60) || 'run_selected';
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    a.download = `${safeName}_${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setMsg('msgLegacyRerun', `JSON exported (${rows.length} rows).`);
   }
 
   async function showLegacyMatch(matchId, preserve = false) {
@@ -2240,6 +3010,7 @@ def render_console() -> HTMLResponse:
       if (!jobIds.length || !resumeIds.length) throw new Error('Select at least one Job and one Resume');
 
       const threshold = Number(q('threshold').value || 50);
+      syncAnalysisDeepForce();
       const autoDeep = q('autoDeep').checked;
       const runName = q('runName').value.trim() || null;
       const forceRerunPass1 = q('forceRerunPass1').checked;
@@ -2301,7 +3072,9 @@ def render_console() -> HTMLResponse:
     }
     try {
       const logs = await getJson(`/v1/runs/${id}/logs`);
-      q('runLogs').textContent = logs.map((l) => `[${l.created_at}] ${String(l.level || '').toUpperCase()} ${l.message}`).join(String.fromCharCode(10));
+      const el = q('runLogs');
+      el.textContent = logs.map((l) => `[${l.created_at}] ${String(l.level || '').toUpperCase()} ${l.message}`).join(String.fromCharCode(10));
+      el.scrollTop = el.scrollHeight;
     } catch (e) {
       q('runLogs').textContent = e.message;
     }
@@ -2310,7 +3083,21 @@ def render_console() -> HTMLResponse:
   async function loadHistoryLogs() {
     const id = Number(q('historyRunId').value || 0);
     if (!id) return;
+    state.logPinnedRunId = id;
     await loadLogs(id);
+  }
+
+  async function resumeSelectedRun() {
+    try {
+      const runId = Number((q('selectedRunId') && q('selectedRunId').value) || 0);
+      if (!runId) throw new Error('Select a running run first.');
+      const r = await send(`/v1/runs/${runId}/resume`, 'POST', {});
+      setMsg('msgMatch', r.message || `Run ${runId} resumed.`);
+      await refreshRunPanels();
+      await loadLogs(runId);
+    } catch (e) {
+      setMsg('msgMatch', e.message, false);
+    }
   }
 
   async function selectJD(id) {
@@ -2419,6 +3206,9 @@ def render_console() -> HTMLResponse:
     try {
       const name = q('newTag').value.trim();
       if (!name) throw new Error('Enter tag name');
+      if (state.tags.some((t) => String(t).toLowerCase() === name.toLowerCase())) {
+        throw new Error('Tag already exists');
+      }
       await send('/v1/tags', 'POST', { name });
       q('newTag').value = '';
       setMsg('msgTag', 'Tag added');
@@ -2433,6 +3223,10 @@ def render_console() -> HTMLResponse:
       const old = q('renameTagOld').value;
       const nw = q('renameTagNew').value.trim();
       if (!old || !nw) throw new Error('Select old and enter new name');
+      if (old === nw) throw new Error('New name must be different');
+      if (state.tags.some((t) => String(t).toLowerCase() === nw.toLowerCase())) {
+        throw new Error('Tag with this name already exists');
+      }
       await send('/v1/tags/rename', 'PUT', { old, new: nw });
       q('renameTagNew').value = '';
       setMsg('msgTag', 'Tag renamed');
@@ -2446,6 +3240,9 @@ def render_console() -> HTMLResponse:
     try {
       const name = q('deleteTagSel').value;
       if (!name) throw new Error('Select tag');
+      const usage = getTagUsage(name);
+      const ok = confirm(`Delete tag "${name}"?\n\nIt will be removed from ${usage.jd} JD(s) and ${usage.resume} resume(s).`);
+      if (!ok) return;
       const r = await fetch(`/v1/tags/${encodeURIComponent(name)}`, { method: 'DELETE' });
       if (!r.ok) throw new Error('Delete failed');
       setMsg('msgTag', 'Tag deleted');
@@ -2458,55 +3255,267 @@ def render_console() -> HTMLResponse:
   function renderVerifySelectors() {
     const mode = q('verifyMode').value;
     const tag = q('verifyTagFilter').value || 'All';
+    let rows = [];
     if (mode === 'job') {
-      const rows = tag === 'All'
+      rows = tag === 'All'
         ? state.jobs
         : state.jobs.filter((x) => (x.tags || []).map((t) => String(t).trim()).includes(tag));
-      fillSelect('verifyItem', rows, (x) => x.filename);
+      fillSelect('verifyItem', rows, (x) => x.filename, false);
     } else {
-      const rows = tag === 'All'
+      rows = tag === 'All'
         ? state.resumes
         : state.resumes.filter((x) => (x.tags || []).map((t) => String(t).trim()).includes(tag));
-      fillSelect('verifyItem', rows, (x) => x.filename);
+      fillSelect('verifyItem', rows, (x) => x.filename, false);
+    }
+    if (!rows.length) {
+      state.verifyData = null;
+      state.verifyItems = [];
+      q('verifyRaw').textContent = mode === 'job' ? 'No Job Descriptions available.' : 'No Resumes available.';
+      q('verifyJson').textContent = '';
+      q('verifyEvidence').textContent = 'Select an item to inspect evidence.';
+      q('verifyClosest').textContent = 'No query yet.';
+      renderVerifyEvidenceTargets();
+      renderVerifyTable();
+      return;
     }
     loadVerifyItem();
+  }
+
+  function parseVerifyJson(raw) {
+    if (raw === null || raw === undefined) return {};
+    if (typeof raw === 'string') {
+      const text = raw.trim();
+      if (!text) return {};
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        return {};
+      }
+    }
+    return raw;
+  }
+
+  function normalizeVerifyText(input) {
+    if (!input) return '';
+    let s = String(input);
+    s = s.normalize('NFKC');
+    s = s.replace(/\u2022/g, ' ');
+    s = s.replace(/[\u2010\u2011\u2012\u2013\u2014]/g, '-');
+    s = s.replace(/\s+/g, ' ');
+    s = s.replace(/\s*-\s*/g, '-');
+    s = s.replace(/\s*,\s*/g, ', ');
+    s = s.replace(/\(\s*/g, '(');
+    s = s.replace(/\s*\)/g, ')');
+    return s.toLowerCase().trim();
+  }
+
+  function findEvidenceSnippet(text, query, window = 80) {
+    if (!text || !query) return '';
+    const normText = normalizeVerifyText(text);
+    const normQuery = normalizeVerifyText(query);
+    if (!normText || !normQuery) return '';
+    let idx = normText.indexOf(normQuery);
+    if (idx < 0) {
+      const compactText = normText.replace(/[^a-z0-9]/g, '');
+      const compactQuery = normQuery.replace(/[^a-z0-9]/g, '');
+      idx = compactText.indexOf(compactQuery);
+      if (idx < 0) {
+        const tokens = normQuery.split(/\W+/).filter((t) => t.length > 3);
+        const textTokens = normText.split(/\W+/).filter((t) => t.length > 3);
+        if (!tokens.length || !textTokens.length) return '';
+        let matched = 0;
+        tokens.forEach((qt) => {
+          const ok = textTokens.some((tt) => qt === tt || qt.startsWith(tt.slice(0, 4)) || tt.startsWith(qt.slice(0, 4)));
+          if (ok) matched += 1;
+        });
+        const coverage = matched / Math.max(1, tokens.length);
+        return coverage >= 0.6 ? normQuery : '';
+      }
+      return normQuery;
+    }
+    const start = Math.max(0, idx - window);
+    const end = Math.min(normText.length, idx + normQuery.length + window);
+    return normText.slice(start, end);
+  }
+
+  function escapeRegExp(s) {
+    const special = '\\\\^$*+?.()|{}[]';
+    let out = '';
+    for (const ch of String(s || '')) {
+      out += special.includes(ch) ? `\\${ch}` : ch;
+    }
+    return out;
+  }
+
+  function highlightVerifyText(text, query) {
+    if (!text) return '';
+    if (!query) return escapeHtml(text);
+    const pattern = new RegExp(escapeRegExp(query), 'ig');
+    return escapeHtml(text).replace(pattern, (m) => `<mark>${m}</mark>`);
+  }
+
+  function rankItemsByQuery(items, query) {
+    const qv = String(query || '').trim().toLowerCase();
+    if (!qv) return [];
+    const qTokens = qv.split(/\s+/).filter(Boolean);
+    const scored = [];
+    items.forEach((item) => {
+      if (!item || typeof item !== 'string') return;
+      const lower = item.toLowerCase();
+      let score = 0;
+      if (lower.includes(qv)) score += 3;
+      qTokens.forEach((tok) => {
+        if (lower.includes(tok)) score += 1;
+      });
+      if (score > 0) scored.push({ score, item });
+    });
+    return scored.sort((a, b) => b.score - a.score).map((x) => x.item);
+  }
+
+  function extractVerifyItems(mode, data) {
+    if (!data) return [];
+    if (mode === 'job') {
+      const criteria = parseVerifyJson(data.criteria);
+      const sections = ['must_have_skills', 'nice_to_have_skills', 'education_requirements', 'domain_knowledge', 'soft_skills', 'key_responsibilities'];
+      const out = [];
+      sections.forEach((section) => {
+        const rows = criteria && Array.isArray(criteria[section]) ? criteria[section] : [];
+        rows.forEach((item) => {
+          if (typeof item === 'string' && item.trim()) out.push({ section, item: item.trim() });
+        });
+      });
+      return out;
+    }
+    const profile = parseVerifyJson(data.profile);
+    const skills = profile && Array.isArray(profile.extracted_skills) ? profile.extracted_skills : [];
+    return skills.filter((s) => typeof s === 'string' && s.trim()).map((item) => ({ section: 'extracted_skills', item: item.trim() }));
+  }
+
+  function renderVerifyEvidenceTargets() {
+    const mode = q('verifyMode').value;
+    const select = q('verifyEvidenceTarget');
+    if (!select) return;
+    const items = state.verifyItems || [];
+    if (!items.length) {
+      select.innerHTML = '<option value="">No items found to verify</option>';
+      return;
+    }
+    select.innerHTML = items.map((row, idx) => {
+      const label = mode === 'job' ? `${row.section}: ${row.item}` : row.item;
+      return `<option value="${idx}">${escapeHtml(label)}</option>`;
+    }).join('');
+  }
+
+  function renderVerifyTable() {
+    const wrap = q('verifyTable');
+    if (!wrap) return;
+    const rawText = String((state.verifyData && state.verifyData.content) || '');
+    const rows = (state.verifyItems || []).map((row) => {
+      const evidence = findEvidenceSnippet(rawText, row.item);
+      const status = evidence ? 'Found' : 'Not Found';
+      return {
+        section: row.section,
+        item: row.item,
+        status,
+        evidence: evidence ? evidence.slice(0, 200) : '',
+      };
+    });
+    if (!rows.length) {
+      wrap.innerHTML = '<div class="caption" style="padding:10px;">No items found to verify.</div>';
+      return;
+    }
+    wrap.innerHTML =
+      '<table><thead><tr><th>Section</th><th>Item</th><th>Status</th><th>Evidence</th></tr></thead><tbody>' +
+      rows.map((r) => `<tr><td>${escapeHtml(r.section)}</td><td>${escapeHtml(r.item)}</td><td>${escapeHtml(r.status)}</td><td>${escapeHtml(r.evidence)}</td></tr>`).join('') +
+      '</tbody></table>';
   }
 
   async function loadVerifyItem() {
     const mode = q('verifyMode').value;
     const id = Number(q('verifyItem').value);
     if (!id) {
+      state.verifyData = null;
+      state.verifyItems = [];
       q('verifyRaw').textContent = '';
       q('verifyJson').textContent = '';
+      q('verifyEvidence').textContent = 'Select an item to inspect evidence.';
+      q('verifyClosest').textContent = 'No query yet.';
+      renderVerifyEvidenceTargets();
+      renderVerifyTable();
       return;
     }
     try {
       const d = mode === 'job' ? await getJson(`/v1/jobs/${id}`) : await getJson(`/v1/resumes/${id}`);
       state.verifyData = d;
+      state.verifyItems = extractVerifyItems(mode, d);
       q('verifyRaw').textContent = d.content || '';
       const parsed = mode === 'job' ? d.criteria : d.profile;
       q('verifyJson').textContent = typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2);
+      q('verifyEvidence').textContent = 'Select an item to inspect evidence.';
+      q('verifyClosest').textContent = 'No query yet.';
+      renderVerifyEvidenceTargets();
+      renderVerifyTable();
     } catch (e) {
       q('verifyRaw').textContent = e.message;
       q('verifyJson').textContent = '';
+      q('verifyEvidence').textContent = '';
+      q('verifyClosest').textContent = '';
+      state.verifyData = null;
+      state.verifyItems = [];
+      renderVerifyEvidenceTargets();
+      renderVerifyTable();
     }
   }
 
   function runEvidenceCheck() {
-    const query = String(q('verifyQuery').value || '').trim().toLowerCase();
-    if (!query) {
-      q('verifyEvidence').textContent = 'Enter a query.';
+    const idx = Number(q('verifyEvidenceTarget').value);
+    const row = (state.verifyItems || [])[idx];
+    if (!row) {
+      q('verifyEvidence').textContent = 'No item selected.';
       return;
     }
-    const text = String((state.verifyData && state.verifyData.content) || '').toLowerCase();
-    const idx = text.indexOf(query);
-    if (idx < 0) {
+    const text = String((state.verifyData && state.verifyData.content) || '');
+    const evidence = findEvidenceSnippet(text, row.item);
+    if (!evidence) {
       q('verifyEvidence').textContent = 'No exact evidence found in raw text.';
       return;
     }
-    const start = Math.max(0, idx - 120);
-    const end = Math.min(text.length, idx + query.length + 120);
-    q('verifyEvidence').textContent = text.slice(start, end);
+    q('verifyEvidence').innerHTML = highlightVerifyText(evidence, row.item);
+  }
+
+  function runVerifySimilarity() {
+    const query = String(q('verifyQuery').value || '').trim();
+    if (!query) {
+      q('verifyClosest').textContent = 'Enter a sentence or phrase.';
+      return;
+    }
+    const items = (state.verifyItems || []).map((x) => x.item);
+    const ranked = rankItemsByQuery(items, query);
+    if (!ranked.length) {
+      q('verifyClosest').textContent = 'No similar items found.';
+      return;
+    }
+    q('verifyClosest').innerHTML = `<ul class="verify-list">${ranked.slice(0, 10).map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
+  }
+
+  async function runDebugHealthCheck() {
+    try {
+      const r = await getJson('/health');
+      debugLog(`/health ok: ${JSON.stringify(r)}`);
+    } catch (e) {
+      debugLog(`/health failed: ${e.message}`, 'error');
+    }
+  }
+
+  function copyDebugLog() {
+    const payload = debugLines.join('\\n') || 'No debug log entries.';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(payload)
+        .then(() => debugLog('Debug log copied to clipboard.'))
+        .catch((e) => debugLog(`Clipboard copy failed: ${e.message}`, 'error'));
+      return;
+    }
+    debugLog('Clipboard API unavailable; copy manually from Debug Tools panel.', 'warn');
   }
 
   async function boot() {
@@ -2517,7 +3526,9 @@ def render_console() -> HTMLResponse:
         startAnalysisAutoPoll();
       }
       renderVerifySelectors();
+      debugLog('Boot complete.');
     } catch (e) {
+      debugLog(`Boot failed: ${e.message}`, 'error');
       console.error(e);
     }
   }

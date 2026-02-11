@@ -75,6 +75,9 @@ class RunOut(BaseModel):
     created_at: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
+    last_log_at: str | None = None
+    is_stuck: bool = False
+    stuck_seconds: int = 0
 
 
 class RunLogOut(BaseModel):

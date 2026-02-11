@@ -12,26 +12,28 @@ def read_last_parse_error(log_path=None, max_chars=4000):
             content = f.read()
         if not content.strip():
             return None
-        # Entries are separated by blank lines; take the last non-empty block
-        blocks = [b for b in content.strip().split("\n\n") if b.strip()]
-        last = blocks[-1] if blocks else ""
-        if "PARSE_FAILURE" not in last:
-            return {"raw": last[-max_chars:], "meta": "PARSE_FAILURE not found"}
-        lines = last.splitlines()
-        meta = lines[0] if lines else ""
+        lines = content.splitlines()
+        meta_idx = None
+        for i in range(len(lines) - 1, -1, -1):
+            if "PARSE_FAILURE" in lines[i]:
+                meta_idx = i
+                break
+        if meta_idx is None:
+            return {"raw": content[-max_chars:], "meta": "PARSE_FAILURE not found", "path": log_path}
+        meta = lines[meta_idx]
         raw_start = None
         raw_end = None
-        for i, line in enumerate(lines):
-            if line.strip() == "----- RAW START -----":
+        for i in range(meta_idx + 1, len(lines)):
+            if lines[i].strip() == "----- RAW START -----":
                 raw_start = i + 1
-            if line.strip() == "----- RAW END -----":
+                continue
+            if lines[i].strip() == "----- RAW END -----" and raw_start is not None:
                 raw_end = i
                 break
         raw = ""
-        if raw_start is not None and raw_end is not None and raw_end >= raw_start:
-            raw = "\n".join(lines[raw_start:raw_end])
-        else:
-            raw = "\n".join(lines[1:])
+        if raw_start is not None:
+            end = raw_end if raw_end is not None else len(lines)
+            raw = "\n".join(lines[raw_start:end])
         if len(raw) > max_chars:
             raw = raw[-max_chars:]
         return {"meta": meta, "raw": raw, "path": log_path}

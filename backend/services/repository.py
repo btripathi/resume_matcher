@@ -1,4 +1,5 @@
 import json
+import datetime as dt
 from dataclasses import dataclass
 
 import pandas as pd
@@ -25,6 +26,25 @@ def _join_tags(tags: list[str]) -> str | None:
         seen.add(key)
         cleaned.append(value)
     return ",".join(cleaned) if cleaned else None
+
+
+def _candidate_name_from_profile(profile_raw, fallback_name: str | None = None, resume_filename: str | None = None) -> str:
+    parsed = {}
+    if isinstance(profile_raw, dict):
+        parsed = profile_raw
+    elif isinstance(profile_raw, str):
+        try:
+            parsed = json.loads(profile_raw)
+        except Exception:
+            parsed = {}
+    if isinstance(parsed, dict):
+        name = str(parsed.get("candidate_name", "") or "").strip()
+        if name:
+            return name
+    fallback = str(fallback_name or "").strip()
+    if fallback:
+        return fallback
+    return str(resume_filename or "").strip()
 
 
 @dataclass
@@ -131,9 +151,12 @@ class Repository:
 
     def get_match(self, match_id: int) -> dict | None:
         df = self.db.fetch_dataframe(
-            "SELECT id, job_id, resume_id, candidate_name, match_score, standard_score, "
-            "decision, reasoning, standard_reasoning, missing_skills, match_details, strategy "
-            f"FROM matches WHERE id = {int(match_id)} LIMIT 1"
+            "SELECT m.id, m.job_id, m.resume_id, m.candidate_name, m.match_score, m.standard_score, "
+            "m.decision, m.reasoning, m.standard_reasoning, m.missing_skills, m.match_details, m.strategy, "
+            "r.profile AS resume_profile, r.filename AS resume_name "
+            "FROM matches m "
+            "LEFT JOIN resumes r ON r.id = m.resume_id "
+            f"WHERE m.id = {int(match_id)} LIMIT 1"
         )
         if df.empty:
             return None
@@ -142,7 +165,11 @@ class Repository:
             "id": int(row["id"]),
             "job_id": int(row["job_id"]),
             "resume_id": int(row["resume_id"]),
-            "candidate_name": row["candidate_name"],
+            "candidate_name": _candidate_name_from_profile(
+                row.get("resume_profile"),
+                row.get("candidate_name"),
+                row.get("resume_name"),
+            ),
             "match_score": int(row["match_score"] or 0),
             "standard_score": int(row["standard_score"]) if pd.notna(row["standard_score"]) else None,
             "decision": row["decision"] or "",
@@ -217,8 +244,11 @@ class Repository:
 
     def list_matches(self, limit: int = 200) -> list[dict]:
         df = self.db.fetch_dataframe(
-            "SELECT id, job_id, resume_id, candidate_name, match_score, strategy, decision, reasoning "
-            "FROM matches ORDER BY id DESC LIMIT "
+            "SELECT m.id, m.job_id, m.resume_id, m.candidate_name, m.match_score, m.strategy, m.decision, m.reasoning, "
+            "r.profile AS resume_profile, r.filename AS resume_name "
+            "FROM matches m "
+            "LEFT JOIN resumes r ON r.id = m.resume_id "
+            "ORDER BY m.id DESC LIMIT "
             f"{int(limit)}"
         )
         rows = []
@@ -228,7 +258,11 @@ class Repository:
                     "id": int(row["id"]),
                     "job_id": int(row["job_id"]),
                     "resume_id": int(row["resume_id"]),
-                    "candidate_name": row["candidate_name"] or "",
+                    "candidate_name": _candidate_name_from_profile(
+                        row.get("resume_profile"),
+                        row.get("candidate_name"),
+                        row.get("resume_name"),
+                    ),
                     "match_score": int(row["match_score"] or 0),
                     "strategy": row["strategy"] or "Standard",
                     "decision": row["decision"] or "",
@@ -239,9 +273,12 @@ class Repository:
 
     def get_match_summary(self, match_id: int) -> dict | None:
         df = self.db.fetch_dataframe(
-            "SELECT id, job_id, resume_id, candidate_name, match_score, standard_score, decision, "
-            "reasoning, standard_reasoning, strategy, match_details, missing_skills "
-            f"FROM matches WHERE id = {int(match_id)} LIMIT 1"
+            "SELECT m.id, m.job_id, m.resume_id, m.candidate_name, m.match_score, m.standard_score, m.decision, "
+            "m.reasoning, m.standard_reasoning, m.strategy, m.match_details, m.missing_skills, "
+            "r.profile AS resume_profile, r.filename AS resume_name "
+            "FROM matches m "
+            "LEFT JOIN resumes r ON r.id = m.resume_id "
+            f"WHERE m.id = {int(match_id)} LIMIT 1"
         )
         if df.empty:
             return None
@@ -250,7 +287,11 @@ class Repository:
             "id": int(row["id"]),
             "job_id": int(row["job_id"]),
             "resume_id": int(row["resume_id"]),
-            "candidate_name": row["candidate_name"] or "",
+            "candidate_name": _candidate_name_from_profile(
+                row.get("resume_profile"),
+                row.get("candidate_name"),
+                row.get("resume_name"),
+            ),
             "match_score": int(row["match_score"] or 0),
             "standard_score": int(row["standard_score"]) if pd.notna(row["standard_score"]) else None,
             "decision": row["decision"] or "",
@@ -281,7 +322,7 @@ class Repository:
     def list_legacy_run_results(self, run_id: int) -> list[dict]:
         df = self.db.fetch_dataframe(
             "SELECT m.id, m.job_id, m.resume_id, m.candidate_name, m.match_score, m.standard_score, m.decision, m.reasoning, "
-            "m.strategy, j.filename AS job_name, r.filename AS resume_name "
+            "m.strategy, j.filename AS job_name, r.filename AS resume_name, r.profile AS resume_profile "
             "FROM matches m "
             "JOIN run_matches rm ON rm.match_id = m.id "
             "JOIN jobs j ON j.id = m.job_id "
@@ -298,7 +339,11 @@ class Repository:
                     "resume_id": int(row["resume_id"]),
                     "job_name": row["job_name"] or "",
                     "resume_name": row["resume_name"] or "",
-                    "candidate_name": row["candidate_name"] or "",
+                    "candidate_name": _candidate_name_from_profile(
+                        row.get("resume_profile"),
+                        row.get("candidate_name"),
+                        row.get("resume_name"),
+                    ),
                     "match_score": int(row["match_score"] or 0),
                     "standard_score": int(row["standard_score"]) if pd.notna(row["standard_score"]) else None,
                     "decision": row["decision"] or "",
@@ -312,10 +357,48 @@ class Repository:
         return int(self.db.enqueue_job_run(job_type, payload))
 
     def list_runs(self, limit: int = 100) -> list[dict]:
-        return self.db.list_job_runs(limit=limit)
+        rows = self.db.list_job_runs(limit=limit)
+        now = dt.datetime.now()
+        stale_after_sec = 180
+        for row in rows:
+            row["is_stuck"] = False
+            row["stuck_seconds"] = 0
+            if row.get("status") != "running":
+                continue
+            last_marker = row.get("last_log_at") or row.get("started_at") or row.get("created_at")
+            if not last_marker:
+                continue
+            try:
+                marker_dt = dt.datetime.fromisoformat(str(last_marker))
+            except Exception:
+                continue
+            delta = int((now - marker_dt).total_seconds())
+            row["stuck_seconds"] = max(0, delta)
+            row["is_stuck"] = delta >= stale_after_sec
+        return rows
 
     def get_run(self, run_id: int) -> dict | None:
-        return self.db.get_job_run(run_id)
+        row = self.db.get_job_run(run_id)
+        if not row:
+            return None
+        if row.get("status") == "running":
+            now = dt.datetime.now()
+            marker = row.get("last_log_at") or row.get("started_at") or row.get("created_at")
+            stuck = False
+            stuck_sec = 0
+            if marker:
+                try:
+                    marker_dt = dt.datetime.fromisoformat(str(marker))
+                    stuck_sec = max(0, int((now - marker_dt).total_seconds()))
+                    stuck = stuck_sec >= 180
+                except Exception:
+                    pass
+            row["is_stuck"] = stuck
+            row["stuck_seconds"] = stuck_sec
+        else:
+            row["is_stuck"] = False
+            row["stuck_seconds"] = 0
+        return row
 
     def claim_next_run(self) -> dict | None:
         return self.db.claim_next_job_run()
@@ -323,11 +406,20 @@ class Repository:
     def update_run_progress(self, run_id: int, progress: int, current_step: str) -> None:
         self.db.update_job_run_progress(run_id=run_id, progress=progress, current_step=current_step)
 
+    def update_run_payload(self, run_id: int, payload: dict) -> None:
+        self.db.update_job_run_payload(run_id=run_id, payload=payload)
+
+    def update_run_result(self, run_id: int, result: dict) -> None:
+        self.db.update_job_run_result(run_id=run_id, result=result)
+
     def complete_run(self, run_id: int, result: dict) -> None:
         self.db.complete_job_run(run_id=run_id, result=result)
 
     def fail_run(self, run_id: int, error: str) -> None:
         self.db.fail_job_run(run_id=run_id, error_message=error)
+
+    def requeue_run(self, run_id: int, payload: dict | None = None, current_step: str = "requeued") -> bool:
+        return bool(self.db.requeue_job_run(run_id=run_id, payload=payload, current_step=current_step))
 
     def add_run_log(self, run_id: int, level: str, message: str) -> int:
         return self.db.append_job_run_log(run_id=run_id, level=level, message=message)

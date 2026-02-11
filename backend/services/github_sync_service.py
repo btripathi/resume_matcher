@@ -55,9 +55,26 @@ class GitHubSyncService:
     def writer_config(self) -> dict:
         secrets = _load_secrets()
         writer = secrets.get("writer", {})
+        users_raw = writer.get("users", {})
+        users: list[dict] = []
+        if isinstance(users_raw, dict):
+            for name, pwd in users_raw.items():
+                n = str(name or "").strip()
+                p = str(pwd or "")
+                if n and p:
+                    users.append({"name": n, "password": p})
+        elif isinstance(users_raw, list):
+            for row in users_raw:
+                if not isinstance(row, dict):
+                    continue
+                n = str(row.get("name") or "").strip()
+                p = str(row.get("password") or "")
+                if n and p:
+                    users.append({"name": n, "password": p})
         return {
             "default_name": writer.get("name", ""),
             "password": writer.get("password", ""),
+            "users": users,
             "lock_timeout_hours": int(writer.get("lock_timeout_hours", 6) or 6),
             "auto_write_mode": bool(writer.get("auto_write_mode", False)),
         }
