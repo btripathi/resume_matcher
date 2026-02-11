@@ -84,6 +84,34 @@ class DBManager:
                      (run_id INTEGER, match_id INTEGER,
                       PRIMARY KEY (run_id, match_id))''')
 
+        c.execute('''CREATE TABLE IF NOT EXISTS job_runs
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      job_type TEXT NOT NULL,
+                      payload_json TEXT,
+                      status TEXT NOT NULL DEFAULT 'queued',
+                      progress INTEGER DEFAULT 0,
+                      current_step TEXT,
+                      error TEXT,
+                      result_json TEXT,
+                      created_at TIMESTAMP,
+                      started_at TIMESTAMP,
+                      finished_at TIMESTAMP)''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS job_run_logs
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      run_id INTEGER NOT NULL,
+                      level TEXT NOT NULL,
+                      message TEXT NOT NULL,
+                      created_at TIMESTAMP,
+                      FOREIGN KEY(run_id) REFERENCES job_runs(id))''')
+
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_job_runs_status_created_at ON job_runs(status, created_at)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_job_run_logs_run_id_id ON job_run_logs(run_id, id)"
+        )
+
         conn.commit()
         conn.close()
 
@@ -390,3 +418,170 @@ class DBManager:
         c.execute(query, params)
         conn.commit()
         conn.close()
+
+    # --- Background run queue methods ---
+    def enqueue_job_run(self, job_type, payload):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            '''INSERT INTO job_runs (job_type, payload_json, status, progress, created_at)
+               VALUES (?, ?, 'queued', 0, ?)''',
+            (job_type, json.dumps(payload or {}), datetime.datetime.now().isoformat()),
+        )
+        run_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        return run_id
+
+    def list_job_runs(self, limit=100):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            '''SELECT id, job_type, payload_json, status, progress, current_step, error, result_json, created_at, started_at, finished_at
+               FROM job_runs
+               ORDER BY id DESC
+               LIMIT ?''',
+            (int(limit),),
+        )
+        rows = c.fetchall()
+        conn.close()
+        out = []
+        for row in rows:
+            out.append({
+                "id": row[0],
+                "job_type": row[1],
+                "payload": json.loads(row[2]) if row[2] else {},
+                "status": row[3],
+                "progress": int(row[4] or 0),
+                "current_step": row[5],
+                "error": row[6],
+                "result": json.loads(row[7]) if row[7] else {},
+                "created_at": row[8],
+                "started_at": row[9],
+                "finished_at": row[10],
+            })
+        return out
+
+    def get_job_run(self, run_id):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            '''SELECT id, job_type, payload_json, status, progress, current_step, error, result_json, created_at, started_at, finished_at
+               FROM job_runs
+               WHERE id = ?
+               LIMIT 1''',
+            (int(run_id),),
+        )
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "job_type": row[1],
+            "payload": json.loads(row[2]) if row[2] else {},
+            "status": row[3],
+            "progress": int(row[4] or 0),
+            "current_step": row[5],
+            "error": row[6],
+            "result": json.loads(row[7]) if row[7] else {},
+            "created_at": row[8],
+            "started_at": row[9],
+            "finished_at": row[10],
+        }
+
+    def claim_next_job_run(self):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            "SELECT id FROM job_runs WHERE status = 'queued' ORDER BY id ASC LIMIT 1"
+        )
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return None
+
+        run_id = int(row[0])
+        c.execute(
+            '''UPDATE job_runs
+               SET status = 'running', started_at = ?, current_step = ?, progress = 1
+               WHERE id = ? AND status = 'queued' ''',
+            (datetime.datetime.now().isoformat(), "started", run_id),
+        )
+        changed = c.rowcount
+        conn.commit()
+        conn.close()
+        if changed != 1:
+            return None
+        return self.get_job_run(run_id)
+
+    def update_job_run_progress(self, run_id, progress=0, current_step=None):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE job_runs SET progress = ?, current_step = ? WHERE id = ?",
+            (int(progress), current_step, int(run_id)),
+        )
+        conn.commit()
+        conn.close()
+
+    def complete_job_run(self, run_id, result=None):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            '''UPDATE job_runs
+               SET status = 'completed', progress = 100, current_step = ?, result_json = ?, finished_at = ?
+               WHERE id = ?''',
+            ("completed", json.dumps(result or {}), datetime.datetime.now().isoformat(), int(run_id)),
+        )
+        conn.commit()
+        conn.close()
+
+    def fail_job_run(self, run_id, error_message):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            '''UPDATE job_runs
+               SET status = 'failed', current_step = ?, error = ?, finished_at = ?
+               WHERE id = ?''',
+            ("failed", str(error_message), datetime.datetime.now().isoformat(), int(run_id)),
+        )
+        conn.commit()
+        conn.close()
+
+    def append_job_run_log(self, run_id, level, message):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            '''INSERT INTO job_run_logs (run_id, level, message, created_at)
+               VALUES (?, ?, ?, ?)''',
+            (int(run_id), str(level), str(message), datetime.datetime.now().isoformat()),
+        )
+        log_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        return int(log_id)
+
+    def list_job_run_logs(self, run_id, limit=500):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            '''SELECT id, run_id, level, message, created_at
+               FROM job_run_logs
+               WHERE run_id = ?
+               ORDER BY id DESC
+               LIMIT ?''',
+            (int(run_id), int(limit)),
+        )
+        rows = c.fetchall()
+        conn.close()
+        return [
+            {
+                "id": int(row[0]),
+                "run_id": int(row[1]),
+                "level": row[2],
+                "message": row[3],
+                "created_at": row[4],
+            }
+            for row in rows
+        ]

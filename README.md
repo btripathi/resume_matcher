@@ -43,6 +43,59 @@ We have included an automated script that installs all dependencies (OCR tools, 
 
 The app will open in your browser at `http://localhost:8501`.
 
+## 🧱 API-First (Mature Architecture Path)
+
+This repo now includes a backend foundation so the product is no longer constrained to Streamlit as the primary runtime.
+
+### Run the Single App (Backend + Rich Web UI)
+
+```bash
+pip install -r requirements.txt
+uvicorn backend.app:app --reload --port 8000
+```
+
+Open:
+- Web app: `http://localhost:8000/`
+- API docs:
+- `http://localhost:8000/docs`
+- `http://localhost:8000/redoc`
+
+### Available endpoints (v0.1)
+
+- `GET /health`
+- `GET /v1/jobs`
+- `POST /v1/jobs`
+- `GET /v1/resumes`
+- `POST /v1/resumes`
+- `POST /v1/matches/score`
+- `GET /v1/matches`
+- `POST /v1/runs` (durable background queue)
+- `GET /v1/runs`
+- `GET /v1/runs/{id}`
+- `GET /v1/runs/{id}/logs`
+
+See migration details in `docs/migration_to_mature_architecture.md`.
+
+### Background jobs (survive browser refresh)
+
+Queue long tasks as run objects:
+
+```bash
+curl -X POST http://localhost:8000/v1/runs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_type": "score_match",
+    "payload": {"job_id": 1, "resume_id": 2, "auto_deep": true, "threshold": 50}
+  }'
+```
+
+Then poll:
+
+```bash
+curl http://localhost:8000/v1/runs
+curl http://localhost:8000/v1/runs/<run_id>/logs
+```
+
 ## 📖 How to Use
 
 ### 1. Manage Data
