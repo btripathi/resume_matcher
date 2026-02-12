@@ -72,6 +72,17 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def _startup() -> None:
+        auto_pull = os.getenv("RESUME_MATCHER_AUTO_PULL_DB_ON_START", "true").strip().lower() in ("1", "true", "yes", "on")
+        if auto_pull:
+            token, repo_name = gh_sync._credentials()
+            if token and repo_name:
+                ok, msg = gh_sync.pull_db()
+                print(f"[startup] DB pull {'ok' if ok else 'failed'}: {msg}")
+            else:
+                print("[startup] DB pull skipped: GitHub credentials not configured.")
+        # Re-apply schema migrations after optional DB pull, so older DB snapshots
+        # still get queue/log tables required by the background runner.
+        db._init_db()
         runner.start()
 
     @app.on_event("shutdown")

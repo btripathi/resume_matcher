@@ -37,30 +37,35 @@ class JobRunner:
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
-            run = self.repo.claim_next_run()
-            if not run:
-                time.sleep(self.poll_seconds)
-                continue
-            run_id = int(run["id"])
-            self.repo.add_run_log(run_id, "info", f"Run picked up: {run['job_type']}")
-            heartbeat_stop = threading.Event()
-            heartbeat_thread = threading.Thread(
-                target=self._run_heartbeat_loop,
-                name=f"run-heartbeat-{run_id}",
-                args=(run_id, heartbeat_stop),
-                daemon=True,
-            )
-            heartbeat_thread.start()
             try:
-                result = self._execute(run_id=run_id, job_type=run["job_type"], payload=run.get("payload") or {})
-                self.repo.complete_run(run_id=run_id, result=result)
-                self.repo.add_run_log(run_id, "info", "Run completed")
-            except Exception as exc:
-                self.repo.fail_run(run_id=run_id, error=str(exc))
-                self.repo.add_run_log(run_id, "error", f"{exc}\n{traceback.format_exc()}")
-            finally:
-                heartbeat_stop.set()
-                heartbeat_thread.join(timeout=1.0)
+                run = self.repo.claim_next_run()
+                if not run:
+                    time.sleep(self.poll_seconds)
+                    continue
+                run_id = int(run["id"])
+                self.repo.add_run_log(run_id, "info", f"Run picked up: {run['job_type']}")
+                heartbeat_stop = threading.Event()
+                heartbeat_thread = threading.Thread(
+                    target=self._run_heartbeat_loop,
+                    name=f"run-heartbeat-{run_id}",
+                    args=(run_id, heartbeat_stop),
+                    daemon=True,
+                )
+                heartbeat_thread.start()
+                try:
+                    result = self._execute(run_id=run_id, job_type=run["job_type"], payload=run.get("payload") or {})
+                    self.repo.complete_run(run_id=run_id, result=result)
+                    self.repo.add_run_log(run_id, "info", "Run completed")
+                except Exception as exc:
+                    self.repo.fail_run(run_id=run_id, error=str(exc))
+                    self.repo.add_run_log(run_id, "error", f"{exc}\n{traceback.format_exc()}")
+                finally:
+                    heartbeat_stop.set()
+                    heartbeat_thread.join(timeout=1.0)
+            except Exception:
+                # Keep the worker alive if queue polling fails transiently.
+                print("[job-runner] loop error:\n" + traceback.format_exc())
+                time.sleep(self.poll_seconds)
 
     def _run_heartbeat_loop(self, run_id: int, stop_event: threading.Event) -> None:
         while not stop_event.wait(self._heartbeat_interval_sec):
