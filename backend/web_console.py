@@ -1011,6 +1011,10 @@ def render_console() -> HTMLResponse:
             <input id="analysisAutoTagMatch" type="checkbox" checked onchange="onAnalysisSelectionChange()" />
             🎯 Auto-match based on JD Tags
           </label>
+          <label class="caption check-inline row">
+            <input id="autoDeep" type="checkbox" checked />
+            ✨ Auto-Upgrade to Deep Match
+          </label>
         </div>
       </div>
       <div class="caption section">
@@ -1030,7 +1034,6 @@ def render_console() -> HTMLResponse:
             </div>
           </div>
         </div>
-        <label class="caption row check-inline"><input id="autoDeep" type="checkbox" /> ✨ Auto-Upgrade to Deep Match</label>
         <div class="row3 row">
           <label class="caption check-inline"><input id="forceRerunPass1" type="checkbox" /> Force Re-run Pass 1 (Standard Match)</label>
           <label class="caption check-inline"><input id="forceRerunDeep" type="checkbox" onchange="syncAnalysisDeepForce()" /> Force Re-run Deep Scan</label>
@@ -1359,7 +1362,43 @@ def render_console() -> HTMLResponse:
   const tagsFrom = (s) => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
   const escapeHtml = (s) => String(s || '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   const DEBUG_LOG_LIMIT = 300;
+  const ANALYSIS_BATCH_STORAGE_KEY = 'talentscout.analysisQueuedRunIds';
   const debugLines = [];
+
+  function loadPersistedBatchRunIds() {
+    try {
+      const raw = localStorage.getItem(ANALYSIS_BATCH_STORAGE_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return [];
+      return Array.from(new Set(arr.map((x) => Number(x)).filter(Boolean)));
+    } catch {
+      return [];
+    }
+  }
+
+  function persistBatchRunIds(ids) {
+    try {
+      const clean = Array.from(new Set((ids || []).map((x) => Number(x)).filter(Boolean)));
+      if (!clean.length) {
+        localStorage.removeItem(ANALYSIS_BATCH_STORAGE_KEY);
+        return;
+      }
+      localStorage.setItem(ANALYSIS_BATCH_STORAGE_KEY, JSON.stringify(clean));
+    } catch {
+      // Ignore storage failures.
+    }
+  }
+
+  function setTrackedBatchRunIds(ids) {
+    state.analysisQueuedRunIds = Array.from(new Set((ids || []).map((x) => Number(x)).filter(Boolean)));
+    persistBatchRunIds(state.analysisQueuedRunIds);
+  }
+
+  function clearTrackedBatchRunIds() {
+    state.analysisQueuedRunIds = [];
+    persistBatchRunIds([]);
+  }
 
   function debugLog(message, level = 'info') {
     const line = `[${new Date().toISOString()}] [${String(level || 'info').toUpperCase()}] ${String(message || '')}`;
@@ -1606,6 +1645,19 @@ def render_console() -> HTMLResponse:
     el.textContent = text || '';
   }
 
+  function runEntityLabel(run) {
+    if (!run || String(run.job_type || '') !== 'score_match') return '';
+    const payload = run.payload || {};
+    const jobId = Number(payload.job_id || 0);
+    const resumeId = Number(payload.resume_id || 0);
+    const job = (state.jobs || []).find((j) => Number(j.id) === jobId);
+    const resume = (state.resumes || []).find((r) => Number(r.id) === resumeId);
+    const jobName = String((job && job.filename) || (jobId ? `job:${jobId}` : '')).trim();
+    const resumeName = String((resume && resume.filename) || (resumeId ? `resume:${resumeId}` : '')).trim();
+    if (!jobName && !resumeName) return '';
+    return `${jobName} x ${resumeName}`.trim();
+  }
+
   function updateRunStatusBars() {
     const runs = state.runs || [];
     const active = runs
@@ -1620,7 +1672,10 @@ def render_console() -> HTMLResponse:
     const selectedRunId = Number((q('selectedRunId') && q('selectedRunId').value) || 0);
     const selected = runs.find((r) => Number(r.id) === selectedRunId) || active[0] || null;
     const jobPct = selected ? Math.max(0, Math.min(100, Number(selected.progress || 0))) : 0;
-    const jobLabel = selected ? `Current Job • #${selected.id} • ${selected.status || 'unknown'}` : 'Current Job • idle';
+    const entity = selected ? runEntityLabel(selected) : '';
+    const jobLabel = selected
+      ? `Current Job • #${selected.id} • ${selected.status || 'unknown'}${entity ? ` • ${entity}` : ''}`
+      : 'Current Job • idle';
     const jobStep = selected ? String(selected.current_step || '-') : 'No active run';
 
     if (q('jobProgressLabel')) q('jobProgressLabel').textContent = jobLabel;
@@ -1672,6 +1727,7 @@ def render_console() -> HTMLResponse:
     const step = String(run.current_step || '-');
     const pct = Number(run.progress || 0);
     const stuck = !!run.is_stuck;
+    const entity = runEntityLabel(run);
     const marker = run.last_log_at || run.started_at || run.created_at || '';
     let lagSec = 0;
     if (marker) {
@@ -1682,16 +1738,16 @@ def render_console() -> HTMLResponse:
     }
     if (stuck) {
       const sec = Number(run.stuck_seconds || 0);
-      meta.textContent = `Run #${run.id} appears stuck (${sec}s without progress). Last step: ${step}.`;
+      meta.textContent = `Run #${run.id}${entity ? ` (${entity})` : ''} appears stuck (${sec}s without progress). Last step: ${step}.`;
       box.classList.add('stuck');
       btn.style.display = 'inline-flex';
       return;
     }
     if (status === 'running' && lagSec >= 45) {
-      meta.textContent = `Run #${run.id} is active at ${pct}% • waiting on model response for ~${lagSec}s • step: ${step}`;
+      meta.textContent = `Run #${run.id}${entity ? ` (${entity})` : ''} is active at ${pct}% • waiting on model response for ~${lagSec}s • step: ${step}`;
       return;
     }
-    meta.textContent = `Run #${run.id} is ${status} at ${pct}% • step: ${step}`;
+    meta.textContent = `Run #${run.id}${entity ? ` (${entity})` : ''} is ${status} at ${pct}% • step: ${step}`;
   }
 
   function updateAnalysisQueueMessage() {
@@ -1718,8 +1774,13 @@ def render_console() -> HTMLResponse:
     const total = ids.length;
     if (completed === total && failed === 0) {
       setMsg('msgMatch', '', true);
+      clearTrackedBatchRunIds();
       updateRunStatusBars();
       return;
+    }
+    if (completed + failed >= total) {
+      // Terminal state reached for tracked batch.
+      clearTrackedBatchRunIds();
     }
 
     const text = `Submitted ${total} analysis job(s): completed ${completed}, running ${running}, queued ${queued}, failed ${failed}. Runs #${idPreview}.`;
@@ -2280,7 +2341,8 @@ def render_console() -> HTMLResponse:
 
     const fmt = (r) => {
       const stuckTag = r.is_stuck ? ' | STUCK' : '';
-      return `#${r.id} | ${r.job_type} | ${r.status}${stuckTag} | ${r.progress || 0}% | ${r.current_step || '-'}`;
+      const entity = runEntityLabel(r);
+      return `#${r.id} | ${r.job_type}${entity ? ` | ${entity}` : ''} | ${r.status}${stuckTag} | ${r.progress || 0}% | ${r.current_step || '-'}`;
     };
 
     if (active.length) {
@@ -2312,6 +2374,10 @@ def render_console() -> HTMLResponse:
         historySel.value = pinnedRaw;
       } else if (prevHistory && Array.from(historySel.options).some((o) => o.value === prevHistory)) {
         historySel.value = prevHistory;
+      } else if (history.length) {
+        historySel.value = String(history[0].id);
+      } else if (legacyHistory.length) {
+        historySel.value = String(legacyHistory[0].id);
       }
     } else {
       historySel.innerHTML = '<option value="">No completed/failed runs</option>';
@@ -2520,7 +2586,7 @@ def render_console() -> HTMLResponse:
       }
       if (queued === 0) throw new Error('No rerun tasks were queued.');
       state.logPinnedRunId = null;
-      state.analysisQueuedRunIds = runIds.slice();
+      setTrackedBatchRunIds(runIds.slice());
       startAnalysisAutoPoll();
       await refreshRunPanels();
       setMsg('msgLegacyRerun', `Queued batch rerun: ${queued} task(s), run #${runIds.join(', ')}.`);
@@ -2550,7 +2616,7 @@ def render_console() -> HTMLResponse:
       });
       state.logPinnedRunId = null;
       q('selectedRunId').value = String(run.id);
-      state.analysisQueuedRunIds = [Number(run.id)];
+      setTrackedBatchRunIds([Number(run.id)]);
       startAnalysisAutoPoll();
       await refreshRunPanels();
       await loadLogs(run.id);
@@ -2646,7 +2712,12 @@ def render_console() -> HTMLResponse:
         }
         await loadLogs(Number(followRun.id));
       } else {
-        q('runLogs').textContent = 'No active run selected.';
+        const historyRaw = String((q('historyRunId') && q('historyRunId').value) || '').trim();
+        if (historyRaw) {
+          await loadHistoryLogs();
+        } else {
+          q('runLogs').textContent = 'No active run selected.';
+        }
       }
     }
 
@@ -2699,8 +2770,8 @@ def render_console() -> HTMLResponse:
       }
       return loadLogs(Number(followRun.id));
     }
-    const historyRunId = Number(q('historyRunId').value || 0);
-    if (historyRunId) return loadLogs(historyRunId);
+    const historyRaw = String((q('historyRunId') && q('historyRunId').value) || '').trim();
+    if (historyRaw) return loadHistoryLogs();
   }
 
   async function loadLegacyRunResults(preserveSelection = false) {
@@ -2886,7 +2957,7 @@ def render_console() -> HTMLResponse:
       if (!runIds.length) throw new Error('All uploaded JDs already exist. Enable Force Reparse to process them again.');
       setMsg('msgJD', `Queued ${runIds.length} JD parsing run(s): #${runIds.join(', ')}`);
       q('selectedRunId').value = String(runIds[runIds.length - 1]);
-      state.analysisQueuedRunIds = runIds.slice();
+      setTrackedBatchRunIds(runIds.slice());
       startAnalysisAutoPoll();
       await refreshAll();
     } catch (e) {
@@ -2919,7 +2990,7 @@ def render_console() -> HTMLResponse:
       if (!runIds.length) throw new Error('All uploaded resumes already exist. Enable Force Reparse to process them again.');
       setMsg('msgRes', `Queued ${runIds.length} resume parsing run(s): #${runIds.join(', ')}`);
       q('selectedRunId').value = String(runIds[runIds.length - 1]);
-      state.analysisQueuedRunIds = runIds.slice();
+      setTrackedBatchRunIds(runIds.slice());
       startAnalysisAutoPoll();
       await refreshAll();
     } catch (e) {
@@ -2945,7 +3016,7 @@ def render_console() -> HTMLResponse:
       }
       setMsg('msgReparseJD', `Queued JD reparse run(s): #${runIds.join(', ')}`);
       q('selectedRunId').value = String(runIds[runIds.length - 1]);
-      state.analysisQueuedRunIds = runIds.slice();
+      setTrackedBatchRunIds(runIds.slice());
       startAnalysisAutoPoll();
     } catch (e) {
       setMsg('msgReparseJD', e.message, false);
@@ -2970,7 +3041,7 @@ def render_console() -> HTMLResponse:
       }
       setMsg('msgReparseRes', `Queued resume reparse run(s): #${runIds.join(', ')}`);
       q('selectedRunId').value = String(runIds[runIds.length - 1]);
-      state.analysisQueuedRunIds = runIds.slice();
+      setTrackedBatchRunIds(runIds.slice());
       startAnalysisAutoPoll();
     } catch (e) {
       setMsg('msgReparseRes', e.message, false);
@@ -3034,7 +3105,7 @@ def render_console() -> HTMLResponse:
       }
       if (!runIds.length) throw new Error('No valid records found in JSON.');
       q('selectedRunId').value = String(runIds[runIds.length - 1]);
-      state.analysisQueuedRunIds = runIds.slice();
+      setTrackedBatchRunIds(runIds.slice());
       startAnalysisAutoPoll();
       setMsg('msgRes', `Queued ${runIds.length} resume import run(s): #${runIds.join(', ')}`);
       await refreshAll();
@@ -3104,7 +3175,7 @@ def render_console() -> HTMLResponse:
         q('selectedRunId').value = String(lastRunId);
         await loadLogs();
       }
-      state.analysisQueuedRunIds = queuedRunIds.slice();
+      setTrackedBatchRunIds(queuedRunIds.slice());
       startAnalysisAutoPoll();
       await refreshAll();
       updateAnalysisQueueMessage();
@@ -3397,11 +3468,11 @@ def render_console() -> HTMLResponse:
     s = s.normalize('NFKC');
     s = s.replace(/\u2022/g, ' ');
     s = s.replace(/[\u2010\u2011\u2012\u2013\u2014]/g, '-');
-    s = s.replace(/\\s+/g, ' ');
-    s = s.replace(/\\s*-\\s*/g, '-');
-    s = s.replace(/\\s*,\\s*/g, ', ');
-    s = s.replace(/\\(\\s*/g, '(');
-    s = s.replace(/\\s*\\)/g, ')');
+    s = s.replace(/\s+/g, ' ');
+    s = s.replace(/\s*-\s*/g, '-');
+    s = s.replace(/\s*,\s*/g, ', ');
+    s = s.replace(/\(\s*/g, '(');
+    s = s.replace(/\s*\)/g, ')');
     return s.toLowerCase().trim();
   }
 
@@ -3416,8 +3487,8 @@ def render_console() -> HTMLResponse:
       const compactQuery = normQuery.replace(/[^a-z0-9]/g, '');
       idx = compactText.indexOf(compactQuery);
       if (idx < 0) {
-        const tokens = normQuery.split(/\\W+/).filter((t) => t.length > 3);
-        const textTokens = normText.split(/\\W+/).filter((t) => t.length > 3);
+        const tokens = normQuery.split(/\W+/).filter((t) => t.length > 3);
+        const textTokens = normText.split(/\W+/).filter((t) => t.length > 3);
         if (!tokens.length || !textTokens.length) return '';
         let matched = 0;
         tokens.forEach((qt) => {
@@ -3453,7 +3524,7 @@ def render_console() -> HTMLResponse:
   function rankItemsByQuery(items, query) {
     const qv = String(query || '').trim().toLowerCase();
     if (!qv) return [];
-    const qTokens = qv.split(/\\s+/).filter(Boolean);
+    const qTokens = qv.split(/\s+/).filter(Boolean);
     const scored = [];
     items.forEach((item) => {
       if (!item || typeof item !== 'string') return;
@@ -3617,8 +3688,16 @@ def render_console() -> HTMLResponse:
   async function boot() {
     try {
       await refreshAll();
+      const persistedBatchIds = loadPersistedBatchRunIds();
+      if (persistedBatchIds.length) {
+        setTrackedBatchRunIds(persistedBatchIds);
+        updateAnalysisQueueMessage();
+      }
       await loadSettings();
-      if ((state.runs || []).some((r) => r.status === 'queued' || r.status === 'running')) {
+      const hasTrackedActive = (state.analysisQueuedRunIds || []).some((id) =>
+        (state.runs || []).some((r) => Number(r.id) === Number(id) && (r.status === 'queued' || r.status === 'running'))
+      );
+      if (hasTrackedActive || (state.runs || []).some((r) => r.status === 'queued' || r.status === 'running')) {
         startAnalysisAutoPoll();
       }
       renderVerifySelectors();

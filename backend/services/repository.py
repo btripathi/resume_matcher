@@ -47,6 +47,29 @@ def _candidate_name_from_profile(profile_raw, fallback_name: str | None = None, 
     return str(resume_filename or "").strip()
 
 
+def _as_int(value, default: int = 0, nullable: bool = False):
+    if value is None:
+        return None if nullable else default
+    try:
+        if pd.isna(value):
+            return None if nullable else default
+    except Exception:
+        pass
+    try:
+        if isinstance(value, (bytes, bytearray)):
+            b = bytes(value)
+            # SQLite sometimes returns raw little-endian integer bytes for legacy rows.
+            if len(b) in (1, 2, 4, 8):
+                return int.from_bytes(b, byteorder="little", signed=False)
+            txt = b.decode("utf-8", errors="ignore").strip()
+            if txt:
+                return int(float(txt))
+            return None if nullable else default
+        return int(float(value))
+    except Exception:
+        return None if nullable else default
+
+
 @dataclass
 class Repository:
     db: DBManager
@@ -170,8 +193,8 @@ class Repository:
                 row.get("candidate_name"),
                 row.get("resume_name"),
             ),
-            "match_score": int(row["match_score"] or 0),
-            "standard_score": int(row["standard_score"]) if pd.notna(row["standard_score"]) else None,
+            "match_score": _as_int(row.get("match_score"), default=0),
+            "standard_score": _as_int(row.get("standard_score"), nullable=True),
             "decision": row["decision"] or "",
             "reasoning": row["reasoning"] or "",
             "standard_reasoning": row["standard_reasoning"] or "",
@@ -247,6 +270,7 @@ class Repository:
             "SELECT m.id, m.job_id, m.resume_id, m.candidate_name, m.match_score, m.strategy, m.decision, m.reasoning, "
             "r.profile AS resume_profile, r.filename AS resume_name "
             "FROM matches m "
+            "JOIN (SELECT MAX(id) AS id FROM matches GROUP BY job_id, resume_id) latest ON latest.id = m.id "
             "LEFT JOIN resumes r ON r.id = m.resume_id "
             "ORDER BY m.id DESC LIMIT "
             f"{int(limit)}"
@@ -263,7 +287,7 @@ class Repository:
                         row.get("candidate_name"),
                         row.get("resume_name"),
                     ),
-                    "match_score": int(row["match_score"] or 0),
+                    "match_score": _as_int(row.get("match_score"), default=0),
                     "strategy": row["strategy"] or "Standard",
                     "decision": row["decision"] or "",
                     "reasoning": row["reasoning"] or "",
@@ -292,8 +316,8 @@ class Repository:
                 row.get("candidate_name"),
                 row.get("resume_name"),
             ),
-            "match_score": int(row["match_score"] or 0),
-            "standard_score": int(row["standard_score"]) if pd.notna(row["standard_score"]) else None,
+            "match_score": _as_int(row.get("match_score"), default=0),
+            "standard_score": _as_int(row.get("standard_score"), nullable=True),
             "decision": row["decision"] or "",
             "reasoning": row["reasoning"] or "",
             "standard_reasoning": row["standard_reasoning"] or "",
@@ -344,8 +368,8 @@ class Repository:
                         row.get("candidate_name"),
                         row.get("resume_name"),
                     ),
-                    "match_score": int(row["match_score"] or 0),
-                    "standard_score": int(row["standard_score"]) if pd.notna(row["standard_score"]) else None,
+                    "match_score": _as_int(row.get("match_score"), default=0),
+                    "standard_score": _as_int(row.get("standard_score"), nullable=True),
                     "decision": row["decision"] or "",
                     "reasoning": row["reasoning"] or "",
                     "strategy": row["strategy"] or "Standard",

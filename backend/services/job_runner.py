@@ -267,8 +267,8 @@ class JobRunner:
             predicted_reuse = False
             force_any = bool(force_rerun_pass1 or force_rerun_deep)
             wants_deep = bool(auto_deep or force_rerun_deep)
+            existing_strategy = str((existing_before or {}).get("strategy") or "Standard")
             if existing_before and not force_any:
-                existing_strategy = str(existing_before.get("strategy") or "Standard")
                 if (not wants_deep) or (wants_deep and existing_strategy == "Deep"):
                     predicted_reuse = True
             if predicted_reuse and existing_before:
@@ -285,7 +285,16 @@ class JobRunner:
                 self.repo.add_run_log(
                     run_id,
                     "info",
-                    "Cache check: existing match found but recomputation forced by current options.",
+                    (
+                        "Cache check: existing match found but recomputation required "
+                        f"(existing strategy={existing_strategy}; "
+                        + (
+                            "reason=force_rerun_pass1/force_rerun_deep enabled"
+                            if force_any
+                            else ("reason=deep output requested and cached result is not Deep" if wants_deep else "reason=options changed")
+                        )
+                        + ")."
+                    ),
                 )
             else:
                 self.repo.add_run_log(run_id, "info", "Cache check: no existing match found.")

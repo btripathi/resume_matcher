@@ -179,6 +179,11 @@ class AnalysisService:
             log_fn(
                 f"Deep Scan skipped: standard score {standard_score}% is below threshold {threshold}%."
             )
+        elif callable(log_fn):
+            log_fn(
+                f"Deep Scan not requested: auto_deep={auto_deep}, force_rerun_deep={force_rerun_deep}. "
+                f"Standard score {standard_score}% (threshold {threshold}%)."
+            )
 
         match_id = self.repo.save_match(
             job_id=job_id,

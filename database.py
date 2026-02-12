@@ -392,7 +392,11 @@ class DBManager:
     def get_match_if_exists(self, job_id, resume_id):
         conn = self.get_connection()
         c = conn.cursor()
-        c.execute("SELECT id, match_score, strategy, standard_score, reasoning, standard_reasoning FROM matches WHERE job_id = ? AND resume_id = ?", (job_id, resume_id))
+        c.execute(
+            "SELECT id, match_score, strategy, standard_score, reasoning, standard_reasoning "
+            "FROM matches WHERE job_id = ? AND resume_id = ? ORDER BY id DESC LIMIT 1",
+            (job_id, resume_id),
+        )
         res = c.fetchone()
         conn.close()
         if res:
