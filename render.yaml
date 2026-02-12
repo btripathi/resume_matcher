@@ -10,6 +10,8 @@ services:
     envVars:
       - key: RESUME_MATCHER_READ_ONLY
         value: "true"
+      - key: RESUME_MATCHER_AUTO_PULL_DB_ON_START
+        value: "true"
       - key: RESUME_MATCHER_LM_BASE_URL
         sync: false
       - key: RESUME_MATCHER_LM_API_KEY

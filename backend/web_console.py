@@ -3397,11 +3397,11 @@ def render_console() -> HTMLResponse:
     s = s.normalize('NFKC');
     s = s.replace(/\u2022/g, ' ');
     s = s.replace(/[\u2010\u2011\u2012\u2013\u2014]/g, '-');
-    s = s.replace(/\s+/g, ' ');
-    s = s.replace(/\s*-\s*/g, '-');
-    s = s.replace(/\s*,\s*/g, ', ');
-    s = s.replace(/\(\s*/g, '(');
-    s = s.replace(/\s*\)/g, ')');
+    s = s.replace(/\\s+/g, ' ');
+    s = s.replace(/\\s*-\\s*/g, '-');
+    s = s.replace(/\\s*,\\s*/g, ', ');
+    s = s.replace(/\\(\\s*/g, '(');
+    s = s.replace(/\\s*\\)/g, ')');
     return s.toLowerCase().trim();
   }
 
@@ -3416,8 +3416,8 @@ def render_console() -> HTMLResponse:
       const compactQuery = normQuery.replace(/[^a-z0-9]/g, '');
       idx = compactText.indexOf(compactQuery);
       if (idx < 0) {
-        const tokens = normQuery.split(/\W+/).filter((t) => t.length > 3);
-        const textTokens = normText.split(/\W+/).filter((t) => t.length > 3);
+        const tokens = normQuery.split(/\\W+/).filter((t) => t.length > 3);
+        const textTokens = normText.split(/\\W+/).filter((t) => t.length > 3);
         if (!tokens.length || !textTokens.length) return '';
         let matched = 0;
         tokens.forEach((qt) => {
@@ -3453,7 +3453,7 @@ def render_console() -> HTMLResponse:
   function rankItemsByQuery(items, query) {
     const qv = String(query || '').trim().toLowerCase();
     if (!qv) return [];
-    const qTokens = qv.split(/\s+/).filter(Boolean);
+    const qTokens = qv.split(/\\s+/).filter(Boolean);
     const scored = [];
     items.forEach((item) => {
       if (!item || typeof item !== 'string') return;
