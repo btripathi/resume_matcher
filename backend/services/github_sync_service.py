@@ -19,6 +19,12 @@ def _load_secrets() -> dict:
     except Exception:
         return {}
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = str(os.getenv(name, "")).strip().lower()
+    if not value:
+        return default
+    return value in ("1", "true", "yes", "on")
+
 
 def _parse_lock_time(ts: str | None) -> dt.datetime | None:
     if not ts:
@@ -55,6 +61,11 @@ class GitHubSyncService:
     def writer_config(self) -> dict:
         secrets = _load_secrets()
         writer = secrets.get("writer", {})
+        env_default_name = str(os.getenv("RESUME_MATCHER_WRITER_NAME", "")).strip()
+        env_default_password = str(os.getenv("RESUME_MATCHER_WRITER_PASSWORD", "")).strip()
+        env_users_raw = str(os.getenv("RESUME_MATCHER_WRITER_USERS_JSON", "")).strip()
+        env_lock_timeout = str(os.getenv("RESUME_MATCHER_LOCK_TIMEOUT_HOURS", "")).strip()
+        env_auto_write_mode = _env_bool("RESUME_MATCHER_AUTO_WRITE_MODE", False)
         users_raw = writer.get("users", {})
         users: list[dict] = []
         if isinstance(users_raw, dict):
@@ -71,12 +82,34 @@ class GitHubSyncService:
                 p = str(row.get("password") or "")
                 if n and p:
                     users.append({"name": n, "password": p})
+        if env_users_raw:
+            try:
+                env_users = json.loads(env_users_raw)
+                if isinstance(env_users, dict):
+                    env_users = [{"name": k, "password": v} for k, v in env_users.items()]
+                if isinstance(env_users, list):
+                    users = []
+                    for row in env_users:
+                        if not isinstance(row, dict):
+                            continue
+                        n = str(row.get("name") or "").strip()
+                        p = str(row.get("password") or "")
+                        if n and p:
+                            users.append({"name": n, "password": p})
+            except Exception:
+                pass
+        lock_timeout = int(writer.get("lock_timeout_hours", 6) or 6)
+        if env_lock_timeout:
+            try:
+                lock_timeout = int(env_lock_timeout)
+            except Exception:
+                pass
         return {
-            "default_name": writer.get("name", ""),
-            "password": writer.get("password", ""),
+            "default_name": env_default_name or writer.get("name", ""),
+            "password": env_default_password or writer.get("password", ""),
             "users": users,
-            "lock_timeout_hours": int(writer.get("lock_timeout_hours", 6) or 6),
-            "auto_write_mode": bool(writer.get("auto_write_mode", False)),
+            "lock_timeout_hours": lock_timeout,
+            "auto_write_mode": env_auto_write_mode if str(os.getenv("RESUME_MATCHER_AUTO_WRITE_MODE", "")).strip() else bool(writer.get("auto_write_mode", False)),
         }
 
     def pull_db(self) -> tuple[bool, str]:

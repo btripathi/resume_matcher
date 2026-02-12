@@ -60,6 +60,27 @@ Open:
 - `http://localhost:8000/docs`
 - `http://localhost:8000/redoc`
 
+### Deploy to Render (Free)
+
+This repo includes a Render blueprint at `render.yaml`.
+
+1. Push latest `main` to GitHub.
+2. In Render, choose **New +** -> **Blueprint** and select this repo.
+3. Render will create the `resume-matcher` web service and deploy automatically.
+4. In Render service settings, set required secret env vars:
+   - `RESUME_MATCHER_LM_BASE_URL` (your public LM Studio/ngrok API base, e.g. `https://.../v1`)
+   - `RESUME_MATCHER_LM_API_KEY`
+   - `RESUME_MATCHER_GITHUB_TOKEN`
+   - `RESUME_MATCHER_GITHUB_REPO` (format: `owner/repo`)
+   - Optional writer auth from env (instead of `.streamlit/secrets.toml`):
+     - `RESUME_MATCHER_WRITER_NAME`
+     - `RESUME_MATCHER_WRITER_PASSWORD`
+     - `RESUME_MATCHER_WRITER_USERS_JSON` (JSON list like `[{"name":"admin","password":"..."}]`)
+
+Defaults in blueprint:
+- `RESUME_MATCHER_READ_ONLY=true` for safe public mode.
+- Health check path: `/health`
+
 ### Available endpoints (v0.1)
 
 - `GET /health`
