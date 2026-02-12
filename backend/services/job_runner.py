@@ -5,6 +5,7 @@ import json
 import base64
 import os
 from dataclasses import dataclass, field
+from typing import Callable
 
 import document_utils
 
@@ -17,6 +18,7 @@ class JobRunner:
     repo: Repository
     analysis: AnalysisService
     poll_seconds: float = 0.6
+    on_run_terminal: Callable[[int, str], None] | None = None
     _stop_event: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
     _heartbeat_interval_sec: float = field(
@@ -56,9 +58,19 @@ class JobRunner:
                     result = self._execute(run_id=run_id, job_type=run["job_type"], payload=run.get("payload") or {})
                     self.repo.complete_run(run_id=run_id, result=result)
                     self.repo.add_run_log(run_id, "info", "Run completed")
+                    if self.on_run_terminal:
+                        try:
+                            self.on_run_terminal(run_id, "completed")
+                        except Exception:
+                            print(f"[job-runner] on_run_terminal(completed) failed for run {run_id}")
                 except Exception as exc:
                     self.repo.fail_run(run_id=run_id, error=str(exc))
                     self.repo.add_run_log(run_id, "error", f"{exc}\n{traceback.format_exc()}")
+                    if self.on_run_terminal:
+                        try:
+                            self.on_run_terminal(run_id, "failed")
+                        except Exception:
+                            print(f"[job-runner] on_run_terminal(failed) failed for run {run_id}")
                 finally:
                     heartbeat_stop.set()
                     heartbeat_thread.join(timeout=1.0)

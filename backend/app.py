@@ -1,4 +1,5 @@
 import os
+import time
 import urllib.request
 
 from fastapi import FastAPI, HTTPException
@@ -67,19 +68,49 @@ def create_app() -> FastAPI:
 
     llm = AIEngine(base_url=runtime_settings["lm_base_url"], api_key=runtime_settings["lm_api_key"])
     analysis = AnalysisService(repo=repo, llm=llm)
-    runner = JobRunner(repo=repo, analysis=analysis)
     gh_sync = GitHubSyncService(db_path=settings.db_path)
+
+    auto_push_on_run = os.getenv("RESUME_MATCHER_AUTO_PUSH_DB_ON_RUN", "true").strip().lower() in ("1", "true", "yes", "on")
+    auto_push_cooldown_sec = max(0, int(os.getenv("RESUME_MATCHER_AUTO_PUSH_COOLDOWN_SEC", "30") or 30))
+    push_state = {"last_push_ts": 0.0}
+
+    def _maybe_auto_push_db(run_id: int, status: str) -> None:
+        if not auto_push_on_run:
+            return
+        if not runtime_settings.get("write_mode"):
+            return
+        now = time.time()
+        if auto_push_cooldown_sec > 0 and (now - float(push_state["last_push_ts"])) < auto_push_cooldown_sec:
+            return
+        ok, msg = gh_sync.push_db()
+        print(f"[run {run_id}] auto-push after {status}: {'ok' if ok else 'failed'}: {msg}")
+        if ok:
+            push_state["last_push_ts"] = now
+
+    runner = JobRunner(repo=repo, analysis=analysis, on_run_terminal=_maybe_auto_push_db)
 
     @app.on_event("startup")
     def _startup() -> None:
-        auto_pull = os.getenv("RESUME_MATCHER_AUTO_PULL_DB_ON_START", "true").strip().lower() in ("1", "true", "yes", "on")
-        if auto_pull:
+        auto_pull_mode = os.getenv("RESUME_MATCHER_AUTO_PULL_DB_ON_START", "if_missing").strip().lower()
+        should_pull = False
+        if auto_pull_mode in ("1", "true", "yes", "on", "always"):
+            should_pull = True
+        elif auto_pull_mode in ("if_missing", "missing"):
+            db_missing = not os.path.exists(settings.db_path)
+            db_empty = (os.path.exists(settings.db_path) and os.path.getsize(settings.db_path) == 0)
+            should_pull = db_missing or db_empty
+        elif auto_pull_mode in ("0", "false", "no", "off", "never"):
+            should_pull = False
+
+        if should_pull:
             token, repo_name = gh_sync._credentials()
             if token and repo_name:
                 ok, msg = gh_sync.pull_db()
                 print(f"[startup] DB pull {'ok' if ok else 'failed'}: {msg}")
             else:
                 print("[startup] DB pull skipped: GitHub credentials not configured.")
+        else:
+            print(f"[startup] DB pull skipped (mode={auto_pull_mode}).")
         # Re-apply schema migrations after optional DB pull, so older DB snapshots
         # still get queue/log tables required by the background runner.
         db._init_db()

@@ -2,7 +2,7 @@ from fastapi.responses import HTMLResponse
 
 
 def render_console() -> HTMLResponse:
-    html = """
+    html = r"""
 <!doctype html>
 <html lang="en">
 <head>
@@ -1754,9 +1754,15 @@ def render_console() -> HTMLResponse:
   }
 
   async function onHistoryRunSelection() {
-    const id = Number((q('historyRunId') && q('historyRunId').value) || 0);
-    state.logPinnedRunId = id || null;
-    await loadLogs(id || null);
+    const raw = String((q('historyRunId') && q('historyRunId').value) || '').trim();
+    state.logPinnedRunId = raw || null;
+    if (q('selectedRunId') && raw) q('selectedRunId').value = '';
+    if (!raw) return;
+    if (raw.startsWith('legacy:')) {
+      await loadLegacyHistoryLog(Number(raw.split(':')[1] || 0));
+      return;
+    }
+    await loadLogs(Number(raw) || null);
   }
 
   function switchTop(name) {
@@ -2261,12 +2267,15 @@ def render_console() -> HTMLResponse:
         return Number(b.id || 0) - Number(a.id || 0);
       });
     const history = runs.filter((r) => r.status === 'completed' || r.status === 'failed');
+    const legacyHistory = (state.legacyRuns || []).map((r) => ({
+      id: `legacy:${r.id}`,
+      label: `legacy #${r.id} | ${r.name || 'Run'} | threshold ${r.threshold || 50}% | ${r.created_at || ''}`,
+    }));
 
     const activeSel = q('selectedRunId');
     const historySel = q('historyRunId');
     if (!activeSel || !historySel) return;
 
-    const prevActive = activeSel.value;
     const prevHistory = historySel.value;
 
     const fmt = (r) => {
@@ -2279,9 +2288,7 @@ def render_console() -> HTMLResponse:
       const stuckActive = active
         .filter((r) => r.status === 'running' && r.is_stuck)
         .sort((a, b) => Number(b.stuck_seconds || 0) - Number(a.stuck_seconds || 0));
-      if (prevActive && active.some((r) => String(r.id) === String(prevActive))) {
-        activeSel.value = String(prevActive);
-      } else if (state.logPinnedRunId && active.some((r) => Number(r.id) === Number(state.logPinnedRunId))) {
+      if (state.logPinnedRunId && active.some((r) => Number(r.id) === Number(state.logPinnedRunId))) {
         activeSel.value = String(state.logPinnedRunId);
       } else {
         // Focus stuck run first so blocked work is immediately visible.
@@ -2291,13 +2298,20 @@ def render_console() -> HTMLResponse:
       activeSel.innerHTML = '<option value="">No active runs</option>';
     }
 
-    if (history.length) {
+    if (history.length || legacyHistory.length) {
+      const queuedHistory = history.map((r) => `<option value="${r.id}">${fmt(r)}</option>`).join('');
+      const legacyOpts = legacyHistory.map((r) => `<option value="${r.id}">${r.label}</option>`).join('');
       historySel.innerHTML = '<option value="">Select completed/failed run</option>' +
-        history.map((r) => `<option value="${r.id}">${fmt(r)}</option>`).join('');
-      if (state.logPinnedRunId && history.some((r) => Number(r.id) === Number(state.logPinnedRunId))) {
-        historySel.value = String(state.logPinnedRunId);
-      } else if (prevHistory && history.some((r) => String(r.id) === String(prevHistory))) {
-        historySel.value = String(prevHistory);
+        (queuedHistory ? `<optgroup label="Background Queue Runs">${queuedHistory}</optgroup>` : '') +
+        (legacyOpts ? `<optgroup label="Legacy Runs">${legacyOpts}</optgroup>` : '');
+
+      const pinnedRaw = String(state.logPinnedRunId || '');
+      const pinnedMatchesQueued = pinnedRaw && history.some((r) => String(r.id) === pinnedRaw);
+      const pinnedMatchesLegacy = pinnedRaw && legacyHistory.some((r) => String(r.id) === pinnedRaw);
+      if (pinnedMatchesQueued || pinnedMatchesLegacy) {
+        historySel.value = pinnedRaw;
+      } else if (prevHistory && Array.from(historySel.options).some((o) => o.value === prevHistory)) {
+        historySel.value = prevHistory;
       }
     } else {
       historySel.innerHTML = '<option value="">No completed/failed runs</option>';
@@ -2505,6 +2519,7 @@ def render_console() -> HTMLResponse:
         runIds.push(Number(run.id));
       }
       if (queued === 0) throw new Error('No rerun tasks were queued.');
+      state.logPinnedRunId = null;
       state.analysisQueuedRunIds = runIds.slice();
       startAnalysisAutoPoll();
       await refreshRunPanels();
@@ -2533,6 +2548,7 @@ def render_console() -> HTMLResponse:
           force_rerun_deep: cfg.forceDeep,
         },
       });
+      state.logPinnedRunId = null;
       q('selectedRunId').value = String(run.id);
       state.analysisQueuedRunIds = [Number(run.id)];
       startAnalysisAutoPoll();
@@ -2610,8 +2626,28 @@ def render_console() -> HTMLResponse:
     if (pinnedRunId) {
       await loadLogs(pinnedRunId);
     } else {
-      const selectedRunId = Number(q('selectedRunId').value || 0);
-      if (selectedRunId) await loadLogs(selectedRunId);
+      const newlyRunning = runs
+        .filter((r) => {
+          const prev = previousById.get(Number(r.id));
+          return r.status === 'running' && (!prev || prev.status !== 'running');
+        })
+        .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+      const running = runs
+        .filter((r) => r.status === 'running')
+        .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+      const queued = runs
+        .filter((r) => r.status === 'queued')
+        .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+      const followRun = newlyRunning[0] || running[0] || queued[0] || null;
+      if (followRun) {
+        const sel = q('selectedRunId');
+        if (sel && Array.from(sel.options).some((o) => String(o.value) === String(followRun.id))) {
+          sel.value = String(followRun.id);
+        }
+        await loadLogs(Number(followRun.id));
+      } else {
+        q('runLogs').textContent = 'No active run selected.';
+      }
     }
 
     if (!runChanged) return;
@@ -2649,8 +2685,20 @@ def render_console() -> HTMLResponse:
       await loadLogs(pinnedRunId);
       return;
     }
-    const activeRunId = Number(q('selectedRunId').value || 0);
-    if (activeRunId) return loadLogs(activeRunId);
+    const running = runs
+      .filter((r) => r.status === 'running')
+      .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+    const queued = runs
+      .filter((r) => r.status === 'queued')
+      .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+    const followRun = running[0] || queued[0] || null;
+    if (followRun) {
+      const sel = q('selectedRunId');
+      if (sel && Array.from(sel.options).some((o) => String(o.value) === String(followRun.id))) {
+        sel.value = String(followRun.id);
+      }
+      return loadLogs(Number(followRun.id));
+    }
     const historyRunId = Number(q('historyRunId').value || 0);
     if (historyRunId) return loadLogs(historyRunId);
   }
@@ -3052,6 +3100,7 @@ def render_console() -> HTMLResponse:
 
       if (queued === 0) throw new Error('No resumes matched selected JD tag(s).');
       if (lastRunId) {
+        state.logPinnedRunId = null;
         q('selectedRunId').value = String(lastRunId);
         await loadLogs();
       }
@@ -3071,9 +3120,24 @@ def render_console() -> HTMLResponse:
       return;
     }
     try {
-      const logs = await getJson(`/v1/runs/${id}/logs`);
+      const [run, logs] = await Promise.all([
+        getJson(`/v1/runs/${id}`),
+        getJson(`/v1/runs/${id}/logs`),
+      ]);
       const el = q('runLogs');
-      el.textContent = logs.map((l) => `[${l.created_at}] ${String(l.level || '').toUpperCase()} ${l.message}`).join(String.fromCharCode(10));
+      const header = [
+        `Run #${run.id} | ${run.job_type} | status=${run.status} | progress=${run.progress || 0}%`,
+        `Step: ${run.current_step || '-'}`,
+      ];
+      if (run.error) header.push(`Error: ${run.error}`);
+      if (run.result && Object.keys(run.result).length) {
+        header.push(`Result: ${JSON.stringify(run.result)}`);
+      }
+      const timeline = (logs || []).map((l) => `[${l.created_at}] ${String(l.level || '').toUpperCase()} ${l.message}`);
+      if (!timeline.length) {
+        timeline.push('No run log lines were recorded for this run.');
+      }
+      el.textContent = [...header, '', ...timeline].join(String.fromCharCode(10));
       el.scrollTop = el.scrollHeight;
     } catch (e) {
       q('runLogs').textContent = e.message;
@@ -3081,10 +3145,42 @@ def render_console() -> HTMLResponse:
   }
 
   async function loadHistoryLogs() {
-    const id = Number(q('historyRunId').value || 0);
-    if (!id) return;
-    state.logPinnedRunId = id;
-    await loadLogs(id);
+    const raw = String((q('historyRunId') && q('historyRunId').value) || '').trim();
+    if (!raw) return;
+    state.logPinnedRunId = raw;
+    if (raw.startsWith('legacy:')) {
+      await loadLegacyHistoryLog(Number(raw.split(':')[1] || 0));
+      return;
+    }
+    await loadLogs(Number(raw));
+  }
+
+  async function loadLegacyHistoryLog(legacyRunId) {
+    if (!legacyRunId) {
+      q('runLogs').textContent = 'No legacy run selected.';
+      return;
+    }
+    try {
+      const meta = (state.legacyRuns || []).find((r) => Number(r.id) === Number(legacyRunId)) || null;
+      const results = await getJson(`/v1/runs/legacy/${legacyRunId}/results`);
+      const total = results.length;
+      const deep = results.filter((r) => String(r.strategy || '') === 'Deep').length;
+      const std = total - deep;
+      const uniqueCandidates = new Set(results.map((r) => r.candidate_name || '')).size;
+      const uniqueJobs = new Set(results.map((r) => r.job_id)).size;
+      const header = [
+        `Legacy Run #${legacyRunId}${meta ? ` | ${meta.name}` : ''}`,
+        `Created: ${meta ? (meta.created_at || '-') : '-'}`,
+        `Threshold: ${meta ? (meta.threshold || 50) : 50}%`,
+        '',
+        `Summary: total=${total}, deep=${deep}, standard=${std}, unique_candidates=${uniqueCandidates}, unique_jobs=${uniqueJobs}`,
+        '',
+        'Execution logs are unavailable for legacy runs. Detailed logging exists only for background queue runs.',
+      ];
+      q('runLogs').textContent = header.join(String.fromCharCode(10));
+    } catch (e) {
+      q('runLogs').textContent = `Failed to load legacy run history: ${e.message}`;
+    }
   }
 
   async function resumeSelectedRun() {
