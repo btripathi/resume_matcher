@@ -1211,17 +1211,18 @@ def render_console() -> HTMLResponse:
         <div class="caption">Select type, filter by tag, then click a row to open details below.</div>
         <div class="row3 row">
           <select id="manageEntityType" onchange="renderUnifiedDataBrowser()">
+            <option value="all" selected>All Documents</option>
             <option value="job">Job Descriptions</option>
             <option value="resume">Resumes</option>
           </select>
           <select id="manageEntityTag" onchange="renderUnifiedDataBrowser()"></select>
           <input id="manageEntitySearch" placeholder="Search filename..." oninput="renderUnifiedDataBrowser()" />
         </div>
+        <div class="table-wrap no-scroll row" id="manageEntityTable"></div>
         <div class="row2 row">
           <select id="manageEntitySelect" onchange="openUnifiedDataRecord()"></select>
           <div class="caption" id="manageEntityCount">0 items</div>
         </div>
-        <div class="table-wrap no-scroll row" id="manageEntityTable"></div>
       </div>
       <div class="card row manage-data-section" id="unifiedDataEditor" style="display:none;">
         <h3 id="unifiedEditTitle">Document Details</h3>
@@ -1243,7 +1244,8 @@ def render_console() -> HTMLResponse:
           <button class="secondary" onclick="formatJsonEditor('unifiedJsonEditor','msgUnifiedEdit')">Format JSON</button>
           <button class="secondary" onclick="validateJsonEditor('unifiedJsonEditor','msgUnifiedEdit')">Validate JSON</button>
         </div>
-        <div class="row2 row">
+        <div class="row3 row">
+          <button class="secondary" onclick="reprocessUnifiedRecord()">Reprocess</button>
           <button class="primary" onclick="saveUnifiedRecord()">Save Changes</button>
           <button class="danger" onclick="deleteUnifiedRecord()">Delete</button>
         </div>
@@ -1543,6 +1545,7 @@ def render_console() -> HTMLResponse:
     selectedEditResId: null,
     selectedUnifiedType: null,
     selectedUnifiedId: null,
+    reprocessRunId: null,
   };
 
   const q = (id) => document.getElementById(id);
@@ -2367,10 +2370,17 @@ def render_console() -> HTMLResponse:
   }
 
   function getUnifiedDataRows() {
-    const mode = String((q('manageEntityType') && q('manageEntityType').value) || 'job');
+    const mode = String((q('manageEntityType') && q('manageEntityType').value) || 'all');
     const tag = String((q('manageEntityTag') && q('manageEntityTag').value) || 'All');
     const search = String((q('manageEntitySearch') && q('manageEntitySearch').value) || '').trim().toLowerCase();
-    const source = mode === 'resume' ? (state.resumes || []) : (state.jobs || []);
+    const source = mode === 'all'
+      ? [
+          ...(state.jobs || []).map((row) => ({ ...row, _entityType: 'job' })),
+          ...(state.resumes || []).map((row) => ({ ...row, _entityType: 'resume' })),
+        ]
+      : (mode === 'resume'
+          ? (state.resumes || []).map((row) => ({ ...row, _entityType: 'resume' }))
+          : (state.jobs || []).map((row) => ({ ...row, _entityType: 'job' })));
     return source.filter((row) => {
       const filename = String(row.filename || '');
       const tags = (row.tags || []).map((t) => String(t).trim());
@@ -2384,7 +2394,7 @@ def render_console() -> HTMLResponse:
     const select = q('manageEntitySelect');
     const table = q('manageEntityTable');
     const count = q('manageEntityCount');
-    const mode = String((q('manageEntityType') && q('manageEntityType').value) || 'job');
+    const mode = String((q('manageEntityType') && q('manageEntityType').value) || 'all');
     const tag = q('manageEntityTag');
     if (tag && !tag.options.length) {
       tag.innerHTML = '<option value="All">All Tags</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
@@ -2393,18 +2403,26 @@ def render_console() -> HTMLResponse:
     if (!select || !table || !count) return;
     const rows = getUnifiedDataRows();
     const prev = String(select.value || '');
-    select.innerHTML = '<option value="">Select document</option>' + rows.map((r) => `<option value="${r.id}">${escapeHtml(r.filename || '')}</option>`).join('');
-    if (prev && rows.some((r) => String(r.id) === prev)) select.value = prev;
+    select.innerHTML = '<option value="">Select document</option>' + rows.map((r) => {
+      const key = `${String(r._entityType || mode)}:${Number(r.id)}`;
+      return `<option value="${escapeHtml(key)}">${escapeHtml(r.filename || '')}</option>`;
+    }).join('');
+    if (prev && rows.some((r) => `${String(r._entityType || mode)}:${Number(r.id)}` === prev)) select.value = prev;
     count.textContent = `${rows.length} item(s)`;
-    table.innerHTML = '<table><thead><tr><th>Filename</th><th>Tags</th><th>Upload Date</th></tr></thead><tbody>' +
-      rows.map((r) => `<tr style="cursor:pointer" onclick="openUnifiedDataRecord(${Number(r.id)})"><td>${escapeHtml(r.filename || '')}</td><td>${escapeHtml((r.tags || []).join(', '))}</td><td>${escapeHtml(r.upload_date || '')}</td></tr>`).join('') +
+    table.innerHTML = '<table><thead><tr><th>Type</th><th>Filename</th><th>Tags</th><th>Upload Date</th></tr></thead><tbody>' +
+      rows.map((r) => {
+        const key = `${String(r._entityType || mode)}:${Number(r.id)}`;
+        const typeLabel = String(r._entityType || mode) === 'resume' ? 'Resume' : 'JD';
+        return `<tr style="cursor:pointer" onclick="openUnifiedDataRecord('${escapeHtml(key)}')"><td>${typeLabel}</td><td>${escapeHtml(r.filename || '')}</td><td>${escapeHtml((r.tags || []).join(', '))}</td><td>${escapeHtml(r.upload_date || '')}</td></tr>`;
+      }).join('') +
       '</tbody></table>';
-    const selectedId = Number(select.value || 0);
-    if (!selectedId && rows.length) {
-      select.value = String(rows[0].id);
+    const selectedKey = String(select.value || '');
+    if (!selectedKey && rows.length) {
+      const first = rows[0];
+      select.value = `${String(first._entityType || mode)}:${Number(first.id)}`;
     }
-    if (Number(select.value || 0)) {
-      openUnifiedDataRecord(Number(select.value || 0), true);
+    if (String(select.value || '').includes(':')) {
+      openUnifiedDataRecord(String(select.value || ''), true);
     } else {
       if (q('unifiedEditTitle')) q('unifiedEditTitle').textContent = mode === 'job' ? 'JD Details' : 'Resume Details';
       if (q('unifiedEditingLabel')) q('unifiedEditingLabel').textContent = 'Editing: none selected';
@@ -2429,10 +2447,22 @@ def render_console() -> HTMLResponse:
 
   async function openUnifiedDataRecord(id = null, preserve = false) {
     try {
-      const mode = String((q('manageEntityType') && q('manageEntityType').value) || 'job');
-      const targetId = Number(id || (q('manageEntitySelect') && q('manageEntitySelect').value) || 0);
+      const selectedRaw = String(id || (q('manageEntitySelect') && q('manageEntitySelect').value) || '').trim();
+      const modeFromFilter = String((q('manageEntityType') && q('manageEntityType').value) || 'all');
+      let mode = modeFromFilter === 'resume' ? 'resume' : 'job';
+      let targetId = 0;
+      if (selectedRaw.includes(':')) {
+        const parts = selectedRaw.split(':');
+        const parsedMode = String(parts[0] || '').trim();
+        const parsedId = Number(parts[1] || 0);
+        if (parsedMode === 'job' || parsedMode === 'resume') mode = parsedMode;
+        targetId = parsedId;
+      } else {
+        targetId = Number(selectedRaw || 0);
+      }
       if (!targetId) return;
-      if (!preserve && q('manageEntitySelect')) q('manageEntitySelect').value = String(targetId);
+      const selectKey = `${mode}:${targetId}`;
+      if (!preserve && q('manageEntitySelect')) q('manageEntitySelect').value = selectKey;
       const rec = mode === 'job'
         ? await getJson(`/v1/jobs/${targetId}`)
         : await getJson(`/v1/resumes/${targetId}`);
@@ -2485,6 +2515,36 @@ def render_console() -> HTMLResponse:
       await refreshAll();
       if (q('manageEntityType')) q('manageEntityType').value = mode;
       if (q('manageEntitySelect')) q('manageEntitySelect').value = String(id);
+      await openUnifiedDataRecord(id, true);
+    } catch (e) {
+      setMsg('msgUnifiedEdit', e.message, false);
+    }
+  }
+
+  async function reprocessUnifiedRecord() {
+    try {
+      const mode = String(state.selectedUnifiedType || '');
+      const id = Number(state.selectedUnifiedId || 0);
+      if (!mode || !id) throw new Error('Select a document first.');
+      const rec = mode === 'job'
+        ? await getJson(`/v1/jobs/${id}`)
+        : await getJson(`/v1/resumes/${id}`);
+      const run = await send('/v1/runs', 'POST', {
+        job_type: mode === 'job' ? 'reprocess_job' : 'reprocess_resume',
+        payload: mode === 'job' ? { job_id: id } : { resume_id: id },
+      });
+      const runId = Number(run && run.id);
+      if (runId) {
+        state.reprocessRunId = runId;
+        if (q('selectedRunId')) q('selectedRunId').value = String(runId);
+        state.logPinnedRunId = null;
+        setTrackedBatchRunIds([runId]);
+        startAnalysisAutoPoll();
+        await refreshRunPanels();
+        await loadLogs(runId);
+      }
+      setMsg('msgUnifiedEdit', `Queued reprocess run #${runId} for ${rec.filename || 'selected document'}.`);
+      await refreshAll();
       await openUnifiedDataRecord(id, true);
     } catch (e) {
       setMsg('msgUnifiedEdit', e.message, false);
@@ -3457,6 +3517,9 @@ def render_console() -> HTMLResponse:
     await loadLegacyRunResults(true);
     renderUnifiedDataBrowser();
     updateAnalysisQueueMessage();
+    const hasActiveQueue = (state.runs || []).some((r) => r.status === 'queued' || r.status === 'running');
+    if (hasActiveQueue) startAnalysisAutoPoll();
+    else stopAnalysisAutoPoll();
   }
 
   function runSignature(rows) {
@@ -3467,9 +3530,6 @@ def render_console() -> HTMLResponse:
 
   async function pollRunActivity() {
     if (!state.analysisAutoPollEnabled) return;
-    const analysisActive = q('panel-analysis').classList.contains('active');
-    const autoUploadTracked = (state.autoUploadRunIds || []).length > 0;
-    if (!analysisActive && !autoUploadTracked) return;
 
     const previousRuns = state.runs || [];
     const hadActive = previousRuns.some((r) => r.status === 'queued' || r.status === 'running');
@@ -3482,6 +3542,27 @@ def render_console() -> HTMLResponse:
     state.runs = runs;
     renderRuns();
     updateAnalysisQueueMessage();
+    const trackedReprocessRunId = Number(state.reprocessRunId || 0);
+    if (trackedReprocessRunId) {
+      const reprocessRun = runs.find((r) => Number(r.id) === trackedReprocessRunId) || null;
+      if (reprocessRun) {
+        const status = String(reprocessRun.status || '');
+        const filename = reprocessRun && reprocessRun.payload ? String(reprocessRun.payload.filename || '') : '';
+        if (status === 'queued' || status === 'running' || status === 'paused') {
+          setMsg('msgUnifiedEdit', `Reprocess run #${trackedReprocessRunId} is ${status}${filename ? ` for ${filename}` : ''}.`);
+        } else if (status === 'completed') {
+          setMsg('msgUnifiedEdit', `Reprocess run #${trackedReprocessRunId} completed.`);
+          state.reprocessRunId = null;
+          if (state.selectedUnifiedId) {
+            await openUnifiedDataRecord(Number(state.selectedUnifiedId), true);
+          }
+        } else if (status === 'failed' || status === 'canceled') {
+          const err = String(reprocessRun.error || '').trim();
+          setMsg('msgUnifiedEdit', `Reprocess run #${trackedReprocessRunId} ${status}.${err ? ` ${err}` : ''}`, false);
+          state.reprocessRunId = null;
+        }
+      }
+    }
     const pauseSettleRunId = Number(state.pauseSettleRunId || 0);
     if (pauseSettleRunId) {
       const settleRun = runs.find((r) => Number(r.id) === pauseSettleRunId) || null;
@@ -3497,7 +3578,7 @@ def render_console() -> HTMLResponse:
       stopAnalysisAutoPoll();
       return;
     }
-    if (!state.pauseSettleRunId && !hasLiveQueueRuns(runs) && !(state.analysisQueuedRunIds || []).length) {
+    if (!state.pauseSettleRunId && !hasLiveQueueRuns(runs)) {
       stopAnalysisAutoPoll();
       return;
     }
@@ -3545,16 +3626,29 @@ def render_console() -> HTMLResponse:
       const prev = previousById.get(Number(r.id));
       if (!prev) return false;
       const prevActive = prev.status === 'queued' || prev.status === 'running' || prev.status === 'paused';
-      const nowTerminal = r.status === 'completed' || r.status === 'failed';
+      const nowTerminal = r.status === 'completed' || r.status === 'failed' || r.status === 'canceled';
       return prevActive && nowTerminal;
     });
 
-    if (!transitioned.length) return;
+    const affectsDataJobType = (r) =>
+      r.job_type === 'ingest_job' ||
+      r.job_type === 'ingest_resume' ||
+      r.job_type === 'ingest_job_file' ||
+      r.job_type === 'ingest_resume_file' ||
+      r.job_type === 'ingest_auto_file' ||
+      r.job_type === 'reprocess_job' ||
+      r.job_type === 'reprocess_resume' ||
+      r.job_type === 'score_match';
 
-    const affectsData = transitioned.some((r) =>
-      r.job_type === 'ingest_job' || r.job_type === 'ingest_resume' || r.job_type === 'score_match'
-    );
-    if (affectsData || hadActive !== hasActive) {
+    const transitionedAffectsData = transitioned.some(affectsDataJobType);
+    const fastTerminalAffectsData = runs.some((r) => {
+      const prev = previousById.get(Number(r.id));
+      if (prev) return false;
+      const nowTerminal = r.status === 'completed' || r.status === 'failed' || r.status === 'canceled';
+      return nowTerminal && affectsDataJobType(r);
+    });
+
+    if (transitionedAffectsData || fastTerminalAffectsData || hadActive !== hasActive) {
       await refreshAll();
     }
 
