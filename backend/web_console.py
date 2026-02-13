@@ -257,7 +257,22 @@ def render_console() -> HTMLResponse:
     .row { margin-top: 8px; }
     .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .row4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; }
     .check-inline { display: flex; align-items: center; gap: 8px; }
+    .analysis-options {
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+    .analysis-actions {
+      display: grid;
+      grid-template-columns: 1fr minmax(220px, 320px);
+      gap: 10px;
+      align-items: end;
+    }
+    .analysis-actions .primary {
+      height: 42px;
+    }
 
     input, textarea, select, button {
       width: 100%;
@@ -828,7 +843,8 @@ def render_console() -> HTMLResponse:
 
     @media (max-width: 1100px) {
       h1 { font-size: 40px; }
-      .grid2, .grid3, .row2, .row3, .metrics3, .metrics5 { grid-template-columns: 1fr; }
+      .grid2, .grid3, .row2, .row3, .row4, .metrics3, .metrics5 { grid-template-columns: 1fr; }
+      .analysis-actions { grid-template-columns: 1fr; }
       .investigator-controls { grid-template-columns: 1fr; }
       .investigator-controls button { width: 100%; min-width: 0; justify-self: stretch; }
       .settings-grid { grid-template-columns: 1fr; }
@@ -1016,15 +1032,21 @@ def render_console() -> HTMLResponse:
           <select id="analysisTagFilter" onchange="applyAnalysisTagFilter()"></select>
         </div>
         <div>
-          <label class="caption check-inline" style="margin-top:24px;">
-            <input id="analysisAutoTagMatch" type="checkbox" checked onchange="onAnalysisSelectionChange()" />
-            🎯 Auto-match based on JD Tags
-          </label>
-          <label class="caption check-inline row">
-            <input id="autoDeep" type="checkbox" checked />
-            ✨ Auto-Upgrade to Deep Match
-          </label>
+          <label class="caption" style="display:block; margin-bottom:6px;">Run Name</label>
+          <input id="runName" placeholder="Run Name" />
         </div>
+      </div>
+      <div class="row4 section">
+        <label class="caption check-inline">
+          <input id="analysisAutoTagMatch" type="checkbox" checked onchange="onAnalysisSelectionChange()" />
+          🎯 Auto-match based on JD Tags
+        </label>
+        <label class="caption check-inline">
+          <input id="autoDeep" type="checkbox" checked />
+          ✨ Auto-Upgrade to Deep Match
+        </label>
+        <label class="caption check-inline"><input id="forceRerunPass1" type="checkbox" /> Force Re-run Pass 1</label>
+        <label class="caption check-inline"><input id="forceRerunDeep" type="checkbox" onchange="syncAnalysisDeepForce()" /> Force Re-run Deep Scan</label>
       </div>
       <div class="caption section">
         <div id="selectedCountJd">Selected JDs: 0 / 0</div>
@@ -1033,8 +1055,7 @@ def render_console() -> HTMLResponse:
 
       <div class="card section">
         <h3>⚙️ Smart Match Configuration</h3>
-        <div class="row2">
-          <input id="runName" placeholder="Run Name" />
+        <div class="analysis-actions">
           <div>
             <label class="caption" style="display:block; margin-bottom:4px;">Deep Match Threshold (%)</label>
             <div class="row2" style="grid-template-columns: 1fr 60px; align-items:center;">
@@ -1042,25 +1063,24 @@ def render_console() -> HTMLResponse:
               <span id="thresholdValue" style="font-weight:700; text-align:right;">50</span>
             </div>
           </div>
+          <button class="primary" id="startAnalysisBtn" onclick="queueScoreMatch()">🚀 START ANALYSIS</button>
         </div>
-        <div class="row3 row">
-          <label class="caption check-inline"><input id="forceRerunPass1" type="checkbox" /> Force Re-run Pass 1 (Standard Match)</label>
-          <label class="caption check-inline"><input id="forceRerunDeep" type="checkbox" onchange="syncAnalysisDeepForce()" /> Force Re-run Deep Scan</label>
-          <div></div>
-        </div>
-        <button class="primary row" onclick="queueScoreMatch()">🚀 START ANALYSIS</button>
         <div class="msg" id="msgMatch"></div>
       </div>
 
       <div class="card">
         <h3>Live Run Logs</h3>
-        <div class="caption" id="runCounts">Running: 0 | Queued: 0 | Completed: 0 | Failed: 0</div>
+        <div class="caption" id="runCounts">No active queue jobs.</div>
         <div class="run-stuck-alert" id="runStuckAlert"></div>
         <div class="run-health" id="runHealthBox">
           <div class="run-health-title">Selected Run Status</div>
           <div class="run-health-meta" id="runHealthMeta">No active run selected.</div>
           <div class="run-health-actions">
             <button class="danger" id="resumeRunBtn" style="display:none;" onclick="resumeSelectedRun()">Resume Stuck Run</button>
+            <button class="secondary" id="pauseRunBtn" style="display:none;" onclick="pauseSelectedRun()">Pause Run</button>
+            <button class="secondary" id="skipCurrentBtn" style="display:none;" onclick="skipCurrentRun()">⏭ Skip Current Job</button>
+            <button class="danger" id="cancelRunBtn" style="display:none;" onclick="cancelSelectedRun()">Stop &amp; Clean Run</button>
+            <button class="danger" id="cancelBatchBtn" style="display:none;" onclick="cancelWholeBatch()">🛑 Stop Whole Batch</button>
           </div>
         </div>
         <div class="status-bars">
@@ -1085,7 +1105,7 @@ def render_console() -> HTMLResponse:
         </div>
         <div class="logs row" id="runLogs">No active run selected.</div>
         <details class="expander row">
-          <summary>History Runs (Completed / Failed)</summary>
+          <summary>History Runs (Completed / Failed / Canceled)</summary>
           <div class="row2 row">
             <select id="historyRunId" onchange="onHistoryRunSelection()"></select>
             <button class="secondary" onclick="loadHistoryLogs()">View Selected History Log</button>
@@ -1361,6 +1381,9 @@ def render_console() -> HTMLResponse:
     lastAutoRunName: null,
     analysisQueuedRunIds: [],
     analysisAutoPollEnabled: false,
+    analysisSubmitting: false,
+    pauseSettleRunId: null,
+    queuePauseActionInFlight: false,
     logPinnedRunId: null,
     settings: null,
     selectedEditJdId: null,
@@ -1407,6 +1430,22 @@ def render_console() -> HTMLResponse:
   function clearTrackedBatchRunIds() {
     state.analysisQueuedRunIds = [];
     persistBatchRunIds([]);
+  }
+
+  function isQueuePausedByRuns(runs = null) {
+    const rows = Array.isArray(runs) ? runs : (state.runs || []);
+    return rows.some((r) => String(r && r.status ? r.status : '') === 'paused' || isPauseRequested(r));
+  }
+
+  function hasLiveQueueRuns(runs = null) {
+    const rows = Array.isArray(runs) ? runs : (state.runs || []);
+    if (isQueuePausedByRuns(rows)) return false;
+    return rows.some((r) => {
+      const status = String(r && r.status ? r.status : '');
+      if (status === 'queued') return true;
+      if (status === 'running' && !isPauseRequested(r)) return true;
+      return false;
+    });
   }
 
   function debugLog(message, level = 'info') {
@@ -1667,13 +1706,20 @@ def render_console() -> HTMLResponse:
     return `${jobName} x ${resumeName}`.trim();
   }
 
+  function isPauseRequested(run) {
+    if (!run || String(run.status || '') !== 'running') return false;
+    const payload = run.payload || {};
+    return !!(payload && payload.pause_requested) || String(run.current_step || '') === 'pause_requested';
+  }
+
   function updateRunStatusBars() {
     const runs = state.runs || [];
     const active = runs
-      .filter((r) => r.status === 'queued' || r.status === 'running')
+      .filter((r) => r.status === 'queued' || r.status === 'running' || r.status === 'paused')
       .sort((a, b) => {
-        const pa = a.status === 'running' ? 0 : 1;
-        const pb = b.status === 'running' ? 0 : 1;
+        const rank = (s) => (s === 'running' ? 0 : s === 'paused' ? 1 : 2);
+        const pa = rank(a.status);
+        const pb = rank(b.status);
         if (pa !== pb) return pa - pb;
         return Number(b.id || 0) - Number(a.id || 0);
       });
@@ -1698,18 +1744,22 @@ def render_console() -> HTMLResponse:
       const total = ids.length;
       const completed = rows.filter((r) => r.status === 'completed').length;
       const failed = rows.filter((r) => r.status === 'failed').length;
-      const running = rows.filter((r) => r.status === 'running').length;
+      const canceled = rows.filter((r) => r.status === 'canceled').length;
+      const running = rows.filter((r) => r.status === 'running' && !isPauseRequested(r)).length;
+      const paused = rows.filter((r) => r.status === 'paused' || isPauseRequested(r)).length;
       const queuedKnown = rows.filter((r) => r.status === 'queued').length;
       const queuedUnknown = Math.max(0, total - known);
       const queued = queuedKnown + queuedUnknown;
-      const done = completed + failed;
+      const done = completed + failed + canceled;
       const pct = total ? Math.round((done / total) * 100) : 0;
       const failPart = failed ? `, ${failed} failed` : '';
+      const canceledPart = canceled ? `, ${canceled} canceled` : '';
       const runPart = running ? `, ${running} running` : '';
+      const pausedPart = paused ? `, ${paused} paused` : '';
       const queuePart = queued ? `, ${queued} queued` : '';
 
       if (q('batchProgressLabel')) q('batchProgressLabel').textContent = `Batch Progress • ${total} job(s)`;
-      if (q('batchProgressMeta')) q('batchProgressMeta').textContent = `${completed}/${total} complete${failPart}${runPart}${queuePart}`;
+      if (q('batchProgressMeta')) q('batchProgressMeta').textContent = `${completed}/${total} complete${failPart}${canceledPart}${runPart}${pausedPart}${queuePart}`;
       if (q('batchProgressFill')) q('batchProgressFill').style.width = `${pct}%`;
       return;
     }
@@ -1723,10 +1773,29 @@ def render_console() -> HTMLResponse:
     const box = q('runHealthBox');
     const meta = q('runHealthMeta');
     const btn = q('resumeRunBtn');
-    if (!box || !meta || !btn) return;
+    const pauseBtn = q('pauseRunBtn');
+    const skipBtn = q('skipCurrentBtn');
+    const cancelBtn = q('cancelRunBtn');
+    const cancelBatchBtn = q('cancelBatchBtn');
+    if (!box || !meta || !btn || !pauseBtn || !skipBtn || !cancelBtn || !cancelBatchBtn) return;
     const selectedRunId = Number((q('selectedRunId') && q('selectedRunId').value) || 0);
     const run = (state.runs || []).find((r) => Number(r.id) === selectedRunId) || null;
+    const rows = (state.runs || []).slice();
+    const pausedLike = rows.filter((r) => String(r.status || '') === 'paused' || isPauseRequested(r));
+    const runningLike = rows.filter((r) => String(r.status || '') === 'running' && !isPauseRequested(r));
+    const queuedLike = rows.filter((r) => String(r.status || '') === 'queued');
     btn.style.display = 'none';
+    pauseBtn.style.display = (pausedLike.length || runningLike.length || queuedLike.length) ? 'inline-flex' : 'none';
+    skipBtn.style.display = runningLike.length ? 'inline-flex' : 'none';
+    if (state.queuePauseActionInFlight) {
+      pauseBtn.disabled = true;
+      pauseBtn.textContent = pausedLike.length ? '⏳ Unpausing Queue...' : '⏳ Pausing Queue...';
+    } else {
+      pauseBtn.disabled = false;
+      pauseBtn.textContent = pausedLike.length ? '▶️ Unpause Queue' : '⏸ Pause Queue';
+    }
+    cancelBtn.style.display = 'none';
+    cancelBatchBtn.style.display = (runningLike.length || queuedLike.length || pausedLike.length) ? 'inline-flex' : 'none';
     box.classList.remove('stuck');
     if (!run) {
       meta.textContent = 'No active run selected.';
@@ -1736,6 +1805,9 @@ def render_console() -> HTMLResponse:
     const step = String(run.current_step || '-');
     const pct = Number(run.progress || 0);
     const stuck = !!run.is_stuck;
+    const payload = run.payload || {};
+    const pauseRequested = !!(payload && payload.pause_requested);
+    const pauseReason = String((payload && payload.pause_reason) || 'Paused by user');
     const entity = runEntityLabel(run);
     const marker = run.last_log_at || run.started_at || run.created_at || '';
     let lagSec = 0;
@@ -1750,7 +1822,22 @@ def render_console() -> HTMLResponse:
       meta.textContent = `Run #${run.id}${entity ? ` (${entity})` : ''} appears stuck (${sec}s without progress). Last step: ${step}.`;
       box.classList.add('stuck');
       btn.style.display = 'inline-flex';
+      cancelBtn.style.display = 'inline-flex';
       return;
+    }
+    if (status === 'paused') {
+      meta.textContent = `Run #${run.id}${entity ? ` (${entity})` : ''} is paused at ${pct}% • step: ${step}`;
+      cancelBtn.style.display = 'inline-flex';
+      return;
+    }
+    if (status === 'running' && pauseRequested) {
+      meta.textContent = `Run #${run.id}${entity ? ` (${entity})` : ''} pause requested (${pauseReason}) • step: ${step}`;
+      cancelBtn.style.display = 'inline-flex';
+      return;
+    }
+    if (status === 'queued' || status === 'running') {
+      pauseBtn.style.display = 'inline-flex';
+      cancelBtn.style.display = 'inline-flex';
     }
     if (status === 'running' && lagSec >= 45) {
       meta.textContent = `Run #${run.id}${entity ? ` (${entity})` : ''} is active at ${pct}% • waiting on model response for ~${lagSec}s • step: ${step}`;
@@ -1762,6 +1849,7 @@ def render_console() -> HTMLResponse:
   function updateAnalysisQueueMessage() {
     const ids = (state.analysisQueuedRunIds || []).map((x) => Number(x)).filter(Boolean);
     if (!ids.length) {
+      if (!hasLiveQueueRuns()) stopAnalysisAutoPoll();
       updateRunStatusBars();
       return;
     }
@@ -1770,6 +1858,9 @@ def render_console() -> HTMLResponse:
       .map((id) => state.runs.find((r) => Number(r.id) === id))
       .filter(Boolean);
     if (!rows.length) {
+      clearTrackedBatchRunIds();
+      setMsg('msgMatch', '', true);
+      if (!hasLiveQueueRuns()) stopAnalysisAutoPoll();
       updateRunStatusBars();
       return;
     }
@@ -1777,22 +1868,26 @@ def render_console() -> HTMLResponse:
     const completed = rows.filter((r) => r.status === 'completed').length;
     const running = rows.filter((r) => r.status === 'running').length;
     const queued = rows.filter((r) => r.status === 'queued').length;
+    const paused = rows.filter((r) => r.status === 'paused' || isPauseRequested(r)).length;
     const failed = rows.filter((r) => r.status === 'failed').length;
+    const canceled = rows.filter((r) => r.status === 'canceled').length;
 
     const idPreview = ids.length <= 6 ? ids.join(', ') : `${ids.slice(0, 6).join(', ')}, ...`;
     const total = ids.length;
-    if (completed === total && failed === 0) {
+    if (completed + canceled === total && failed === 0) {
       setMsg('msgMatch', '', true);
       clearTrackedBatchRunIds();
+      if (!hasLiveQueueRuns()) stopAnalysisAutoPoll();
       updateRunStatusBars();
       return;
     }
-    if (completed + failed >= total) {
+    if (completed + failed + canceled >= total) {
       // Terminal state reached for tracked batch.
       clearTrackedBatchRunIds();
+      if (!hasLiveQueueRuns()) stopAnalysisAutoPoll();
     }
 
-    const text = `Submitted ${total} analysis job(s): completed ${completed}, running ${running}, queued ${queued}, failed ${failed}. Runs #${idPreview}.`;
+    const text = `Tracking batch runs #${idPreview} (${total} total).`;
     setMsg('msgMatch', text, failed === 0);
     updateRunStatusBars();
   }
@@ -2154,6 +2249,7 @@ def render_console() -> HTMLResponse:
 
     applyAnalysisTagFilter(prevResume);
     const selectedJob = jobSel.value;
+    const preview = getAnalysisSelectionPreview();
     let defaultName = `Run ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
     if (selectedJob && selectedJob !== '__all__') {
       const job = state.jobs.find((j) => String(j.id) === String(selectedJob));
@@ -2161,7 +2257,8 @@ def render_console() -> HTMLResponse:
         defaultName = `Run: ${String(job.filename).replace(/\\.[^/.]+$/, '')}`;
       }
     } else {
-      defaultName = `Batch Run: ${state.jobs.length} Jobs`;
+      const jobCount = Math.max(1, Number(preview.effectiveJobs || 0));
+      defaultName = `Batch Run: ${jobCount} Jobs`;
     }
     const runNameInput = q('runName');
     const currentValue = (runNameInput.value || '').trim();
@@ -2187,9 +2284,53 @@ def render_console() -> HTMLResponse:
     onAnalysisSelectionChange();
   }
 
+  function getAnalysisSelectionPreview() {
+    const jdSel = q('matchJobSelect');
+    const rsSel = q('matchResumeSelect');
+    const autoTag = !!(q('analysisAutoTagMatch') && q('analysisAutoTagMatch').checked);
+    const jobRows = (jdSel && jdSel.value && jdSel.value !== '__all__')
+      ? state.jobs.filter((j) => String(j.id) === String(jdSel.value))
+      : state.jobs.slice();
+
+    let resumeIds = [];
+    if (rsSel && rsSel.value === '__all__') {
+      resumeIds = Array.from(rsSel.options || [])
+        .map((o) => Number(o.value))
+        .filter((v) => v && !Number.isNaN(v));
+    } else if (rsSel && rsSel.value) {
+      resumeIds = [Number(rsSel.value)].filter((v) => v && !Number.isNaN(v));
+    }
+
+    let effectiveJobs = 0;
+    let effectivePairs = 0;
+    for (const job of jobRows) {
+      let perJobResumeIds = resumeIds.slice();
+      const jdTags = (job && job.tags) ? job.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+      if (autoTag && jdTags.length) {
+        perJobResumeIds = perJobResumeIds.filter((rid) => {
+          const r = state.resumes.find((x) => Number(x.id) === Number(rid));
+          const rTags = (r && r.tags) ? r.tags.map((t) => String(t).trim()) : [];
+          return jdTags.some((t) => rTags.includes(t));
+        });
+      }
+      if (perJobResumeIds.length) {
+        effectiveJobs += 1;
+        effectivePairs += perJobResumeIds.length;
+      }
+    }
+    return {
+      totalJobs: state.jobs.length,
+      selectedJobsRaw: (jdSel && jdSel.value === '__all__') ? state.jobs.length : (jdSel && jdSel.value ? 1 : 0),
+      selectedResumesRaw: resumeIds.length,
+      effectiveJobs,
+      effectivePairs,
+    };
+  }
+
   function onAnalysisSelectionChange() {
     const jdSel = q('matchJobSelect');
     const rsSel = q('matchResumeSelect');
+    const preview = getAnalysisSelectionPreview();
     if (jdSel) {
       const selectedJob = jdSel.value;
       let defaultName = `Run ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
@@ -2197,16 +2338,17 @@ def render_console() -> HTMLResponse:
         const job = state.jobs.find((j) => String(j.id) === String(selectedJob));
         if (job && job.filename) defaultName = `Run: ${String(job.filename).replace(/\\.[^/.]+$/, '')}`;
       } else {
-        defaultName = `Batch Run: ${state.jobs.length} Jobs`;
+        const jobCount = Math.max(1, Number(preview.effectiveJobs || 0));
+        defaultName = `Batch Run: ${jobCount} Jobs`;
       }
       const runNameInput = q('runName');
       const currentValue = (runNameInput.value || '').trim();
       if (!currentValue || currentValue === state.lastAutoRunName) runNameInput.value = defaultName;
       state.lastAutoRunName = defaultName;
     }
-    const jdCount = jdSel && jdSel.value === '__all__' ? state.jobs.length : (jdSel && jdSel.value ? 1 : 0);
+    const jdCount = Number(preview.effectiveJobs || 0);
     const resOptions = rsSel ? Array.from(rsSel.options).filter((o) => o.value !== '__all__').length : 0;
-    const rsCount = rsSel && rsSel.value === '__all__' ? resOptions : (rsSel && rsSel.value ? 1 : 0);
+    const rsCount = rsSel && rsSel.value === '__all__' ? Number(preview.selectedResumesRaw || 0) : (rsSel && rsSel.value ? 1 : 0);
     q('selectedCountJd').textContent = `Selected JDs: ${jdCount} / ${state.jobs.length}`;
     q('selectedCountRes').textContent = `Selected Resumes: ${rsCount} / ${resOptions}`;
   }
@@ -2329,14 +2471,20 @@ def render_console() -> HTMLResponse:
   function renderRuns() {
     const runs = state.runs || [];
     const active = runs
-      .filter((r) => r.status === 'queued' || r.status === 'running')
+      .filter((r) => r.status === 'queued' || r.status === 'running' || r.status === 'paused')
       .sort((a, b) => {
-        const pa = a.status === 'running' ? 0 : 1;
-        const pb = b.status === 'running' ? 0 : 1;
+        const rank = (s) => (s === 'running' ? 0 : s === 'paused' ? 1 : 2);
+        const pa = rank(a.status);
+        const pb = rank(b.status);
         if (pa !== pb) return pa - pb;
-        return Number(b.id || 0) - Number(a.id || 0);
+        const ida = Number(a.id || 0);
+        const idb = Number(b.id || 0);
+        if (String(a.status || '') === 'queued' && String(b.status || '') === 'queued') {
+          return ida - idb; // front of queue first
+        }
+        return idb - ida;
       });
-    const history = runs.filter((r) => r.status === 'completed' || r.status === 'failed');
+    const history = runs.filter((r) => r.status === 'completed' || r.status === 'failed' || r.status === 'canceled');
     const legacyHistory = (state.legacyRuns || []).map((r) => ({
       id: `legacy:${r.id}`,
       label: `legacy #${r.id} | ${r.name || 'Run'} | threshold ${r.threshold || 50}% | ${r.created_at || ''}`,
@@ -2351,19 +2499,17 @@ def render_console() -> HTMLResponse:
     const fmt = (r) => {
       const stuckTag = r.is_stuck ? ' | STUCK' : '';
       const entity = runEntityLabel(r);
-      return `#${r.id} | ${r.job_type}${entity ? ` | ${entity}` : ''} | ${r.status}${stuckTag} | ${r.progress || 0}% | ${r.current_step || '-'}`;
+      const statusLabel = isPauseRequested(r) ? 'pause_requested' : String(r.status || '');
+      return `#${r.id} | ${r.job_type}${entity ? ` | ${entity}` : ''} | ${statusLabel}${stuckTag} | ${r.progress || 0}% | ${r.current_step || '-'}`;
     };
 
     if (active.length) {
       activeSel.innerHTML = active.map((r) => `<option value="${r.id}">${fmt(r)}</option>`).join('');
-      const stuckActive = active
-        .filter((r) => r.status === 'running' && r.is_stuck)
-        .sort((a, b) => Number(b.stuck_seconds || 0) - Number(a.stuck_seconds || 0));
       if (state.logPinnedRunId && active.some((r) => Number(r.id) === Number(state.logPinnedRunId))) {
         activeSel.value = String(state.logPinnedRunId);
       } else {
-        // Focus stuck run first so blocked work is immediately visible.
-        activeSel.value = String((stuckActive[0] || active[0]).id);
+        // Default to front active run (running > paused > queued), not stuck-first.
+        activeSel.value = String(active[0].id);
       }
     } else {
       activeSel.innerHTML = '<option value="">No active runs</option>';
@@ -2372,7 +2518,7 @@ def render_console() -> HTMLResponse:
     if (history.length || legacyHistory.length) {
       const queuedHistory = history.map((r) => `<option value="${r.id}">${fmt(r)}</option>`).join('');
       const legacyOpts = legacyHistory.map((r) => `<option value="${r.id}">${r.label}</option>`).join('');
-      historySel.innerHTML = '<option value="">Select completed/failed run</option>' +
+      historySel.innerHTML = '<option value="">Select completed/failed/canceled run</option>' +
         (queuedHistory ? `<optgroup label="Background Queue Runs">${queuedHistory}</optgroup>` : '') +
         (legacyOpts ? `<optgroup label="Legacy Runs">${legacyOpts}</optgroup>` : '');
 
@@ -2383,22 +2529,30 @@ def render_console() -> HTMLResponse:
         historySel.value = pinnedRaw;
       } else if (prevHistory && Array.from(historySel.options).some((o) => o.value === prevHistory)) {
         historySel.value = prevHistory;
-      } else if (history.length) {
-        historySel.value = String(history[0].id);
-      } else if (legacyHistory.length) {
-        historySel.value = String(legacyHistory[0].id);
+      } else {
+        historySel.value = '';
       }
     } else {
-      historySel.innerHTML = '<option value="">No completed/failed runs</option>';
+      historySel.innerHTML = '<option value="">No completed/failed/canceled runs</option>';
     }
 
-    const running = runs.filter((r) => r.status === 'running').length;
+    const running = runs.filter((r) => r.status === 'running' && !isPauseRequested(r)).length;
     const queued = runs.filter((r) => r.status === 'queued').length;
+    const paused = runs.filter((r) => r.status === 'paused' || isPauseRequested(r)).length;
     const completed = runs.filter((r) => r.status === 'completed').length;
     const failed = runs.filter((r) => r.status === 'failed').length;
+    const canceled = runs.filter((r) => r.status === 'canceled').length;
     const stuckRuns = runs.filter((r) => r.status === 'running' && r.is_stuck);
     const stuck = stuckRuns.length;
-    q('runCounts').textContent = `Running: ${running} | Queued: ${queued} | Completed: ${completed} | Failed: ${failed} | Stuck: ${stuck}`;
+    const activeTotal = running + queued + paused;
+    if (activeTotal > 0) {
+      const stuckPart = stuck ? ` | Stuck: ${stuck}` : '';
+      q('runCounts').textContent = `Active jobs: ${activeTotal} (running ${running}, queued ${queued}, paused ${paused})${stuckPart}`;
+    } else if (completed || failed || canceled) {
+      q('runCounts').textContent = `No active queue jobs. Recent terminal: completed ${completed}, failed ${failed}, canceled ${canceled}.`;
+    } else {
+      q('runCounts').textContent = 'No active queue jobs.';
+    }
     const stuckAlert = q('runStuckAlert');
     if (stuckAlert) {
       if (stuck > 0) {
@@ -2412,6 +2566,38 @@ def render_console() -> HTMLResponse:
     }
     updateRunStatusBars();
     updateRunHealthBanner();
+    updateStartAnalysisButtonState();
+  }
+
+  function updateStartAnalysisButtonState() {
+    const btn = q('startAnalysisBtn');
+    if (!btn) return;
+    if (state.analysisSubmitting) {
+      btn.disabled = true;
+      btn.textContent = '⏳ SUBMITTING...';
+      return;
+    }
+    const runs = state.runs || [];
+    const running = runs.filter((r) => r.status === 'running' && !isPauseRequested(r)).length;
+    const queued = runs.filter((r) => r.status === 'queued').length;
+    const paused = runs.filter((r) => r.status === 'paused' || isPauseRequested(r)).length;
+    if (running > 0) {
+      btn.disabled = false;
+      btn.textContent = `⏳ RUNNING (${running})`;
+      return;
+    }
+    if (queued > 0) {
+      btn.disabled = false;
+      btn.textContent = `⏳ QUEUED (${queued})`;
+      return;
+    }
+    if (paused > 0) {
+      btn.disabled = false;
+      btn.textContent = `⏸ PAUSED (${paused})`;
+      return;
+    }
+    btn.disabled = false;
+    btn.textContent = '🚀 START ANALYSIS';
   }
 
   function renderSimpleResults() {
@@ -2608,11 +2794,26 @@ def render_console() -> HTMLResponse:
     };
   }
 
+  async function createLegacyRun(name, threshold) {
+    const payload = {
+      name: String(name || '').trim(),
+      threshold: Number(threshold || 50),
+    };
+    if (!payload.name) throw new Error('Run name is required.');
+    return send('/v1/runs/legacy', 'POST', payload);
+  }
+
   async function queueLegacyBatchRerun() {
     try {
       const rows = state.legacyRunResults || [];
       if (!rows.length) throw new Error('No results in selected run batch.');
       const cfg = getLegacyRerunConfig();
+      const selectedLegacyRunId = Number(q('legacyRunSelect').value || 0);
+      const selectedLegacyMeta = (state.legacyRuns || []).find((r) => Number(r.id) === selectedLegacyRunId) || null;
+      const defaultName = selectedLegacyMeta && selectedLegacyMeta.name
+        ? String(selectedLegacyMeta.name).replace(/^Auto:\s*/i, 'Run: ')
+        : 'Run: Batch Rerun';
+      const legacyRun = await createLegacyRun(cfg.runName || defaultName, cfg.threshold);
       let queued = 0;
       const runIds = [];
       const seen = new Set();
@@ -2636,7 +2837,8 @@ def render_console() -> HTMLResponse:
             resume_id: Number(row.resume_id),
             threshold: cfg.threshold,
             auto_deep: cfg.autoDeep,
-            run_name: cfg.runName,
+            run_name: cfg.runName || null,
+            legacy_run_id: Number(legacyRun.id),
             force_rerun_pass1: cfg.forcePass1,
             force_rerun_deep: cfg.forceDeep,
           },
@@ -2649,7 +2851,7 @@ def render_console() -> HTMLResponse:
       setTrackedBatchRunIds(runIds.slice());
       startAnalysisAutoPoll();
       await refreshRunPanels();
-      setMsg('msgLegacyRerun', `Queued batch rerun: ${queued} task(s), run #${runIds.join(', ')}.`);
+      setMsg('msgLegacyRerun', `Queued batch rerun: ${queued} task(s), queue run #${runIds.join(', ')} linked to legacy run #${legacyRun.id}.`);
     } catch (e) {
       setMsg('msgLegacyRerun', e.message, false);
     }
@@ -2747,6 +2949,25 @@ def render_console() -> HTMLResponse:
     state.runs = runs;
     renderRuns();
     updateAnalysisQueueMessage();
+    const pauseSettleRunId = Number(state.pauseSettleRunId || 0);
+    if (pauseSettleRunId) {
+      const settleRun = runs.find((r) => Number(r.id) === pauseSettleRunId) || null;
+      const stillPendingPause = !!(
+        settleRun &&
+        (isPauseRequested(settleRun) || String(settleRun.status || '') === 'running')
+      );
+      if (!stillPendingPause) {
+        state.pauseSettleRunId = null;
+      }
+    }
+    if (!state.pauseSettleRunId && isQueuePausedByRuns(runs)) {
+      stopAnalysisAutoPoll();
+      return;
+    }
+    if (!state.pauseSettleRunId && !hasLiveQueueRuns(runs) && !(state.analysisQueuedRunIds || []).length) {
+      stopAnalysisAutoPoll();
+      return;
+    }
 
     const pinnedRunId = getPinnedRunId();
     if (pinnedRunId) {
@@ -2761,10 +2982,13 @@ def render_console() -> HTMLResponse:
       const running = runs
         .filter((r) => r.status === 'running')
         .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+      const paused = runs
+        .filter((r) => r.status === 'paused')
+        .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
       const queued = runs
         .filter((r) => r.status === 'queued')
-        .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
-      const followRun = newlyRunning[0] || running[0] || queued[0] || null;
+        .sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+      const followRun = newlyRunning[0] || running[0] || paused[0] || queued[0] || null;
       if (followRun) {
         const sel = q('selectedRunId');
         if (sel && Array.from(sel.options).some((o) => String(o.value) === String(followRun.id))) {
@@ -2787,7 +3011,7 @@ def render_console() -> HTMLResponse:
     const transitioned = runs.filter((r) => {
       const prev = previousById.get(Number(r.id));
       if (!prev) return false;
-      const prevActive = prev.status === 'queued' || prev.status === 'running';
+      const prevActive = prev.status === 'queued' || prev.status === 'running' || prev.status === 'paused';
       const nowTerminal = r.status === 'completed' || r.status === 'failed';
       return prevActive && nowTerminal;
     });
@@ -2819,10 +3043,13 @@ def render_console() -> HTMLResponse:
     const running = runs
       .filter((r) => r.status === 'running')
       .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+    const paused = runs
+      .filter((r) => r.status === 'paused')
+      .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
     const queued = runs
       .filter((r) => r.status === 'queued')
-      .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
-    const followRun = running[0] || queued[0] || null;
+      .sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+    const followRun = running[0] || paused[0] || queued[0] || null;
     if (followRun) {
       const sel = q('selectedRunId');
       if (sel && Array.from(sel.options).some((o) => String(o.value) === String(followRun.id))) {
@@ -3192,10 +3419,14 @@ def render_console() -> HTMLResponse:
   }
 
   async function queueScoreMatch() {
+    const startBtn = q('startAnalysisBtn');
+    state.analysisSubmitting = true;
+    updateStartAnalysisButtonState();
     try {
       const jobSel = q('matchJobSelect').value;
       const resSel = q('matchResumeSelect').value;
       const autoTag = q('analysisAutoTagMatch') && q('analysisAutoTagMatch').checked;
+      setMsg('msgMatch', 'Submitting analysis jobs...', true);
 
       const jobIds = jobSel === '__all__' ? state.jobs.map((j) => Number(j.id)) : [Number(jobSel)];
       let resumeIds = resSel === '__all__'
@@ -3215,6 +3446,7 @@ def render_console() -> HTMLResponse:
       let queued = 0;
       const queuedRunIds = [];
       let lastRunId = null;
+      let firstQueuedRunId = null;
       for (const job_id of jobIds) {
         const job = state.jobs.find((j) => Number(j.id) === Number(job_id));
         const jdTags = (job && job.tags) ? job.tags.map((t) => String(t).trim()).filter(Boolean) : [];
@@ -3227,6 +3459,10 @@ def render_console() -> HTMLResponse:
           });
         }
 
+        if (!perJobResumeIds.length) continue;
+        const defaultRunName = runName || `Auto: ${(job && job.filename) ? job.filename : `Job ${job_id}`}`;
+        const legacyRun = await createLegacyRun(defaultRunName, threshold);
+
         for (const resume_id of perJobResumeIds) {
           const run = await send('/v1/runs', 'POST', {
             job_type: 'score_match',
@@ -3235,7 +3471,8 @@ def render_console() -> HTMLResponse:
               resume_id,
               threshold,
               auto_deep: autoDeep,
-              run_name: runName,
+              run_name: runName || null,
+              legacy_run_id: Number(legacyRun.id),
               force_rerun_pass1: forceRerunPass1,
               force_rerun_deep: forceRerunDeep,
             },
@@ -3243,6 +3480,17 @@ def render_console() -> HTMLResponse:
           queued += 1;
           queuedRunIds.push(Number(run.id));
           lastRunId = run.id;
+          if (!firstQueuedRunId) {
+            firstQueuedRunId = Number(run.id);
+            state.logPinnedRunId = null;
+            q('selectedRunId').value = String(firstQueuedRunId);
+            setTrackedBatchRunIds([firstQueuedRunId]);
+            startAnalysisAutoPoll();
+            await refreshRunPanels();
+            await loadLogs(firstQueuedRunId);
+          } else if (queued % 5 === 0) {
+            setMsg('msgMatch', `Submitting analysis jobs... queued ${queued} so far.`, true);
+          }
         }
       }
 
@@ -3254,10 +3502,14 @@ def render_console() -> HTMLResponse:
       }
       setTrackedBatchRunIds(queuedRunIds.slice());
       startAnalysisAutoPoll();
+      setMsg('msgMatch', `Submitted ${queued} analysis job(s). Refreshing dashboard...`, true);
       await refreshAll();
       updateAnalysisQueueMessage();
     } catch (e) {
       setMsg('msgMatch', e.message, false);
+    } finally {
+      state.analysisSubmitting = false;
+      updateStartAnalysisButtonState();
     }
   }
 
@@ -3339,6 +3591,118 @@ def render_console() -> HTMLResponse:
       setMsg('msgMatch', r.message || `Run ${runId} resumed.`);
       await refreshRunPanels();
       await loadLogs(runId);
+    } catch (e) {
+      setMsg('msgMatch', e.message, false);
+    }
+  }
+
+  async function pauseSelectedRun() {
+    try {
+      state.queuePauseActionInFlight = true;
+      updateRunHealthBanner();
+      const runs = (state.runs || []).slice().sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+      const pausedLike = runs.filter((r) => String(r.status || '') === 'paused' || isPauseRequested(r));
+      if (pausedLike.length) {
+        state.pauseSettleRunId = null;
+        const resp = await send('/v1/queue/resume', 'POST', {});
+        setMsg('msgMatch', resp.message || 'Queue unpaused.');
+        await refreshRunPanels();
+        const refreshedRuns = state.runs || [];
+        const runningNow = refreshedRuns
+          .filter((r) => String(r.status || '') === 'running')
+          .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+        const queuedNow = refreshedRuns
+          .filter((r) => String(r.status || '') === 'queued')
+          .sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+        const follow = runningNow[0] || queuedNow[0] || null;
+        if (follow && q('selectedRunId')) q('selectedRunId').value = String(follow.id);
+        await loadLogs(follow ? Number(follow.id) : null);
+        await refreshAll();
+        return;
+      }
+
+      const running = runs.filter((r) => String(r.status || '') === 'running' && !isPauseRequested(r));
+      const frontRun = running[0] || null;
+      if (!frontRun) {
+        throw new Error('No running run to pause.');
+      }
+      const runId = Number(frontRun.id || 0);
+      state.pauseSettleRunId = runId;
+      startAnalysisAutoPoll();
+      const resp = await send('/v1/queue/pause', 'POST', {
+        reason: 'Paused by user from web console',
+      });
+      setMsg('msgMatch', resp.message || `Pause requested for run ${runId}.`);
+      await refreshRunPanels();
+      await loadLogs(runId);
+      await refreshAll();
+    } catch (e) {
+      setMsg('msgMatch', e.message, false);
+    } finally {
+      state.queuePauseActionInFlight = false;
+      updateRunHealthBanner();
+    }
+  }
+
+  async function cancelSelectedRun() {
+    try {
+      const runId = Number((q('selectedRunId') && q('selectedRunId').value) || 0);
+      if (!runId) throw new Error('Select an active run first.');
+      const run = (state.runs || []).find((r) => Number(r.id) === runId) || null;
+      if (!run) throw new Error(`Run ${runId} not found in active queue.`);
+      const status = String(run.status || '');
+      if (status !== 'queued' && status !== 'running') {
+        throw new Error(`Run ${runId} is ${status} and cannot be stopped.`);
+      }
+      const ok = window.confirm(`Stop and clean run #${runId}? This will mark it canceled and clear resumable checkpoint state.`);
+      if (!ok) return;
+      const resp = await send(`/v1/runs/${runId}/cancel`, 'POST', {
+        reason: 'Stopped by user from web console',
+        clean: true,
+      });
+      setMsg('msgMatch', resp.message || `Run ${runId} canceled.`);
+      await refreshRunPanels();
+      await loadLogs(runId);
+      await refreshAll();
+    } catch (e) {
+      setMsg('msgMatch', e.message, false);
+    }
+  }
+
+  async function skipCurrentRun() {
+    try {
+      const ok = window.confirm('Skip the current running job and continue with the rest of the queue?');
+      if (!ok) return;
+      const resp = await send('/v1/queue/cancel-current', 'POST', {
+        reason: 'Skipped current job from web console',
+        clean: true,
+      });
+      setMsg('msgMatch', resp.message || 'Current job skipped.');
+      await refreshRunPanels();
+      if (resp && resp.run_id) {
+        await loadLogs(Number(resp.run_id));
+      } else {
+        await loadLogs();
+      }
+      await refreshAll();
+    } catch (e) {
+      setMsg('msgMatch', e.message, false);
+    }
+  }
+
+  async function cancelWholeBatch() {
+    try {
+      const ok = window.confirm('Stop the whole active batch? This cancels all queued/running/paused jobs.');
+      if (!ok) return;
+      const resp = await send('/v1/queue/cancel-all', 'POST', {
+        reason: 'Stopped whole batch from web console',
+        clean: true,
+      });
+      setMsg('msgMatch', resp.message || 'Batch stopped.');
+      clearTrackedBatchRunIds();
+      await refreshRunPanels();
+      await loadLogs();
+      await refreshAll();
     } catch (e) {
       setMsg('msgMatch', e.message, false);
     }
@@ -3774,7 +4138,7 @@ def render_console() -> HTMLResponse:
       const hasTrackedActive = (state.analysisQueuedRunIds || []).some((id) =>
         (state.runs || []).some((r) => Number(r.id) === Number(id) && (r.status === 'queued' || r.status === 'running'))
       );
-      if (hasTrackedActive || (state.runs || []).some((r) => r.status === 'queued' || r.status === 'running')) {
+      if (!isQueuePausedByRuns(state.runs || []) && (hasTrackedActive || (state.runs || []).some((r) => r.status === 'queued' || r.status === 'running'))) {
         startAnalysisAutoPoll();
       }
       renderVerifySelectors();

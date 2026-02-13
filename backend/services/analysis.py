@@ -30,6 +30,7 @@ class AnalysisService:
         threshold: int = 50,
         auto_deep: bool = False,
         run_name: str | None = None,
+        legacy_run_id: int | None = None,
         force_rerun_pass1: bool = False,
         force_rerun_deep: bool = False,
         log_fn=None,
@@ -55,6 +56,12 @@ class AnalysisService:
             if can_reuse:
                 row = self.repo.get_match(existing_match_id)
                 if row:
+                    # Even on cache reuse, link the match into the requested legacy run context.
+                    if legacy_run_id:
+                        self.repo.link_run_match(run_id=int(legacy_run_id), match_id=int(row["id"]))
+                    elif run_name:
+                        run_id = self.repo.create_run(run_name=run_name, threshold=threshold)
+                        self.repo.link_run_match(run_id=run_id, match_id=int(row["id"]))
                     return row
 
         standard = self.llm.evaluate_standard(resume["content"], job["criteria"], resume["profile"])
@@ -91,7 +98,31 @@ class AnalysisService:
         strategy = "Standard"
         result = standard
 
-        should_run_deep = (auto_deep and standard_score >= threshold) or force_rerun_deep
+        existing_strategy = str((existing or {}).get("strategy") or "")
+        existing_deep_row = None
+        if existing_match_id and existing_strategy == "Deep":
+            existing_deep_row = self.repo.get_match(existing_match_id)
+
+        # If deep rerun is not explicitly forced, reuse previously computed deep output.
+        # This preserves deep evidence and avoids expensive deep recomputation.
+        if wants_deep and not force_rerun_deep and existing_deep_row:
+            strategy = "Deep"
+            result = {
+                "candidate_name": str(existing_deep_row.get("candidate_name") or candidate_name),
+                "match_score": int(existing_deep_row.get("match_score") or 0),
+                "decision": str(existing_deep_row.get("decision") or ""),
+                "reasoning": str(existing_deep_row.get("reasoning") or ""),
+                "missing_skills": standard.get("missing_skills", []),
+                "match_details": list(existing_deep_row.get("match_details") or []),
+            }
+            if callable(log_fn):
+                log_fn(
+                    "Deep Scan reused from existing deep result (force_rerun_deep=false). "
+                    "Pass 1 was updated without rerunning deep."
+                )
+            should_run_deep = False
+        else:
+            should_run_deep = (auto_deep and standard_score >= threshold) or force_rerun_deep
         if should_run_deep:
             strategy = "Deep"
             deep_details = list(deep_partial_details or [])
@@ -195,7 +226,9 @@ class AnalysisService:
             standard_reasoning=standard_reasoning,
         )
 
-        if run_name:
+        if legacy_run_id:
+            self.repo.link_run_match(run_id=int(legacy_run_id), match_id=match_id)
+        elif run_name:
             run_id = self.repo.create_run(run_name=run_name, threshold=threshold)
             self.repo.link_run_match(run_id=run_id, match_id=match_id)
 

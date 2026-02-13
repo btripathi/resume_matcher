@@ -387,15 +387,22 @@ class Repository:
     def enqueue_run(self, job_type: str, payload: dict) -> int:
         return int(self.db.enqueue_job_run(job_type, payload))
 
+    def recover_queue_after_restart(self) -> dict:
+        return dict(self.db.recover_running_runs_after_restart() or {})
+
     def list_runs(self, limit: int = 100) -> list[dict]:
         rows = self.db.list_job_runs(limit=limit)
         now = dt.datetime.now()
-        stale_after_sec = 180
         for row in rows:
             row["is_stuck"] = False
             row["stuck_seconds"] = 0
             if row.get("status") != "running":
                 continue
+            payload = row.get("payload") or {}
+            pause_requested = bool(payload.get("pause_requested")) if isinstance(payload, dict) else False
+            if pause_requested or str(row.get("current_step") or "") == "pause_requested":
+                continue
+            stale_after_sec = self._stuck_threshold_sec(row)
             last_marker = row.get("last_log_at") or row.get("started_at") or row.get("created_at")
             if not last_marker:
                 continue
@@ -413,15 +420,22 @@ class Repository:
         if not row:
             return None
         if row.get("status") == "running":
+            payload = row.get("payload") or {}
+            pause_requested = bool(payload.get("pause_requested")) if isinstance(payload, dict) else False
+            if pause_requested or str(row.get("current_step") or "") == "pause_requested":
+                row["is_stuck"] = False
+                row["stuck_seconds"] = 0
+                return row
             now = dt.datetime.now()
             marker = row.get("last_log_at") or row.get("started_at") or row.get("created_at")
             stuck = False
             stuck_sec = 0
+            stale_after_sec = self._stuck_threshold_sec(row)
             if marker:
                 try:
                     marker_dt = dt.datetime.fromisoformat(str(marker))
                     stuck_sec = max(0, int((now - marker_dt).total_seconds()))
-                    stuck = stuck_sec >= 180
+                    stuck = stuck_sec >= stale_after_sec
                 except Exception:
                     pass
             row["is_stuck"] = stuck
@@ -430,6 +444,18 @@ class Repository:
             row["is_stuck"] = False
             row["stuck_seconds"] = 0
         return row
+
+    def _stuck_threshold_sec(self, row: dict) -> int:
+        # LLM-heavy steps can legitimately take several minutes without emitting
+        # requirement-level logs, especially under pause/unpause or high queue load.
+        step = str(row.get("current_step") or "").strip().lower()
+        if step.startswith("deep_scan_"):
+            return 900
+        if step in {"scoring", "analyzing resume", "analyzing job description"}:
+            return 600
+        if step in {"started", "running"}:
+            return 420
+        return 300
 
     def claim_next_run(self) -> dict | None:
         return self.db.claim_next_job_run()
@@ -448,6 +474,32 @@ class Repository:
 
     def fail_run(self, run_id: int, error: str) -> None:
         self.db.fail_job_run(run_id=run_id, error_message=error)
+
+    def cancel_run(self, run_id: int, reason: str = "canceled", clean: bool = True) -> bool:
+        return bool(self.db.cancel_job_run(run_id=run_id, reason=reason, clean=clean))
+
+    def pause_run(self, run_id: int, reason: str = "paused") -> dict:
+        return dict(self.db.pause_job_run(run_id=run_id, reason=reason) or {})
+
+    def mark_run_paused(self, run_id: int, reason: str = "paused") -> bool:
+        return bool(self.db.mark_job_run_paused(run_id=run_id, reason=reason))
+
+    def is_run_canceled(self, run_id: int) -> bool:
+        row = self.get_run(run_id)
+        if not row:
+            return True
+        return str(row.get("status") or "") == "canceled"
+
+    def is_run_pause_requested(self, run_id: int) -> tuple[bool, str]:
+        row = self.get_run(run_id)
+        if not row:
+            return False, ""
+        payload = row.get("payload") or {}
+        if not isinstance(payload, dict):
+            return False, ""
+        wanted = bool(payload.get("pause_requested"))
+        reason = str(payload.get("pause_reason") or "paused")
+        return wanted, reason
 
     def requeue_run(self, run_id: int, payload: dict | None = None, current_step: str = "requeued") -> bool:
         return bool(self.db.requeue_job_run(run_id=run_id, payload=payload, current_step=current_step))

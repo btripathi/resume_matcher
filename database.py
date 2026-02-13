@@ -554,18 +554,160 @@ class DBManager:
             "last_log_at": row[11],
         }
 
-    def claim_next_job_run(self):
+    def _normalize_active_queue_locked(self, cursor):
+        """
+        Ensure strict single-run semantics:
+        - Active queue order is by lowest id among queued/running/paused.
+        - If multiple rows are marked running due to stale state/reload edge cases,
+          keep only the front active row as-is and demote later running rows to queued.
+        Returns:
+            active_rows: list[(id, status)] sorted by id for status in queued/running/paused
+            fixed_count: number of rows demoted from running -> queued
+        """
+        cursor.execute(
+            "SELECT id, status FROM job_runs WHERE status IN ('queued', 'running', 'paused') ORDER BY id ASC"
+        )
+        active_rows = [(int(r[0]), str(r[1] or "")) for r in (cursor.fetchall() or [])]
+        if not active_rows:
+            return [], 0
+
+        head_id = active_rows[0][0]
+        fixed = 0
+        now_iso = datetime.datetime.now().isoformat()
+        for run_id, status in active_rows[1:]:
+            if status != "running":
+                continue
+            cursor.execute(
+                """
+                UPDATE job_runs
+                SET status = 'queued',
+                    current_step = ?,
+                    started_at = NULL,
+                    error = NULL
+                WHERE id = ? AND status = 'running'
+                """,
+                ("requeued_after_state_recovery", int(run_id)),
+            )
+            if cursor.rowcount == 1:
+                fixed += 1
+                cursor.execute(
+                    """
+                    INSERT INTO job_run_logs (run_id, level, message, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        int(run_id),
+                        "warn",
+                        f"Recovered queue order after stale state: run {run_id} re-queued behind active run {head_id}.",
+                        now_iso,
+                    ),
+                )
+
+        if fixed:
+            cursor.execute(
+                "SELECT id, status FROM job_runs WHERE status IN ('queued', 'running', 'paused') ORDER BY id ASC"
+            )
+            active_rows = [(int(r[0]), str(r[1] or "")) for r in (cursor.fetchall() or [])]
+        return active_rows, fixed
+
+    def normalize_active_queue(self):
+        conn = self.get_connection()
+        c = conn.cursor()
+        active_rows, fixed = self._normalize_active_queue_locked(c)
+        conn.commit()
+        conn.close()
+        return {"active": active_rows, "fixed": int(fixed)}
+
+    def recover_running_runs_after_restart(self):
+        """
+        Recover orphan 'running' rows left behind after process restart:
+        - if pause was requested, convert to paused
+        - otherwise convert to queued so worker can pick it again
+        Returns {"requeued":[...], "paused":[...]}.
+        """
         conn = self.get_connection()
         c = conn.cursor()
         c.execute(
-            "SELECT id FROM job_runs WHERE status = 'queued' ORDER BY id ASC LIMIT 1"
+            "SELECT id, payload_json, current_step FROM job_runs WHERE status = 'running' ORDER BY id ASC"
         )
-        row = c.fetchone()
-        if not row:
+        rows = c.fetchall() or []
+        requeued = []
+        paused = []
+        now_iso = datetime.datetime.now().isoformat()
+        for row in rows:
+            run_id = int(row[0])
+            payload_raw = row[1]
+            step = str(row[2] or "")
+            payload = {}
+            try:
+                payload = json.loads(payload_raw) if payload_raw else {}
+            except Exception:
+                payload = {}
+            pause_requested = bool(payload.get("pause_requested")) if isinstance(payload, dict) else False
+            if pause_requested or step == "pause_requested":
+                c.execute(
+                    """
+                    UPDATE job_runs
+                    SET status = 'paused',
+                        current_step = ?,
+                        error = ?,
+                        started_at = NULL
+                    WHERE id = ? AND status = 'running'
+                    """,
+                    ("paused", "Paused (recovered after server restart)", run_id),
+                )
+                if c.rowcount == 1:
+                    paused.append(run_id)
+                    c.execute(
+                        """
+                        INSERT INTO job_run_logs (run_id, level, message, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (run_id, "warn", "Recovered paused run after server restart.", now_iso),
+                    )
+                continue
+
+            c.execute(
+                """
+                UPDATE job_runs
+                SET status = 'queued',
+                    current_step = ?,
+                    error = NULL,
+                    started_at = NULL
+                WHERE id = ? AND status = 'running'
+                """,
+                ("recovered_after_restart", run_id),
+            )
+            if c.rowcount == 1:
+                requeued.append(run_id)
+                c.execute(
+                    """
+                    INSERT INTO job_run_logs (run_id, level, message, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (run_id, "warn", "Recovered running run after server restart; re-queued.", now_iso),
+                )
+
+        # Re-apply strict single-run normalization after recovery.
+        self._normalize_active_queue_locked(c)
+        conn.commit()
+        conn.close()
+        return {"requeued": requeued, "paused": paused}
+
+    def claim_next_job_run(self):
+        conn = self.get_connection()
+        c = conn.cursor()
+        active_rows, _ = self._normalize_active_queue_locked(c)
+        if not active_rows:
+            conn.close()
+            return None
+        run_id, head_status = active_rows[0]
+        # Strict FIFO gate: never jump ahead while front run is not cleared.
+        if head_status != "queued":
+            conn.commit()
             conn.close()
             return None
 
-        run_id = int(row[0])
         c.execute(
             '''UPDATE job_runs
                SET status = 'running', started_at = ?, current_step = ?, progress = 1
@@ -615,11 +757,13 @@ class DBManager:
         c.execute(
             '''UPDATE job_runs
                SET status = 'completed', progress = 100, current_step = ?, result_json = ?, finished_at = ?
-               WHERE id = ?''',
+               WHERE id = ? AND status = 'running' ''',
             ("completed", json.dumps(result or {}), datetime.datetime.now().isoformat(), int(run_id)),
         )
+        changed = c.rowcount
         conn.commit()
         conn.close()
+        return changed == 1
 
     def fail_job_run(self, run_id, error_message):
         conn = self.get_connection()
@@ -627,11 +771,115 @@ class DBManager:
         c.execute(
             '''UPDATE job_runs
                SET status = 'failed', current_step = ?, error = ?, finished_at = ?
-               WHERE id = ?''',
+               WHERE id = ? AND status = 'running' ''',
             ("failed", str(error_message), datetime.datetime.now().isoformat(), int(run_id)),
         )
+        changed = c.rowcount
         conn.commit()
         conn.close()
+        return changed == 1
+
+    def mark_job_run_paused(self, run_id, reason="paused"):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            '''UPDATE job_runs
+               SET status = 'paused', current_step = ?, error = ?
+               WHERE id = ? AND status = 'running' ''',
+            ("paused", str(reason or "paused"), int(run_id)),
+        )
+        changed = c.rowcount
+        conn.commit()
+        conn.close()
+        return changed == 1
+
+    def pause_job_run(self, run_id, reason="paused"):
+        conn = self.get_connection()
+        c = conn.cursor()
+        run_id = int(run_id)
+        c.execute("SELECT status, payload_json FROM job_runs WHERE id = ? LIMIT 1", (run_id,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return {"ok": False, "state": "missing"}
+
+        status = str(row[0] or "")
+        payload = {}
+        try:
+            payload = json.loads(row[1]) if row[1] else {}
+        except Exception:
+            payload = {}
+
+        if status in ("completed", "failed", "canceled"):
+            conn.close()
+            return {"ok": False, "state": status}
+
+        if status == "paused":
+            conn.close()
+            return {"ok": True, "state": "paused"}
+
+        if status == "queued":
+            c.execute(
+                '''UPDATE job_runs
+                   SET status = 'paused', current_step = ?, error = ?
+                   WHERE id = ? AND status = 'queued' ''',
+                ("paused", str(reason or "paused"), run_id),
+            )
+            changed = c.rowcount
+            conn.commit()
+            conn.close()
+            return {"ok": changed == 1, "state": "paused" if changed == 1 else "queued"}
+
+        # running -> cooperative pause request (worker will acknowledge and mark paused)
+        if not isinstance(payload, dict):
+            payload = {}
+        payload["pause_requested"] = True
+        payload["pause_reason"] = str(reason or "paused")
+        c.execute(
+            '''UPDATE job_runs
+               SET payload_json = ?, current_step = ?, error = ?
+               WHERE id = ? AND status = 'running' ''',
+            (json.dumps(payload), "pause_requested", str(reason or "pause requested"), run_id),
+        )
+        changed = c.rowcount
+        conn.commit()
+        conn.close()
+        return {"ok": changed == 1, "state": "pause_requested" if changed == 1 else "running"}
+
+    def cancel_job_run(self, run_id, reason="canceled", clean=True):
+        conn = self.get_connection()
+        c = conn.cursor()
+        run_id = int(run_id)
+        c.execute("SELECT payload_json FROM job_runs WHERE id = ? LIMIT 1", (run_id,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return False
+
+        payload = {}
+        try:
+            payload = json.loads(row[0]) if row[0] else {}
+        except Exception:
+            payload = {}
+
+        if clean and isinstance(payload, dict):
+            payload.pop("deep_partial_details", None)
+            payload.pop("deep_resume_from", None)
+            c.execute(
+                "UPDATE job_runs SET payload_json = ? WHERE id = ?",
+                (json.dumps(payload), run_id),
+            )
+
+        c.execute(
+            '''UPDATE job_runs
+               SET status = 'canceled', current_step = ?, error = ?, finished_at = ?
+               WHERE id = ? AND status IN ('queued', 'running', 'paused')''',
+            ("canceled", str(reason or "canceled"), datetime.datetime.now().isoformat(), run_id),
+        )
+        changed = c.rowcount
+        conn.commit()
+        conn.close()
+        return changed == 1
 
     def requeue_job_run(self, run_id, payload=None, current_step="requeued"):
         conn = self.get_connection()

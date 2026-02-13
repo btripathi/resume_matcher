@@ -37,6 +37,7 @@ class ScoreMatchRequest(BaseModel):
     job_id: int
     resume_id: int
     run_name: str | None = None
+    legacy_run_id: int | None = None
     threshold: int = 50
     auto_deep: bool = False
     force_rerun_pass1: bool = False

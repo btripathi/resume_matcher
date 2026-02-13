@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
         "write_mode": False,
         "write_mode_warned": False,
         "write_mode_locked": os.getenv("RESUME_MATCHER_READ_ONLY", "").lower() in ("1", "true", "yes"),
+        "run_queue_paused": False,
     }
     if os.getenv("RESUME_MATCHER_WRITE_MODE", "").lower() in ("1", "true", "yes"):
         runtime_settings["write_mode"] = True
@@ -81,10 +82,27 @@ def create_app() -> FastAPI:
         return ok, msg
 
     def _maybe_auto_push_db(run_id: int, status: str) -> None:
+        # Queue status transitions (paused/canceled/failed) are local-machine runtime state.
+        # Push only after completed/failed terminal runs; pause/cancel remain local runtime controls.
+        if str(status) not in ("completed", "failed"):
+            return
         _auto_push_db(f"run {run_id} {status}")
 
     def _after_db_write(reason: str) -> None:
         _auto_push_db(reason)
+
+    def _recompute_run_queue_paused() -> bool:
+        rows = repo.list_runs(limit=500)
+        paused_or_requested = False
+        for row in rows:
+            status = str(row.get("status") or "")
+            payload = row.get("payload") or {}
+            pause_requested = bool(payload.get("pause_requested")) if isinstance(payload, dict) else False
+            if status == "paused" or (status == "running" and (pause_requested or str(row.get("current_step") or "") == "pause_requested")):
+                paused_or_requested = True
+                break
+        runtime_settings["run_queue_paused"] = paused_or_requested
+        return paused_or_requested
 
     def _pull_if_behind(reason: str) -> tuple[bool, str, bool]:
         token, repo_name = gh_sync._credentials()
@@ -97,7 +115,12 @@ def create_app() -> FastAPI:
             db._init_db()
         return ok, msg, pulled
 
-    runner = JobRunner(repo=repo, analysis=analysis, on_run_terminal=_maybe_auto_push_db)
+    runner = JobRunner(
+        repo=repo,
+        analysis=analysis,
+        on_run_terminal=_maybe_auto_push_db,
+        can_pick_next_run=lambda: not bool(runtime_settings.get("run_queue_paused")),
+    )
 
     @app.on_event("startup")
     def _startup() -> None:
@@ -128,6 +151,12 @@ def create_app() -> FastAPI:
         # Re-apply schema migrations after optional DB pull, so older DB snapshots
         # still get queue/log tables required by the background runner.
         db._init_db()
+        recovered = repo.recover_queue_after_restart()
+        rq = len(recovered.get("requeued") or [])
+        rp = len(recovered.get("paused") or [])
+        if rq or rp:
+            print(f"[startup] queue recovery: requeued={rq}, paused={rp}")
+        _recompute_run_queue_paused()
         runner.start()
 
     @app.on_event("shutdown")
@@ -243,6 +272,7 @@ def create_app() -> FastAPI:
                 threshold=payload.threshold,
                 auto_deep=payload.auto_deep,
                 run_name=payload.run_name,
+                legacy_run_id=payload.legacy_run_id,
                 force_rerun_pass1=payload.force_rerun_pass1,
                 force_rerun_deep=payload.force_rerun_deep,
             )
@@ -283,11 +313,27 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/runs", response_model=list[RunOut])
     def list_runs() -> list[RunOut]:
-        return [RunOut(**row) for row in repo.list_runs(limit=200)]
+        rows = repo.list_runs(limit=200)
+        if bool(runtime_settings.get("run_queue_paused")):
+            for row in rows:
+                if str(row.get("status") or "") == "running":
+                    row["is_stuck"] = False
+                    row["stuck_seconds"] = 0
+        return [RunOut(**row) for row in rows]
 
     @app.get("/v1/runs/legacy")
     def list_legacy_runs() -> list[dict]:
         return repo.list_legacy_runs(limit=200)
+
+    @app.post("/v1/runs/legacy")
+    def create_legacy_run(payload: dict) -> dict:
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        threshold = int(payload.get("threshold", 50) or 50)
+        run_id = repo.create_run(run_name=name, threshold=threshold)
+        _after_db_write(f"create_legacy_run:{run_id}")
+        return {"id": run_id, "name": name, "threshold": threshold}
 
     @app.get("/v1/runs/legacy/{run_id}/results")
     def legacy_run_results(run_id: int) -> list[dict]:
@@ -298,6 +344,7 @@ def create_app() -> FastAPI:
         out = repo.delete_legacy_run(run_id=run_id, delete_linked_matches=delete_linked_matches)
         if not out.get("deleted_run"):
             raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        _after_db_write(f"delete_legacy_run:{run_id}")
         return {"ok": True, **out}
 
     @app.get("/v1/runs/{run_id}", response_model=RunOut)
@@ -305,6 +352,9 @@ def create_app() -> FastAPI:
         row = repo.get_run(run_id)
         if not row:
             raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        if bool(runtime_settings.get("run_queue_paused")) and str(row.get("status") or "") == "running":
+            row["is_stuck"] = False
+            row["stuck_seconds"] = 0
         return RunOut(**row)
 
     @app.post("/v1/runs/{run_id}/resume")
@@ -313,8 +363,28 @@ def create_app() -> FastAPI:
         if not row:
             raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
         status = str(row.get("status") or "")
+        payload = dict(row.get("payload") or {})
+        pause_requested = bool(payload.get("pause_requested"))
+        step_pause_requested = str(row.get("current_step") or "") == "pause_requested"
         if status == "queued":
             return {"ok": True, "message": f"Run {run_id} is already queued.", "run_id": run_id}
+        if status == "running" and (pause_requested or step_pause_requested):
+            payload.pop("pause_requested", None)
+            payload.pop("pause_reason", None)
+            repo.update_run_payload(run_id=run_id, payload=payload)
+            repo.update_run_progress(run_id=run_id, progress=int(row.get("progress") or 0), current_step="running")
+            _recompute_run_queue_paused()
+            repo.add_run_log(run_id, "warn", "Pause request cleared by user (run continues).")
+            return {"ok": True, "message": f"Run {run_id} pause request cleared.", "run_id": run_id}
+        if status == "paused":
+            payload.pop("pause_requested", None)
+            payload.pop("pause_reason", None)
+            ok = repo.requeue_run(run_id=run_id, payload=payload, current_step="resumed")
+            if not ok:
+                raise HTTPException(status_code=500, detail="Failed to resume paused run.")
+            _recompute_run_queue_paused()
+            repo.add_run_log(run_id, "warn", "Run resumed from paused state.")
+            return {"ok": True, "message": f"Run {run_id} resumed.", "run_id": run_id}
         if status == "completed":
             raise HTTPException(status_code=400, detail="Completed run cannot be resumed.")
         if status == "running" and not bool(row.get("is_stuck")):
@@ -349,8 +419,164 @@ def create_app() -> FastAPI:
                 repo.add_run_log(run_id, "warn", "Run resumed from queue using existing run id.")
         else:
             repo.add_run_log(run_id, "warn", "Run resumed from queue using existing run id.")
-        _after_db_write(f"resume_run:{run_id}")
         return {"ok": True, "message": f"Run {run_id} requeued.", "run_id": run_id}
+
+    @app.post("/v1/runs/{run_id}/cancel")
+    def cancel_run(run_id: int, payload: dict | None = None) -> dict:
+        row = repo.get_run(run_id)
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        status = str(row.get("status") or "")
+        if status not in ("queued", "running", "paused"):
+            raise HTTPException(status_code=400, detail=f"Run {run_id} is {status} and cannot be canceled.")
+        p = payload or {}
+        reason = str(p.get("reason") or "Stopped by user")
+        clean = bool(p.get("clean", True))
+        ok = repo.cancel_run(run_id=run_id, reason=reason, clean=clean)
+        if not ok:
+            raise HTTPException(status_code=409, detail=f"Run {run_id} could not be canceled.")
+        _recompute_run_queue_paused()
+        repo.add_run_log(run_id, "warn", f"Run canceled by user: {reason}")
+        return {"ok": True, "message": f"Run {run_id} canceled.", "run_id": run_id}
+
+    @app.post("/v1/queue/cancel-current")
+    def cancel_current_run(payload: dict | None = None) -> dict:
+        runs = sorted(repo.list_runs(limit=1000), key=lambda r: int(r.get("id") or 0))
+        current = None
+        for row in runs:
+            if str(row.get("status") or "") == "running":
+                current = row
+                break
+        if not current:
+            raise HTTPException(status_code=404, detail="No running job found to stop.")
+        p = payload or {}
+        reason = str(p.get("reason") or "Skipped current job by user")
+        clean = bool(p.get("clean", True))
+        run_id = int(current.get("id"))
+        ok = repo.cancel_run(run_id=run_id, reason=reason, clean=clean)
+        if not ok:
+            raise HTTPException(status_code=409, detail=f"Run {run_id} could not be canceled.")
+        # Ensure queue continues after skipping current job.
+        runtime_settings["run_queue_paused"] = False
+        _recompute_run_queue_paused()
+        repo.add_run_log(run_id, "warn", f"Run canceled as current-job skip: {reason}")
+        return {"ok": True, "message": f"Skipped current job run #{run_id}. Queue continues.", "run_id": run_id}
+
+    @app.post("/v1/queue/cancel-all")
+    def cancel_all_runs(payload: dict | None = None) -> dict:
+        runs = repo.list_runs(limit=5000)
+        active = [r for r in runs if str(r.get("status") or "") in ("queued", "running", "paused")]
+        if not active:
+            return {"ok": True, "message": "No active queue runs to cancel.", "canceled": 0}
+        p = payload or {}
+        reason = str(p.get("reason") or "Stopped whole batch by user")
+        clean = bool(p.get("clean", True))
+        canceled = 0
+        for row in active:
+            run_id = int(row.get("id") or 0)
+            if not run_id:
+                continue
+            if repo.cancel_run(run_id=run_id, reason=reason, clean=clean):
+                canceled += 1
+                repo.add_run_log(run_id, "warn", f"Run canceled by batch stop: {reason}")
+        runtime_settings["run_queue_paused"] = False
+        _recompute_run_queue_paused()
+        return {"ok": True, "message": f"Stopped {canceled} active run(s).", "canceled": canceled}
+
+    @app.post("/v1/runs/{run_id}/pause")
+    def pause_run(run_id: int, payload: dict | None = None) -> dict:
+        row = repo.get_run(run_id)
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        status = str(row.get("status") or "")
+        if status in ("completed", "failed", "canceled"):
+            raise HTTPException(status_code=400, detail=f"Run {run_id} is {status} and cannot be paused.")
+        p = payload or {}
+        reason = str(p.get("reason") or "Paused by user")
+        runtime_settings["run_queue_paused"] = True
+        pause_state = repo.pause_run(run_id=run_id, reason=reason)
+        if not pause_state.get("ok"):
+            runtime_settings["run_queue_paused"] = False
+            raise HTTPException(status_code=409, detail=f"Run {run_id} could not be paused.")
+        _recompute_run_queue_paused()
+        state = str(pause_state.get("state") or "")
+        if state == "paused":
+            repo.add_run_log(run_id, "warn", f"Run paused by user: {reason}")
+            return {"ok": True, "message": f"Run {run_id} paused.", "run_id": run_id, "state": state}
+        if state == "pause_requested":
+            repo.add_run_log(run_id, "warn", f"Pause requested by user: {reason}")
+            return {"ok": True, "message": f"Pause requested for run {run_id}. It will pause at next safe checkpoint.", "run_id": run_id, "state": state}
+        return {"ok": True, "message": f"Run {run_id} pause state updated ({state}).", "run_id": run_id, "state": state}
+
+    @app.post("/v1/queue/pause")
+    def pause_queue(payload: dict | None = None) -> dict:
+        p = payload or {}
+        reason = str(p.get("reason") or "Paused by user")
+        runtime_settings["run_queue_paused"] = True
+        runs = sorted(repo.list_runs(limit=500), key=lambda r: int(r.get("id") or 0))
+        running = [r for r in runs if str(r.get("status") or "") == "running"]
+        target = None
+        for row in running:
+            rp = row.get("payload") or {}
+            if not (isinstance(rp, dict) and bool(rp.get("pause_requested"))):
+                target = row
+                break
+        if target:
+            run_id = int(target.get("id"))
+            pause_state = repo.pause_run(run_id=run_id, reason=reason)
+            if pause_state.get("ok"):
+                state = str(pause_state.get("state") or "")
+                if state == "paused":
+                    repo.add_run_log(run_id, "warn", f"Run paused by user: {reason}")
+                    _recompute_run_queue_paused()
+                    return {"ok": True, "message": f"Queue paused. Run {run_id} paused.", "run_id": run_id, "state": state}
+                if state == "pause_requested":
+                    repo.add_run_log(run_id, "warn", f"Pause requested by user: {reason}")
+                    _recompute_run_queue_paused()
+                    return {"ok": True, "message": f"Queue paused. Waiting for run {run_id} to reach checkpoint.", "run_id": run_id, "state": state}
+        _recompute_run_queue_paused()
+        return {"ok": True, "message": "Queue paused.", "run_id": None, "state": "paused"}
+
+    @app.post("/v1/queue/resume")
+    def resume_queue() -> dict:
+        runs = repo.list_runs(limit=500)
+        resumed = 0
+        cleared = 0
+        for row in runs:
+            run_id = int(row.get("id") or 0)
+            if not run_id:
+                continue
+            status = str(row.get("status") or "")
+            payload = dict(row.get("payload") or {})
+            pause_requested = bool(payload.get("pause_requested"))
+            step_pause_requested = str(row.get("current_step") or "") == "pause_requested"
+            if status == "paused":
+                payload.pop("pause_requested", None)
+                payload.pop("pause_reason", None)
+                ok = repo.requeue_run(run_id=run_id, payload=payload, current_step="resumed")
+                if ok:
+                    resumed += 1
+                    repo.add_run_log(run_id, "warn", "Run resumed from paused state by queue unpause.")
+                continue
+            if status == "running" and (pause_requested or step_pause_requested):
+                payload.pop("pause_requested", None)
+                payload.pop("pause_reason", None)
+                repo.update_run_payload(run_id=run_id, payload=payload)
+                repo.update_run_progress(
+                    run_id=run_id,
+                    progress=int(row.get("progress") or 0),
+                    current_step="running",
+                )
+                cleared += 1
+                repo.add_run_log(run_id, "warn", "Pause request cleared by queue unpause (run continues).")
+        runtime_settings["run_queue_paused"] = False
+        _recompute_run_queue_paused()
+        return {
+            "ok": True,
+            "message": f"Queue unpaused. resumed={resumed}, cleared_requests={cleared}.",
+            "resumed": resumed,
+            "cleared_requests": cleared,
+        }
 
     @app.get("/v1/runs/{run_id}/logs", response_model=list[RunLogOut])
     def get_run_logs(run_id: int) -> list[RunLogOut]:
@@ -405,6 +631,7 @@ def create_app() -> FastAPI:
             "local_lm_available": bool(runtime_settings["local_lm_available"]),
             "write_mode": bool(runtime_settings["write_mode"]),
             "write_mode_locked": bool(runtime_settings["write_mode_locked"]),
+            "run_queue_paused": bool(runtime_settings.get("run_queue_paused")),
             "writer_default_name": writer_cfg.get("default_name", ""),
             "writer_users": writer_users,
             "lock_timeout_hours": lock_timeout,

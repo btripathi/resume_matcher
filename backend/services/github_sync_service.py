@@ -3,6 +3,9 @@ import datetime as dt
 import hashlib
 import json
 import os
+import shutil
+import sqlite3
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -118,6 +121,8 @@ class GitHubSyncService:
         if not repo:
             return False, err or "GitHub repo not accessible."
         try:
+            local_path = Path(self.db_path)
+            local_runtime = self._snapshot_runtime_tables(local_path)
             contents = repo.get_contents(self.remote_db_filename)
             file_data: bytes | None = None
             if contents.content:
@@ -127,14 +132,104 @@ class GitHubSyncService:
                 file_data = base64.b64decode(blob.content)
             if not file_data:
                 return False, "Downloaded DB content was empty."
-            Path(self.db_path).write_bytes(file_data)
-            return True, "Database pulled from GitHub."
+            local_path.write_bytes(file_data)
+            self._restore_runtime_tables(local_path, local_runtime)
+            return True, "Database pulled from GitHub (local runtime queue history preserved)."
         except GithubException as exc:
             if exc.status == 404:
                 return False, "Remote DB not found in repository."
             return False, f"Error pulling DB: {exc}"
         except Exception as exc:
             return False, f"Error pulling DB: {exc}"
+
+    def _snapshot_runtime_tables(self, db_file: Path) -> tuple[list[tuple], list[tuple]]:
+        if not db_file.exists():
+            return [], []
+        try:
+            conn = sqlite3.connect(str(db_file), timeout=30)
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, job_type, payload_json, status, progress, current_step, error, result_json, created_at, started_at, finished_at
+                FROM job_runs
+                ORDER BY id ASC
+                """
+            )
+            runs = cur.fetchall()
+            cur.execute(
+                """
+                SELECT id, run_id, level, message, created_at
+                FROM job_run_logs
+                ORDER BY id ASC
+                """
+            )
+            logs = cur.fetchall()
+            conn.close()
+            return runs, logs
+        except Exception:
+            return [], []
+
+    def _restore_runtime_tables(self, db_file: Path, snapshot: tuple[list[tuple], list[tuple]]) -> None:
+        runs, logs = snapshot
+        if not runs and not logs:
+            return
+        try:
+            conn = sqlite3.connect(str(db_file), timeout=30)
+            cur = conn.cursor()
+            # Keep local machine queue state/history intact across pulls.
+            cur.execute("DELETE FROM job_run_logs")
+            cur.execute("DELETE FROM job_runs")
+            if runs:
+                cur.executemany(
+                    """
+                    INSERT INTO job_runs
+                    (id, job_type, payload_json, status, progress, current_step, error, result_json, created_at, started_at, finished_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    runs,
+                )
+            if logs:
+                cur.executemany(
+                    """
+                    INSERT INTO job_run_logs
+                    (id, run_id, level, message, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    logs,
+                )
+            conn.commit()
+            conn.close()
+        except Exception:
+            # Runtime queue tables are optional in older DB snapshots; do not fail sync on restore.
+            return
+
+    def _prune_runtime_tables_for_push(self, db_file: Path) -> None:
+        try:
+            conn = sqlite3.connect(str(db_file), timeout=30)
+            cur = conn.cursor()
+            # Push only terminal queue history requested by user.
+            cur.execute("DELETE FROM job_runs WHERE status NOT IN ('completed', 'failed')")
+            cur.execute(
+                """
+                DELETE FROM job_run_logs
+                WHERE run_id NOT IN (SELECT id FROM job_runs)
+                """
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            return
+
+    def _build_sanitized_db_bytes_for_push(self) -> bytes:
+        local_db = Path(self.db_path)
+        if not local_db.exists():
+            raise FileNotFoundError(f"Local database not found at {self.db_path}")
+
+        with tempfile.TemporaryDirectory(prefix="resume_matcher_sync_") as td:
+            temp_db = Path(td) / local_db.name
+            shutil.copy2(local_db, temp_db)
+            self._prune_runtime_tables_for_push(temp_db)
+            return temp_db.read_bytes()
 
     def _local_blob_sha(self) -> str | None:
         local_db = Path(self.db_path)
@@ -179,7 +274,10 @@ class GitHubSyncService:
         if not repo:
             return False, err or "GitHub repo not accessible."
 
-        content = local_db.read_bytes()
+        try:
+            content = self._build_sanitized_db_bytes_for_push()
+        except Exception as exc:
+            return False, f"Error preparing DB for push: {exc}"
         try:
             try:
                 existing = repo.get_contents(self.remote_db_filename)
@@ -193,7 +291,7 @@ class GitHubSyncService:
                 if exc.status != 404:
                     raise
                 repo.create_file(self.remote_db_filename, "Initial DB Commit", content)
-            return True, "Database pushed to GitHub."
+            return True, "Database pushed to GitHub (queue history includes completed/failed runs only)."
         except Exception as exc:
             return False, f"Error pushing DB: {exc}"
 

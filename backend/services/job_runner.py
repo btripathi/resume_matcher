@@ -13,12 +13,21 @@ from .analysis import AnalysisService
 from .repository import Repository
 
 
+class RunCanceledError(RuntimeError):
+    pass
+
+
+class RunPausedError(RuntimeError):
+    pass
+
+
 @dataclass
 class JobRunner:
     repo: Repository
     analysis: AnalysisService
     poll_seconds: float = 0.6
     on_run_terminal: Callable[[int, str], None] | None = None
+    can_pick_next_run: Callable[[], bool] | None = None
     _stop_event: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = None
     _heartbeat_interval_sec: float = field(
@@ -40,6 +49,9 @@ class JobRunner:
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
+                if self.can_pick_next_run and not self.can_pick_next_run():
+                    time.sleep(self.poll_seconds)
+                    continue
                 run = self.repo.claim_next_run()
                 if not run:
                     time.sleep(self.poll_seconds)
@@ -56,21 +68,63 @@ class JobRunner:
                 heartbeat_thread.start()
                 try:
                     result = self._execute(run_id=run_id, job_type=run["job_type"], payload=run.get("payload") or {})
-                    self.repo.complete_run(run_id=run_id, result=result)
-                    self.repo.add_run_log(run_id, "info", "Run completed")
+                    if self.repo.is_run_canceled(run_id):
+                        self.repo.add_run_log(run_id, "warn", "Run execution finished after cancellation; preserving canceled state.")
+                        if self.on_run_terminal:
+                            try:
+                                self.on_run_terminal(run_id, "canceled")
+                            except Exception:
+                                print(f"[job-runner] on_run_terminal(canceled) failed for run {run_id}")
+                    else:
+                        self.repo.complete_run(run_id=run_id, result=result)
+                        self.repo.add_run_log(run_id, "info", "Run completed")
+                        if self.on_run_terminal:
+                            try:
+                                self.on_run_terminal(run_id, "completed")
+                            except Exception:
+                                print(f"[job-runner] on_run_terminal(completed) failed for run {run_id}")
+                except RunCanceledError:
+                    self.repo.add_run_log(run_id, "warn", "Run canceled by user request.")
                     if self.on_run_terminal:
                         try:
-                            self.on_run_terminal(run_id, "completed")
+                            self.on_run_terminal(run_id, "canceled")
                         except Exception:
-                            print(f"[job-runner] on_run_terminal(completed) failed for run {run_id}")
+                            print(f"[job-runner] on_run_terminal(canceled) failed for run {run_id}")
+                except RunPausedError as exc:
+                    reason = str(exc or "paused")
+                    self.repo.mark_run_paused(run_id=run_id, reason=reason)
+                    self.repo.add_run_log(run_id, "warn", f"Run paused by user request: {reason}")
+                    if self.on_run_terminal:
+                        try:
+                            self.on_run_terminal(run_id, "paused")
+                        except Exception:
+                            print(f"[job-runner] on_run_terminal(paused) failed for run {run_id}")
                 except Exception as exc:
-                    self.repo.fail_run(run_id=run_id, error=str(exc))
-                    self.repo.add_run_log(run_id, "error", f"{exc}\n{traceback.format_exc()}")
-                    if self.on_run_terminal:
-                        try:
-                            self.on_run_terminal(run_id, "failed")
-                        except Exception:
-                            print(f"[job-runner] on_run_terminal(failed) failed for run {run_id}")
+                    if self.repo.is_run_canceled(run_id):
+                        self.repo.add_run_log(run_id, "warn", "Run canceled while in progress; failure details suppressed.")
+                        if self.on_run_terminal:
+                            try:
+                                self.on_run_terminal(run_id, "canceled")
+                            except Exception:
+                                print(f"[job-runner] on_run_terminal(canceled) failed for run {run_id}")
+                    else:
+                        pause_requested, pause_reason = self.repo.is_run_pause_requested(run_id)
+                        if pause_requested:
+                            self.repo.mark_run_paused(run_id=run_id, reason=pause_reason)
+                            self.repo.add_run_log(run_id, "warn", f"Run paused while in progress: {pause_reason}")
+                            if self.on_run_terminal:
+                                try:
+                                    self.on_run_terminal(run_id, "paused")
+                                except Exception:
+                                    print(f"[job-runner] on_run_terminal(paused) failed for run {run_id}")
+                            continue
+                        self.repo.fail_run(run_id=run_id, error=str(exc))
+                        self.repo.add_run_log(run_id, "error", f"{exc}\n{traceback.format_exc()}")
+                        if self.on_run_terminal:
+                            try:
+                                self.on_run_terminal(run_id, "failed")
+                            except Exception:
+                                print(f"[job-runner] on_run_terminal(failed) failed for run {run_id}")
                 finally:
                     heartbeat_stop.set()
                     heartbeat_thread.join(timeout=1.0)
@@ -89,6 +143,15 @@ class JobRunner:
                     return
                 step = str(row.get("current_step") or "-")
                 progress = int(row.get("progress") or 0)
+                payload = row.get("payload") or {}
+                pause_requested = bool(payload.get("pause_requested")) if isinstance(payload, dict) else False
+                if pause_requested or step == "pause_requested":
+                    self.repo.add_run_log(
+                        run_id,
+                        "debug",
+                        f"Heartbeat: pause requested at {progress}% (step={step}). Waiting for current LLM/IO step to return before pausing.",
+                    )
+                    continue
                 self.repo.add_run_log(
                     run_id,
                     "debug",
@@ -98,10 +161,19 @@ class JobRunner:
                 # Heartbeat should never interrupt the worker.
                 return
 
+    def _ensure_not_canceled(self, run_id: int) -> None:
+        if self.repo.is_run_canceled(run_id):
+            raise RunCanceledError(f"Run {run_id} canceled.")
+        pause_requested, pause_reason = self.repo.is_run_pause_requested(run_id)
+        if pause_requested:
+            raise RunPausedError(pause_reason or "paused")
+
     def _execute(self, run_id: int, job_type: str, payload: dict) -> dict:
+        self._ensure_not_canceled(run_id)
         if job_type == "ingest_job":
             self.repo.update_run_progress(run_id, 10, "analyzing job description")
             self.repo.add_run_log(run_id, "info", "Analyzing JD")
+            self._ensure_not_canceled(run_id)
             row = self.analysis.ingest_job(
                 filename=str(payload.get("filename", "")),
                 content=str(payload.get("content", "")),
@@ -127,6 +199,7 @@ class JobRunner:
 
             raw_bytes = base64.b64decode(content_b64.encode("utf-8"))
             lower = filename.lower()
+            self._ensure_not_canceled(run_id)
             if lower.endswith(".pdf"):
                 text = document_utils.extract_text_from_pdf(raw_bytes, use_ocr=True)
             elif lower.endswith(".docx"):
@@ -135,6 +208,7 @@ class JobRunner:
                 text = raw_bytes.decode("utf-8", errors="ignore")
 
             self.repo.update_run_progress(run_id, 60, "analyzing job description")
+            self._ensure_not_canceled(run_id)
             criteria = self.analysis.llm.analyze_jd(text)
             if not isinstance(criteria, dict) or criteria.get("error"):
                 raise RuntimeError(f"JD analysis failed for '{filename}': {criteria}")
@@ -160,6 +234,7 @@ class JobRunner:
         if job_type == "ingest_resume":
             self.repo.update_run_progress(run_id, 10, "analyzing resume")
             self.repo.add_run_log(run_id, "info", "Analyzing resume")
+            self._ensure_not_canceled(run_id)
             profile_override = payload.get("profile")
             if profile_override is not None:
                 self.repo.add_run_log(run_id, "info", "Using provided profile payload from import.")
@@ -203,6 +278,7 @@ class JobRunner:
 
             raw_bytes = base64.b64decode(content_b64.encode("utf-8"))
             lower = filename.lower()
+            self._ensure_not_canceled(run_id)
             if lower.endswith(".pdf"):
                 text = document_utils.extract_text_from_pdf(raw_bytes, use_ocr=True)
             elif lower.endswith(".docx"):
@@ -211,6 +287,7 @@ class JobRunner:
                 text = raw_bytes.decode("utf-8", errors="ignore")
 
             self.repo.update_run_progress(run_id, 60, "analyzing resume")
+            self._ensure_not_canceled(run_id)
             profile = self.analysis.llm.analyze_resume(text)
             if not isinstance(profile, dict):
                 raise RuntimeError(f"Resume analysis failed for '{filename}'.")
@@ -235,10 +312,12 @@ class JobRunner:
 
         if job_type == "score_match":
             self.repo.update_run_progress(run_id, 10, "scoring")
+            self._ensure_not_canceled(run_id)
             job_id = int(payload["job_id"])
             resume_id = int(payload["resume_id"])
             threshold = int(payload.get("threshold", 50))
             auto_deep = bool(payload.get("auto_deep", False))
+            legacy_run_id = int(payload.get("legacy_run_id", 0) or 0) or None
             force_rerun_pass1 = bool(payload.get("force_rerun_pass1", False))
             force_rerun_deep = bool(payload.get("force_rerun_deep", False))
             deep_resume_from = int(payload.get("deep_resume_from", 0) or 0)
@@ -305,6 +384,7 @@ class JobRunner:
                 threshold=threshold,
                 auto_deep=auto_deep,
                 run_name=payload.get("run_name"),
+                legacy_run_id=legacy_run_id,
                 force_rerun_pass1=force_rerun_pass1,
                 force_rerun_deep=force_rerun_deep,
                 log_fn=lambda msg: self.repo.add_run_log(run_id, "info", str(msg)),
@@ -342,6 +422,7 @@ class JobRunner:
         raise ValueError(f"Unsupported job_type: {job_type}")
 
     def _checkpoint_deep_progress(self, run_id: int, payload: dict, idx: int, total: int, details: list) -> None:
+        self._ensure_not_canceled(run_id)
         payload["deep_resume_from"] = int(idx)
         payload["deep_partial_details"] = list(details or [])
         pct = 10 + int((max(0, min(idx, total)) / max(1, total)) * 85)
