@@ -1172,14 +1172,86 @@ def render_console() -> HTMLResponse:
 
     <section class="panel" id="panel-manage">
       <div class="subtabs">
-        <button class="subtab active" id="sub-manage-jd" onclick="switchManage('jd')">📂 Job Descriptions</button>
-        <button class="subtab" id="sub-manage-res" onclick="switchManage('res')">📄 Candidate Resumes</button>
-        <button class="subtab" id="sub-manage-tags" onclick="switchManage('tags')">🏷️ Tag Manager</button>
-        <button class="subtab" id="sub-manage-verify" onclick="switchManage('verify')">✅ Data Verification</button>
+        <button class="subtab active" id="sub-manage-upload" onclick="switchManage('upload')">📤 Data Upload</button>
+        <button class="subtab" id="sub-manage-data" onclick="switchManage('data')">🗂️ Data Manager</button>
+      </div>
+
+      <details class="expander row manage-upload-section" id="autoUploadSection" open>
+        <summary>🪄 Auto-detect Uploads (JD / Resume)</summary>
+        <div class="caption row">Upload mixed documents once. The app auto-classifies each file as Job Description or Resume.</div>
+        <div class="upload-block row">
+          <div class="upload-title">Assign Tag(s) to Uploaded Documents (Optional)</div>
+          <div class="row2">
+            <select id="autoTagAssign"></select>
+            <button class="secondary" onclick="addAutoUploadTag()">Add Selected Tag</button>
+          </div>
+          <div class="row2 row">
+            <input id="newAutoTagName" placeholder="Create new tag (optional)" />
+            <button class="secondary" onclick="addInlineTagToSelect('newAutoTagName','autoTagAssign','msgAutoUpload')">Create & Add Tag</button>
+          </div>
+          <input id="autoTagsCsv" class="hidden-input" />
+          <div class="tag-chips" id="autoUploadTagChips"></div>
+        </div>
+        <div class="upload-block row">
+          <div class="upload-title">Upload Documents (PDF/DOCX/TXT)</div>
+          <div class="file-picker">
+            <input class="row" id="autoFileUpload" type="file" multiple accept=".pdf,.docx,.txt,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onchange="updateUploadFileInfo('autoFileUpload','autoUploadFilesInfo')" />
+            <div class="file-list" id="autoUploadFilesInfo">No files selected.</div>
+          </div>
+          <label class="caption row check-inline"><input id="autoForceReparse" type="checkbox" /> Force Reparse Existing Files</label>
+        </div>
+        <button class="primary row" id="autoUploadBtn" onclick="queueIngestAuto()">Process Documents (Auto-detect)</button>
+        <div class="detail row" id="autoUploadLive">No active auto-detect upload runs.</div>
+        <div class="table-wrap no-scroll row" id="autoUploadResultsTable"></div>
+        <div class="msg" id="msgAutoUpload"></div>
+      </details>
+
+      <div class="card row manage-data-section" id="unifiedDataBrowser" style="display:none;">
+        <h3>Document Browser</h3>
+        <div class="caption">Select type, filter by tag, then click a row to open details below.</div>
+        <div class="row3 row">
+          <select id="manageEntityType" onchange="renderUnifiedDataBrowser()">
+            <option value="job">Job Descriptions</option>
+            <option value="resume">Resumes</option>
+          </select>
+          <select id="manageEntityTag" onchange="renderUnifiedDataBrowser()"></select>
+          <input id="manageEntitySearch" placeholder="Search filename..." oninput="renderUnifiedDataBrowser()" />
+        </div>
+        <div class="row2 row">
+          <select id="manageEntitySelect" onchange="openUnifiedDataRecord()"></select>
+          <div class="caption" id="manageEntityCount">0 items</div>
+        </div>
+        <div class="table-wrap no-scroll row" id="manageEntityTable"></div>
+      </div>
+      <div class="card row manage-data-section" id="unifiedDataEditor" style="display:none;">
+        <h3 id="unifiedEditTitle">Document Details</h3>
+        <div class="row" id="unifiedEditingLabel" style="font-weight:600;">Editing: none selected</div>
+        <details class="expander row">
+          <summary>🔍 Inspect Raw Extracted Text</summary>
+          <div class="detail" id="unifiedRaw"></div>
+        </details>
+        <h3>Edit Tags</h3>
+        <div class="row2">
+          <select id="unifiedTagSelect"></select>
+          <button class="secondary" onclick="addUnifiedEditTag()">Add Tag</button>
+        </div>
+        <input class="row" id="unifiedTagsCsv" placeholder="Selected tags (comma separated)" oninput="renderUnifiedEditTagChips()" />
+        <div class="tag-chips" id="unifiedEditTagChips"></div>
+        <h3 class="row" id="unifiedJsonHeading">JSON</h3>
+        <textarea class="row json-editor" id="unifiedJsonEditor" placeholder="JSON"></textarea>
+        <div class="row2 row">
+          <button class="secondary" onclick="formatJsonEditor('unifiedJsonEditor','msgUnifiedEdit')">Format JSON</button>
+          <button class="secondary" onclick="validateJsonEditor('unifiedJsonEditor','msgUnifiedEdit')">Validate JSON</button>
+        </div>
+        <div class="row2 row">
+          <button class="primary" onclick="saveUnifiedRecord()">Save Changes</button>
+          <button class="danger" onclick="deleteUnifiedRecord()">Delete</button>
+        </div>
+        <div class="msg" id="msgUnifiedEdit"></div>
       </div>
 
       <div class="subpanel active" id="panel-manage-jd">
-        <details class="expander">
+        <details class="expander manage-upload-section">
           <summary>♻️ Reparse Existing JDs</summary>
           <div class="row2 row">
             <select id="reparseJdScope" onchange="toggleReparseJDSelection()">
@@ -1195,7 +1267,7 @@ def render_console() -> HTMLResponse:
           <div class="msg" id="msgReparseJD"></div>
         </details>
 
-        <details class="expander">
+        <details class="expander manage-upload-section">
           <summary>📤 Upload New Job Descriptions</summary>
           <div class="upload-block row">
             <div class="upload-title">Assign Tag(s) to JDs</div>
@@ -1222,10 +1294,9 @@ def render_console() -> HTMLResponse:
           <div class="msg" id="msgJD"></div>
         </details>
 
-        <div class="card">
+        <div class="card legacy-manager-section" style="display:none;">
           <h3>Manage JDs</h3>
-          <div class="caption" id="jdCount">Total Job Descriptions: 0</div>
-          <div class="table-wrap row" id="jobsTable"></div>
+          <div class="caption" id="jdCount">Use Document Browser above to select a JD.</div>
           <div class="row" id="jdEditingLabel" style="font-weight:600;"></div>
           <details class="expander row">
             <summary>🔍 Inspect Raw Extracted Text</summary>
@@ -1253,7 +1324,7 @@ def render_console() -> HTMLResponse:
       </div>
 
       <div class="subpanel" id="panel-manage-res">
-        <details class="expander">
+        <details class="expander manage-upload-section">
           <summary>♻️ Reparse Existing Resumes</summary>
           <div class="row2 row">
             <select id="reparseResScope" onchange="toggleReparseResSelection()">
@@ -1269,7 +1340,7 @@ def render_console() -> HTMLResponse:
           <div class="msg" id="msgReparseRes"></div>
         </details>
 
-        <details class="expander">
+        <details class="expander manage-upload-section">
           <summary>📤 Upload / Import Resumes</summary>
           <div class="upload-block row">
             <div class="upload-title">Assign Tag(s) to Resumes</div>
@@ -1301,13 +1372,12 @@ def render_console() -> HTMLResponse:
           <div class="msg" id="msgRes"></div>
         </details>
 
-        <div class="card">
+        <div class="card legacy-manager-section" style="display:none;">
           <h3>Manage Resumes</h3>
           <div class="row2">
             <select id="resTagFilter" onchange="renderResumes()"></select>
-            <div class="caption" id="resCount">Total Resumes: 0</div>
+            <div class="caption" id="resCount">Use Document Browser above to select a Resume.</div>
           </div>
-          <div class="table-wrap row" id="resumesTable"></div>
           <div class="row" id="resEditingLabel" style="font-weight:600;"></div>
           <details class="expander row">
             <summary>🔍 Inspect Raw Extracted Text</summary>
@@ -1336,6 +1406,9 @@ def render_console() -> HTMLResponse:
 
       <div class="subpanel" id="panel-manage-tags">
         <div class="card">
+          <details class="expander manage-data-section" style="display:none;">
+            <summary>🏷️ Tag Manager</summary>
+            <div>
           <h3>Tag Manager</h3>
           <div class="caption" id="tagCount">Total Tags: 0</div>
           <div class="tag-manager-grid row">
@@ -1373,14 +1446,16 @@ def render_console() -> HTMLResponse:
             </div>
           </div>
           <div class="msg" id="msgTag"></div>
+            </div>
+          </details>
         </div>
       </div>
 
       <div class="subpanel" id="panel-manage-verify">
-        <div class="card">
+        <div class="card manage-data-section" style="display:none;">
           <h3>Data Verification</h3>
-          <div class="caption">Compare extracted text with JSON to verify accuracy.</div>
-          <div class="row3 row">
+          <div class="caption" id="verifyContext">Select a document from Document Browser to load verification details.</div>
+          <div class="row3 row" style="display:none;">
             <select id="verifyMode" onchange="renderVerifySelectors()">
               <option value="job">Job Description</option>
               <option value="resume">Resume</option>
@@ -1458,12 +1533,16 @@ def render_console() -> HTMLResponse:
     analysisQueuedRunIds: [],
     analysisAutoPollEnabled: false,
     analysisSubmitting: false,
+    autoUploadSubmitting: false,
+    autoUploadRunIds: [],
     pauseSettleRunId: null,
     queuePauseActionInFlight: false,
     logPinnedRunId: null,
     settings: null,
     selectedEditJdId: null,
     selectedEditResId: null,
+    selectedUnifiedType: null,
+    selectedUnifiedId: null,
   };
 
   const q = (id) => document.getElementById(id);
@@ -1616,6 +1695,34 @@ def render_console() -> HTMLResponse:
     renderEditJdTagChips();
   }
 
+  function addUnifiedEditTag() {
+    const tag = String((q('unifiedTagSelect') && q('unifiedTagSelect').value) || '').trim();
+    if (!tag) return;
+    const tags = tagsFrom(q('unifiedTagsCsv').value);
+    if (!tags.includes(tag)) tags.push(tag);
+    q('unifiedTagsCsv').value = tags.join(', ');
+    renderUnifiedEditTagChips();
+  }
+
+  function removeUnifiedEditTag(tag) {
+    const tags = tagsFrom(q('unifiedTagsCsv').value).filter((t) => t !== tag);
+    q('unifiedTagsCsv').value = tags.join(', ');
+    renderUnifiedEditTagChips();
+  }
+
+  function renderUnifiedEditTagChips() {
+    const wrap = q('unifiedEditTagChips');
+    if (!wrap) return;
+    const tags = tagsFrom(q('unifiedTagsCsv').value);
+    if (!tags.length) {
+      wrap.innerHTML = '<span class="caption">No tags assigned.</span>';
+      return;
+    }
+    wrap.innerHTML = tags
+      .map((t) => `<span class="tag-chip">${t}<button type="button" onclick='removeUnifiedEditTag(${JSON.stringify(String(t))})'>✕</button></span>`)
+      .join('');
+  }
+
   function addJdUploadTag() {
     const tag = String((q('jdTagAssign').value || '')).trim();
     if (!tag) return;
@@ -1623,6 +1730,34 @@ def render_console() -> HTMLResponse:
     if (!tags.includes(tag)) tags.push(tag);
     q('jdTagsCsv').value = tags.join(', ');
     renderJdUploadTagChips();
+  }
+
+  function addAutoUploadTag() {
+    const tag = String((q('autoTagAssign').value || '')).trim();
+    if (!tag) return;
+    const tags = tagsFrom(q('autoTagsCsv').value);
+    if (!tags.includes(tag)) tags.push(tag);
+    q('autoTagsCsv').value = tags.join(', ');
+    renderAutoUploadTagChips();
+  }
+
+  function removeAutoUploadTag(tag) {
+    const tags = tagsFrom(q('autoTagsCsv').value).filter((t) => t !== tag);
+    q('autoTagsCsv').value = tags.join(', ');
+    renderAutoUploadTagChips();
+  }
+
+  function renderAutoUploadTagChips() {
+    const wrap = q('autoUploadTagChips');
+    if (!wrap) return;
+    const tags = tagsFrom(q('autoTagsCsv').value);
+    if (!tags.length) {
+      wrap.innerHTML = '<span class="caption">No tags assigned.</span>';
+      return;
+    }
+    wrap.innerHTML = tags
+      .map((t) => `<span class="tag-chip">${t}<button type="button" onclick='removeAutoUploadTag(${JSON.stringify(String(t))})'>✕</button></span>`)
+      .join('');
   }
 
   function removeJdUploadTag(tag) {
@@ -1654,7 +1789,7 @@ def render_console() -> HTMLResponse:
       return;
     }
     const names = files.map((f) => f.name);
-    info.textContent = `${files.length} file(s) selected:\\n${names.join('\\n')}`;
+    info.textContent = `${files.length} file(s) selected:\n${names.join('\n')}`;
   }
 
   function addResUploadTag() {
@@ -2204,10 +2339,179 @@ def render_console() -> HTMLResponse:
   }
 
   function switchManage(name) {
+    const uploadMode = name === 'upload';
+    if (q('sub-manage-upload')) q('sub-manage-upload').classList.toggle('active', uploadMode);
+    if (q('sub-manage-data')) q('sub-manage-data').classList.toggle('active', !uploadMode);
     ['jd', 'res', 'tags', 'verify'].forEach((t) => {
-      q(`sub-manage-${t}`).classList.toggle('active', t === name);
-      q(`panel-manage-${t}`).classList.toggle('active', t === name);
+      const panel = q(`panel-manage-${t}`);
+      if (!panel) return;
+      const visible = uploadMode ? (t === 'jd' || t === 'res') : (t === 'tags' || t === 'verify');
+      panel.classList.toggle('active', visible);
+      panel.style.display = visible ? '' : 'none';
     });
+    if (!uploadMode) {
+      const verifyPanel = q('panel-manage-verify');
+      const tagsPanel = q('panel-manage-tags');
+      const manageRoot = q('panel-manage');
+      if (verifyPanel && tagsPanel && manageRoot && tagsPanel.previousElementSibling !== verifyPanel) {
+        manageRoot.insertBefore(verifyPanel, tagsPanel);
+      }
+    }
+    document.querySelectorAll('.manage-upload-section').forEach((el) => {
+      el.style.display = uploadMode ? '' : 'none';
+    });
+    document.querySelectorAll('.manage-data-section').forEach((el) => {
+      el.style.display = uploadMode ? 'none' : '';
+    });
+    if (!uploadMode) renderUnifiedDataBrowser();
+  }
+
+  function getUnifiedDataRows() {
+    const mode = String((q('manageEntityType') && q('manageEntityType').value) || 'job');
+    const tag = String((q('manageEntityTag') && q('manageEntityTag').value) || 'All');
+    const search = String((q('manageEntitySearch') && q('manageEntitySearch').value) || '').trim().toLowerCase();
+    const source = mode === 'resume' ? (state.resumes || []) : (state.jobs || []);
+    return source.filter((row) => {
+      const filename = String(row.filename || '');
+      const tags = (row.tags || []).map((t) => String(t).trim());
+      if (tag !== 'All' && !tags.includes(tag)) return false;
+      if (search && !filename.toLowerCase().includes(search)) return false;
+      return true;
+    });
+  }
+
+  function renderUnifiedDataBrowser() {
+    const select = q('manageEntitySelect');
+    const table = q('manageEntityTable');
+    const count = q('manageEntityCount');
+    const mode = String((q('manageEntityType') && q('manageEntityType').value) || 'job');
+    const tag = q('manageEntityTag');
+    if (tag && !tag.options.length) {
+      tag.innerHTML = '<option value="All">All Tags</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+      if (!tag.value) tag.value = 'All';
+    }
+    if (!select || !table || !count) return;
+    const rows = getUnifiedDataRows();
+    const prev = String(select.value || '');
+    select.innerHTML = '<option value="">Select document</option>' + rows.map((r) => `<option value="${r.id}">${escapeHtml(r.filename || '')}</option>`).join('');
+    if (prev && rows.some((r) => String(r.id) === prev)) select.value = prev;
+    count.textContent = `${rows.length} item(s)`;
+    table.innerHTML = '<table><thead><tr><th>Filename</th><th>Tags</th><th>Upload Date</th></tr></thead><tbody>' +
+      rows.map((r) => `<tr style="cursor:pointer" onclick="openUnifiedDataRecord(${Number(r.id)})"><td>${escapeHtml(r.filename || '')}</td><td>${escapeHtml((r.tags || []).join(', '))}</td><td>${escapeHtml(r.upload_date || '')}</td></tr>`).join('') +
+      '</tbody></table>';
+    const selectedId = Number(select.value || 0);
+    if (!selectedId && rows.length) {
+      select.value = String(rows[0].id);
+    }
+    if (Number(select.value || 0)) {
+      openUnifiedDataRecord(Number(select.value || 0), true);
+    } else {
+      if (q('unifiedEditTitle')) q('unifiedEditTitle').textContent = mode === 'job' ? 'JD Details' : 'Resume Details';
+      if (q('unifiedEditingLabel')) q('unifiedEditingLabel').textContent = 'Editing: none selected';
+      if (q('unifiedRaw')) q('unifiedRaw').textContent = '';
+      if (q('unifiedTagsCsv')) q('unifiedTagsCsv').value = '';
+      renderUnifiedEditTagChips();
+      if (q('unifiedJsonHeading')) q('unifiedJsonHeading').textContent = mode === 'job' ? 'JSON Criteria' : 'JSON Profile';
+      if (q('unifiedJsonEditor')) q('unifiedJsonEditor').value = '';
+      state.selectedUnifiedType = null;
+      state.selectedUnifiedId = null;
+      state.verifyData = null;
+      state.verifyItems = [];
+      if (q('verifyContext')) q('verifyContext').textContent = 'Select a document from Document Browser to load verification details.';
+      if (q('verifyRaw')) q('verifyRaw').textContent = '';
+      if (q('verifyJson')) q('verifyJson').textContent = '';
+      if (q('verifyEvidence')) q('verifyEvidence').textContent = 'Select an item to inspect evidence.';
+      if (q('verifyClosest')) q('verifyClosest').textContent = 'No query yet.';
+      renderVerifyEvidenceTargets();
+      renderVerifyTable();
+    }
+  }
+
+  async function openUnifiedDataRecord(id = null, preserve = false) {
+    try {
+      const mode = String((q('manageEntityType') && q('manageEntityType').value) || 'job');
+      const targetId = Number(id || (q('manageEntitySelect') && q('manageEntitySelect').value) || 0);
+      if (!targetId) return;
+      if (!preserve && q('manageEntitySelect')) q('manageEntitySelect').value = String(targetId);
+      const rec = mode === 'job'
+        ? await getJson(`/v1/jobs/${targetId}`)
+        : await getJson(`/v1/resumes/${targetId}`);
+      state.selectedUnifiedType = mode;
+      state.selectedUnifiedId = Number(targetId);
+      if (q('unifiedEditTitle')) q('unifiedEditTitle').textContent = mode === 'job' ? 'JD Details' : 'Resume Details';
+      if (q('unifiedEditingLabel')) q('unifiedEditingLabel').textContent = `Editing: ${rec.filename || ''}`;
+      if (q('unifiedRaw')) q('unifiedRaw').textContent = rec.content || '';
+      if (q('unifiedTagsCsv')) q('unifiedTagsCsv').value = (rec.tags || []).join(', ');
+      renderUnifiedEditTagChips();
+      if (q('unifiedJsonHeading')) q('unifiedJsonHeading').textContent = mode === 'job' ? 'JSON Criteria' : 'JSON Profile';
+      if (q('unifiedJsonEditor')) {
+        const payload = mode === 'job' ? rec.criteria : rec.profile;
+        q('unifiedJsonEditor').value = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+        formatJsonEditor('unifiedJsonEditor');
+      }
+      if (q('verifyMode')) q('verifyMode').value = mode;
+      if (q('verifyTagFilter')) q('verifyTagFilter').value = 'All';
+      if (q('verifyContext')) q('verifyContext').textContent = `Verifying selected ${mode === 'job' ? 'JD' : 'Resume'}: ${rec.filename || ''}`;
+      state.verifyData = rec;
+      state.verifyItems = extractVerifyItems(mode, rec);
+      if (q('verifyRaw')) q('verifyRaw').textContent = rec.content || '';
+      const parsed = mode === 'job' ? rec.criteria : rec.profile;
+      if (q('verifyJson')) q('verifyJson').textContent = typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2);
+      if (q('verifyEvidence')) q('verifyEvidence').textContent = 'Select an item to inspect evidence.';
+      if (q('verifyClosest')) q('verifyClosest').textContent = 'No query yet.';
+      renderVerifyEvidenceTargets();
+      renderVerifyTable();
+      const editor = q('unifiedDataEditor');
+      if (editor && !preserve) editor.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } catch (e) {
+      debugLog(`Open data record failed: ${e.message}`, 'warn');
+    }
+  }
+
+  async function saveUnifiedRecord() {
+    try {
+      const mode = String(state.selectedUnifiedType || '');
+      const id = Number(state.selectedUnifiedId || 0);
+      if (!mode || !id) throw new Error('Select a document first.');
+      if (!validateJsonEditor('unifiedJsonEditor', 'msgUnifiedEdit')) return;
+      const parsed = JSON.stringify(parseJsonText(q('unifiedJsonEditor').value));
+      const tags = tagsFrom(q('unifiedTagsCsv').value);
+      if (mode === 'job') {
+        await send(`/v1/jobs/${id}`, 'PUT', { criteria: parsed, tags });
+      } else {
+        await send(`/v1/resumes/${id}`, 'PUT', { profile: parsed, tags });
+      }
+      setMsg('msgUnifiedEdit', 'Saved.');
+      await refreshAll();
+      if (q('manageEntityType')) q('manageEntityType').value = mode;
+      if (q('manageEntitySelect')) q('manageEntitySelect').value = String(id);
+      await openUnifiedDataRecord(id, true);
+    } catch (e) {
+      setMsg('msgUnifiedEdit', e.message, false);
+    }
+  }
+
+  async function deleteUnifiedRecord() {
+    try {
+      const mode = String(state.selectedUnifiedType || '');
+      const id = Number(state.selectedUnifiedId || 0);
+      if (!mode || !id) throw new Error('Select a document first.');
+      const ok = await openConfirmModal({
+        title: mode === 'job' ? 'Delete JD' : 'Delete Resume',
+        message: `Delete selected ${mode === 'job' ? 'JD' : 'Resume'}? This cannot be undone.`,
+        confirmText: 'Delete',
+      });
+      if (!ok) return;
+      const url = mode === 'job' ? `/v1/jobs/${id}` : `/v1/resumes/${id}`;
+      const r = await fetch(url, { method: 'DELETE' });
+      if (!r.ok) throw new Error('Delete failed');
+      setMsg('msgUnifiedEdit', 'Deleted.');
+      state.selectedUnifiedId = null;
+      await refreshAll();
+      renderUnifiedDataBrowser();
+    } catch (e) {
+      setMsg('msgUnifiedEdit', e.message, false);
+    }
   }
 
   function switchResults(name) {
@@ -2243,10 +2547,12 @@ def render_console() -> HTMLResponse:
   }
 
   function renderJobs() {
-    q('jdCount').textContent = `Total Job Descriptions: ${state.jobs.length}`;
-    q('jobsTable').innerHTML = `<table><thead><tr><th>Filename</th><th>Tags</th><th>Upload Date</th></tr></thead><tbody>` +
-      state.jobs.map((j) => `<tr style="cursor:pointer" onclick="selectJD(${j.id})"><td>${j.filename}</td><td>${(j.tags || []).join(', ')}</td><td>${j.upload_date || ''}</td></tr>`).join('') +
-      `</tbody></table>`;
+    if (q('jdCount')) q('jdCount').textContent = `Use Document Browser above to select a JD. Total Job Descriptions: ${state.jobs.length}`;
+    if (q('jobsTable')) {
+      q('jobsTable').innerHTML = `<table><thead><tr><th>Filename</th><th>Tags</th><th>Upload Date</th></tr></thead><tbody>` +
+        state.jobs.map((j) => `<tr style="cursor:pointer" onclick="selectJD(${j.id})"><td>${j.filename}</td><td>${(j.tags || []).join(', ')}</td><td>${j.upload_date || ''}</td></tr>`).join('') +
+        `</tbody></table>`;
+    }
     renderReparseJDOptions();
     fillSelect('simpleJobSelect', state.jobs, (x) => x.filename, false);
   }
@@ -2260,10 +2566,12 @@ def render_console() -> HTMLResponse:
         return tags.includes(selectedTag);
       });
     }
-    q('resCount').textContent = `Total Resumes: ${state.resumes.length} | Filtered Resumes: ${rows.length}`;
-    q('resumesTable').innerHTML = `<table><thead><tr><th>Filename</th><th>Tags</th><th>Upload Date</th></tr></thead><tbody>` +
-      rows.map((r) => `<tr style="cursor:pointer" onclick="selectResume(${r.id})"><td>${r.filename}</td><td>${(r.tags || []).join(', ')}</td><td>${r.upload_date || ''}</td></tr>`).join('') +
-      `</tbody></table>`;
+    if (q('resCount')) q('resCount').textContent = `Use Document Browser above to select a Resume. Total Resumes: ${state.resumes.length} | Filtered: ${rows.length}`;
+    if (q('resumesTable')) {
+      q('resumesTable').innerHTML = `<table><thead><tr><th>Filename</th><th>Tags</th><th>Upload Date</th></tr></thead><tbody>` +
+        rows.map((r) => `<tr style="cursor:pointer" onclick="selectResume(${r.id})"><td>${r.filename}</td><td>${(r.tags || []).join(', ')}</td><td>${r.upload_date || ''}</td></tr>`).join('') +
+        `</tbody></table>`;
+    }
     renderReparseResumeOptions();
   }
 
@@ -2475,6 +2783,14 @@ def render_console() -> HTMLResponse:
       q('jdTagAssign').value = prevJdAssign;
     }
 
+    const prevAutoAssign = q('autoTagAssign') ? q('autoTagAssign').value : '';
+    if (q('autoTagAssign')) {
+      q('autoTagAssign').innerHTML = '<option value="">Select tag</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+      if (prevAutoAssign && Array.from(q('autoTagAssign').options).some((o) => o.value === prevAutoAssign)) {
+        q('autoTagAssign').value = prevAutoAssign;
+      }
+    }
+
     const prevJdEdit = q('editJdTagSelect').value;
     q('editJdTagSelect').innerHTML = '<option value="">Select tag</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
     if (prevJdEdit && Array.from(q('editJdTagSelect').options).some((o) => o.value === prevJdEdit)) {
@@ -2487,6 +2803,7 @@ def render_console() -> HTMLResponse:
       q('resTagAssign').value = prevResAssign;
     }
     renderJdUploadTagChips();
+    renderAutoUploadTagChips();
     renderResUploadTagChips();
 
     const prevResEdit = q('editResTagSelect').value;
@@ -2494,8 +2811,23 @@ def render_console() -> HTMLResponse:
     if (prevResEdit && Array.from(q('editResTagSelect').options).some((o) => o.value === prevResEdit)) {
       q('editResTagSelect').value = prevResEdit;
     }
+    const unifiedTagSel = q('unifiedTagSelect');
+    if (unifiedTagSel) {
+      const prevUnifiedTag = unifiedTagSel.value || '';
+      unifiedTagSel.innerHTML = '<option value="">Select tag</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+      if (prevUnifiedTag && Array.from(unifiedTagSel.options).some((o) => o.value === prevUnifiedTag)) {
+        unifiedTagSel.value = prevUnifiedTag;
+      }
+    }
+    renderUnifiedEditTagChips();
 
     q('verifyTagFilter').innerHTML = '<option value="All">All Tags</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+    const manageTag = q('manageEntityTag');
+    if (manageTag) {
+      const selectedManageTag = manageTag.value || 'All';
+      manageTag.innerHTML = '<option value="All">All Tags</option>' + state.tags.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+      if (Array.from(manageTag.options).some((o) => o.value === selectedManageTag)) manageTag.value = selectedManageTag;
+    }
     const resFilter = q('resTagFilter');
     if (resFilter) {
       const selected = resFilter.value || 'All';
@@ -2667,6 +2999,7 @@ def render_console() -> HTMLResponse:
     updateRunStatusBars();
     updateRunHealthBanner();
     updateStartAnalysisButtonState();
+    updateAutoUploadStatus();
   }
 
   function updateStartAnalysisButtonState() {
@@ -2698,6 +3031,88 @@ def render_console() -> HTMLResponse:
     }
     btn.disabled = false;
     btn.textContent = '🚀 START ANALYSIS';
+  }
+
+  function updateAutoUploadStatus() {
+    const btn = q('autoUploadBtn');
+    const live = q('autoUploadLive');
+    const table = q('autoUploadResultsTable');
+    if (!btn || !live) return;
+    if (state.autoUploadSubmitting) {
+      btn.disabled = true;
+      btn.textContent = 'Submitting...';
+      live.textContent = 'Submitting auto-detect upload runs...';
+      if (table) {
+        table.innerHTML = '<table><thead><tr><th>Run ID</th><th>Filename</th><th>Detected As</th><th>Status</th><th>Progress</th><th>Notes</th></tr></thead><tbody><tr><td colspan="6">Submitting runs...</td></tr></tbody></table>';
+      }
+      return;
+    }
+    const tracked = Array.from(new Set((state.autoUploadRunIds || []).map((x) => Number(x)).filter(Boolean)));
+    if (!tracked.length) {
+      btn.disabled = false;
+      btn.textContent = 'Process Documents (Auto-detect)';
+      live.textContent = 'No active auto-detect upload runs.';
+      if (table) {
+        table.innerHTML = '<table><thead><tr><th>Run ID</th><th>Filename</th><th>Detected As</th><th>Status</th><th>Progress</th><th>Notes</th></tr></thead><tbody><tr><td colspan="6">No upload runs in current batch.</td></tr></tbody></table>';
+      }
+      return;
+    }
+    const runsById = new Map((state.runs || []).map((r) => [Number(r.id), r]));
+    const rows = tracked.map((id) => runsById.get(id)).filter(Boolean);
+    if (!rows.length) {
+      btn.disabled = false;
+      btn.textContent = 'Process Documents (Auto-detect)';
+      live.textContent = 'No active auto-detect upload runs.';
+      if (table) {
+        table.innerHTML = '<table><thead><tr><th>Run ID</th><th>Filename</th><th>Detected As</th><th>Status</th><th>Progress</th><th>Notes</th></tr></thead><tbody><tr><td colspan="6">Run data not available in current window.</td></tr></tbody></table>';
+      }
+      return;
+    }
+    if (table) {
+      const byId = rows.slice().sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+      table.innerHTML = '<table><thead><tr><th>Run ID</th><th>Filename</th><th>Detected As</th><th>Status</th><th>Progress</th><th>Notes</th></tr></thead><tbody>' +
+        byId.map((r) => {
+          const payload = r && r.payload ? r.payload : {};
+          const result = r && r.result ? r.result : {};
+          const fname = String((payload && payload.filename) || (result && result.filename) || '');
+          const dtype = String((result && result.document_type) || '').trim();
+          const detected = dtype ? (dtype === 'job' ? 'JD' : 'Resume') : 'Pending';
+          const status = String(r.status || '-');
+          const progress = `${Number(r.progress || 0)}% • ${String(r.current_step || '-')}`;
+          let notes = '';
+          if (result && result.skipped) notes = 'Skipped existing (force reparse off)';
+          else if (status === 'failed') notes = String(r.error || 'Failed');
+          else if (status === 'canceled') notes = 'Canceled';
+          else if (status === 'completed') notes = 'Processed';
+          else notes = 'In progress';
+          return `<tr><td>#${Number(r.id || 0)}</td><td>${escapeHtml(fname)}</td><td>${escapeHtml(detected)}</td><td>${escapeHtml(status)}</td><td>${escapeHtml(progress)}</td><td>${escapeHtml(notes)}</td></tr>`;
+        }).join('') +
+        '</tbody></table>';
+    }
+    const active = rows.filter((r) => {
+      const s = String(r.status || '');
+      return s === 'queued' || s === 'running' || s === 'paused';
+    });
+    if (active.length) {
+      btn.disabled = true;
+      btn.textContent = `Processing... (${active.length} active)`;
+      const lines = active
+        .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
+        .map((r) => `#${r.id} ${String(r.status || '-')} ${Number(r.progress || 0)}% • ${String(r.current_step || '-')}`);
+      live.textContent = lines.join('\n');
+      const running = active.filter((r) => String(r.status || '') === 'running').length;
+      const queued = active.filter((r) => String(r.status || '') === 'queued').length;
+      const paused = active.filter((r) => String(r.status || '') === 'paused').length;
+      setMsg('msgAutoUpload', `Parsing in progress... running ${running}, queued ${queued}, paused ${paused}.`, true);
+      return;
+    }
+    const completed = rows.filter((r) => String(r.status || '') === 'completed').length;
+    const failed = rows.filter((r) => String(r.status || '') === 'failed').length;
+    const canceled = rows.filter((r) => String(r.status || '') === 'canceled').length;
+    btn.disabled = false;
+    btn.textContent = 'Process Documents (Auto-detect)';
+    live.textContent = `Completed ${completed}, failed ${failed}, canceled ${canceled} (runs: ${tracked.join(', ')}).`;
+    setMsg('msgAutoUpload', `Auto-detect upload finished. completed ${completed}, failed ${failed}, canceled ${canceled}.`, failed === 0);
   }
 
   function renderSimpleResults() {
@@ -3040,6 +3455,7 @@ def render_console() -> HTMLResponse:
     renderAnalysisSelectors();
     renderSimpleResults();
     await loadLegacyRunResults(true);
+    renderUnifiedDataBrowser();
     updateAnalysisQueueMessage();
   }
 
@@ -3052,7 +3468,8 @@ def render_console() -> HTMLResponse:
   async function pollRunActivity() {
     if (!state.analysisAutoPollEnabled) return;
     const analysisActive = q('panel-analysis').classList.contains('active');
-    if (!analysisActive) return;
+    const autoUploadTracked = (state.autoUploadRunIds || []).length > 0;
+    if (!analysisActive && !autoUploadTracked) return;
 
     const previousRuns = state.runs || [];
     const hadActive = previousRuns.some((r) => r.status === 'queued' || r.status === 'running');
@@ -3513,6 +3930,62 @@ def render_console() -> HTMLResponse:
     }
   }
 
+  async function queueIngestAuto() {
+    state.autoUploadSubmitting = true;
+    updateAutoUploadStatus();
+    try {
+      const tags = tagsFrom(q('autoTagsCsv').value);
+      const selectedTag = String((q('autoTagAssign') && q('autoTagAssign').value) || '').trim();
+      if (selectedTag && !tags.includes(selectedTag)) tags.push(selectedTag);
+      const fileInput = q('autoFileUpload');
+      const files = Array.from((fileInput && fileInput.files) || []);
+      const forceReparse = !!q('autoForceReparse').checked;
+      if (!files.length) throw new Error('Upload at least one document file.');
+      const existingNames = new Set([
+        ...(state.jobs || []).map((j) => String(j.filename || '')),
+        ...(state.resumes || []).map((r) => String(r.filename || '')),
+      ]);
+
+      const runIds = [];
+      const skippedExisting = [];
+      for (const f of files) {
+        if (!forceReparse && existingNames.has(String(f.name || ''))) {
+          skippedExisting.push(String(f.name || ''));
+          continue;
+        }
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+        const content_b64 = btoa(binary);
+        const run = await send('/v1/runs', 'POST', {
+          job_type: 'ingest_auto_file',
+          payload: { filename: f.name, content_b64, tags, force_reparse: forceReparse },
+        });
+        runIds.push(Number(run.id));
+      }
+      if (!runIds.length) {
+        if (skippedExisting.length) {
+          throw new Error(`All selected files already exist (${skippedExisting.length}). Enable "Force Reparse Existing Files" to run AI again.`);
+        }
+        throw new Error('No files were queued.');
+      }
+      const skipNote = skippedExisting.length
+        ? ` Skipped ${skippedExisting.length} existing file(s): ${skippedExisting.slice(0, 5).join(', ')}${skippedExisting.length > 5 ? ', ...' : ''}.`
+        : '';
+      setMsg('msgAutoUpload', `Queued ${runIds.length} auto-detect ingest run(s): #${runIds.join(', ')}.${skipNote}`);
+      state.autoUploadRunIds = runIds.slice();
+      q('selectedRunId').value = String(runIds[runIds.length - 1]);
+      setTrackedBatchRunIds(runIds.slice());
+      startAnalysisAutoPoll();
+      await refreshAll();
+    } catch (e) {
+      setMsg('msgAutoUpload', e.message, false);
+    } finally {
+      state.autoUploadSubmitting = false;
+      updateAutoUploadStatus();
+    }
+  }
+
   async function queueIngestResume() {
     try {
       const tags = tagsFrom(q('resTagsCsv').value);
@@ -3606,6 +4079,7 @@ def render_console() -> HTMLResponse:
       const target = q(targetSelectId);
       if (target) target.value = name;
       if (targetSelectId === 'jdTagAssign') addJdUploadTag();
+      if (targetSelectId === 'autoTagAssign') addAutoUploadTag();
       if (targetSelectId === 'resTagAssign') addResUploadTag();
       setMsg(msgId, `Tag "${name}" added.`);
     } catch (e) {
@@ -3970,6 +4444,8 @@ def render_console() -> HTMLResponse:
     try {
       const jd = await getJson(`/v1/jobs/${id}`);
       state.selectedEditJdId = Number(jd.id);
+      if (q('manageEntityType')) q('manageEntityType').value = 'job';
+      if (q('manageEntitySelect')) q('manageEntitySelect').value = String(jd.id);
       q('jdEditingLabel').textContent = `Editing: ${jd.filename || ''}`;
       q('editJdTagsCsv').value = (jd.tags || []).join(', ');
       renderEditJdTagChips();
@@ -3985,6 +4461,8 @@ def render_console() -> HTMLResponse:
     try {
       const rs = await getJson(`/v1/resumes/${id}`);
       state.selectedEditResId = Number(rs.id);
+      if (q('manageEntityType')) q('manageEntityType').value = 'resume';
+      if (q('manageEntitySelect')) q('manageEntitySelect').value = String(rs.id);
       q('resEditingLabel').textContent = `Editing: ${rs.filename || ''}`;
       q('editResTagsCsv').value = (rs.tags || []).join(', ');
       renderEditResTagChips();
@@ -4392,6 +4870,7 @@ def render_console() -> HTMLResponse:
     try {
       await refreshAll();
       toggleResultsMode();
+      switchManage('upload');
       const persistedBatchIds = loadPersistedBatchRunIds();
       if (persistedBatchIds.length) {
         setTrackedBatchRunIds(persistedBatchIds);

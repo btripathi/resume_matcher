@@ -302,7 +302,7 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/runs", response_model=RunOut)
     def create_run(payload: RunRequest) -> RunOut:
-        allowed = {"ingest_job", "ingest_job_file", "ingest_resume", "ingest_resume_file", "score_match"}
+        allowed = {"ingest_job", "ingest_job_file", "ingest_resume", "ingest_resume_file", "ingest_auto_file", "score_match"}
         if payload.job_type not in allowed:
             raise HTTPException(status_code=400, detail=f"job_type must be one of {sorted(allowed)}")
         run_id = repo.enqueue_run(job_type=payload.job_type, payload=payload.payload)

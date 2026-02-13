@@ -4,6 +4,7 @@ import traceback
 import json
 import base64
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -168,6 +169,51 @@ class JobRunner:
         if pause_requested:
             raise RunPausedError(pause_reason or "paused")
 
+    def _extract_uploaded_text(self, filename: str, content_b64: str) -> str:
+        raw_bytes = base64.b64decode(content_b64.encode("utf-8"))
+        lower = filename.lower()
+        if lower.endswith(".pdf"):
+            return document_utils.extract_text_from_pdf(raw_bytes, use_ocr=True)
+        if lower.endswith(".docx"):
+            return document_utils.extract_text_from_docx(raw_bytes)
+        return raw_bytes.decode("utf-8", errors="ignore")
+
+    def _infer_document_type(self, filename: str, text: str) -> tuple[str, int, int]:
+        name = str(filename or "").lower()
+        sample = str(text or "")[:12000].lower()
+
+        jd_name_patterns = [r"\bjd\b", r"job[ _-]?description", r"\brole\b", r"\bopening\b", r"\bhiring\b"]
+        resume_name_patterns = [r"\bresume\b", r"\bcv\b", r"\bprofile\b", r"naukri", r"candidate"]
+        jd_text_patterns = [
+            r"\bresponsibilit(y|ies)\b",
+            r"\bqualifications?\b",
+            r"\brequirements?\b",
+            r"\bmust[- ]?have\b",
+            r"\bnice[- ]?to[- ]?have\b",
+            r"\babout (the )?role\b",
+            r"\bwe are looking for\b",
+            r"\bjob description\b",
+        ]
+        resume_text_patterns = [
+            r"\bwork experience\b",
+            r"\bprofessional summary\b",
+            r"\beducation\b",
+            r"\bskills?\b",
+            r"\bprojects?\b",
+            r"\bcertifications?\b",
+            r"\bphone\b",
+            r"\bemail\b",
+            r"\blinkedin\b",
+        ]
+
+        jd_score = sum(2 for p in jd_name_patterns if re.search(p, name))
+        resume_score = sum(2 for p in resume_name_patterns if re.search(p, name))
+        jd_score += sum(1 for p in jd_text_patterns if re.search(p, sample))
+        resume_score += sum(1 for p in resume_text_patterns if re.search(p, sample))
+
+        kind = "job" if jd_score >= resume_score else "resume"
+        return kind, jd_score, resume_score
+
     def _execute(self, run_id: int, job_type: str, payload: dict) -> dict:
         self._ensure_not_canceled(run_id)
         if job_type == "ingest_job":
@@ -309,6 +355,77 @@ class JobRunner:
 
             self.repo.update_run_progress(run_id, 100, "resume ingested")
             return {"resume_id": row["id"], "filename": row["filename"]}
+
+        if job_type == "ingest_auto_file":
+            self.repo.update_run_progress(run_id, 10, "extracting file")
+            filename = str(payload.get("filename", ""))
+            content_b64 = str(payload.get("content_b64", "") or "")
+            tags = list(payload.get("tags", []))
+            force_reparse = bool(payload.get("force_reparse", False))
+            if not filename or not content_b64:
+                raise ValueError("filename and content_b64 are required for ingest_auto_file")
+
+            self._ensure_not_canceled(run_id)
+            text = self._extract_uploaded_text(filename=filename, content_b64=content_b64)
+            self.repo.update_run_progress(run_id, 35, "classifying document type")
+            kind, jd_score, resume_score = self._infer_document_type(filename=filename, text=text)
+            self.repo.add_run_log(
+                run_id,
+                "info",
+                f"Auto-classified '{filename}' as {kind.upper()} (jd_score={jd_score}, resume_score={resume_score}).",
+            )
+            self._ensure_not_canceled(run_id)
+
+            if kind == "job":
+                existing = self.repo.db.get_job_by_filename(filename)
+                if existing and not force_reparse:
+                    self.repo.add_run_log(run_id, "info", f"Skipped existing JD '{filename}' (force_reparse disabled).")
+                    self.repo.update_run_progress(run_id, 100, "skipped existing")
+                    return {"document_type": "job", "job_id": int(existing["id"]), "filename": filename, "skipped": True}
+
+                self.repo.update_run_progress(run_id, 60, "analyzing job description")
+                self._ensure_not_canceled(run_id)
+                criteria = self.analysis.llm.analyze_jd(text)
+                if not isinstance(criteria, dict) or criteria.get("error"):
+                    raise RuntimeError(f"JD analysis failed for '{filename}': {criteria}")
+                if existing:
+                    job_id = int(existing["id"])
+                    self.repo.db.update_job_content(job_id, text, criteria)
+                    if tags:
+                        self.repo.db.update_job_tags(job_id, ",".join([t for t in tags if str(t).strip()]))
+                    row = self.repo.get_job(job_id)
+                else:
+                    row = self.repo.add_job(filename=filename, content=text, criteria=criteria, tags=tags)
+                for t in tags:
+                    if str(t).strip():
+                        self.repo.add_tag(str(t).strip())
+                self.repo.update_run_progress(run_id, 100, "job ingested")
+                return {"document_type": "job", "job_id": row["id"], "filename": row["filename"]}
+
+            existing = self.repo.db.get_resume_by_filename(filename)
+            if existing and not force_reparse:
+                self.repo.add_run_log(run_id, "info", f"Skipped existing resume '{filename}' (force_reparse disabled).")
+                self.repo.update_run_progress(run_id, 100, "skipped existing")
+                return {"document_type": "resume", "resume_id": int(existing["id"]), "filename": filename, "skipped": True}
+
+            self.repo.update_run_progress(run_id, 60, "analyzing resume")
+            self._ensure_not_canceled(run_id)
+            profile = self.analysis.llm.analyze_resume(text)
+            if not isinstance(profile, dict):
+                raise RuntimeError(f"Resume analysis failed for '{filename}'.")
+            if existing:
+                resume_id = int(existing["id"])
+                self.repo.db.update_resume_content(resume_id, text, profile)
+                if tags:
+                    self.repo.db.update_resume_tags(resume_id, ",".join([t for t in tags if str(t).strip()]))
+                row = self.repo.get_resume(resume_id)
+            else:
+                row = self.repo.add_resume(filename=filename, content=text, profile=profile, tags=tags)
+            for t in tags:
+                if str(t).strip():
+                    self.repo.add_tag(str(t).strip())
+            self.repo.update_run_progress(run_id, 100, "resume ingested")
+            return {"document_type": "resume", "resume_id": row["id"], "filename": row["filename"]}
 
         if job_type == "score_match":
             self.repo.update_run_progress(run_id, 10, "scoring")
