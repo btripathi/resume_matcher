@@ -320,6 +320,7 @@ class JobRunner:
             legacy_run_id = int(payload.get("legacy_run_id", 0) or 0) or None
             force_rerun_pass1 = bool(payload.get("force_rerun_pass1", False))
             force_rerun_deep = bool(payload.get("force_rerun_deep", False))
+            max_deep_scans_per_jd = int(payload.get("max_deep_scans_per_jd", 0) or 0)
             deep_resume_from = int(payload.get("deep_resume_from", 0) or 0)
             deep_partial_details = payload.get("deep_partial_details") or []
 
@@ -329,7 +330,8 @@ class JobRunner:
                 (
                     "Scoring match "
                     f"(job_id={job_id}, resume_id={resume_id}, threshold={threshold}, "
-                    f"auto_deep={auto_deep}, force_pass1={force_rerun_pass1}, force_deep={force_rerun_deep})"
+                    f"auto_deep={auto_deep}, force_pass1={force_rerun_pass1}, force_deep={force_rerun_deep}, "
+                    f"max_deep_per_jd={max_deep_scans_per_jd})"
                 ),
             )
             job = self.repo.get_job(job_id)
@@ -387,6 +389,7 @@ class JobRunner:
                 legacy_run_id=legacy_run_id,
                 force_rerun_pass1=force_rerun_pass1,
                 force_rerun_deep=force_rerun_deep,
+                max_deep_scans_per_jd=max_deep_scans_per_jd,
                 log_fn=lambda msg: self.repo.add_run_log(run_id, "info", str(msg)),
                 deep_resume_from=deep_resume_from,
                 deep_partial_details=deep_partial_details if isinstance(deep_partial_details, list) else [],

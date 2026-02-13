@@ -382,12 +382,37 @@ class DBManager:
         conn.close()
         return run_id
 
+    def rename_legacy_run(self, run_id, name):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("UPDATE runs SET name = ? WHERE id = ?", (str(name), int(run_id)))
+        updated = int(c.rowcount or 0)
+        conn.commit()
+        conn.close()
+        return updated > 0
+
     def link_run_match(self, run_id, match_id):
         conn = self.get_connection()
         c = conn.cursor()
         c.execute("INSERT OR IGNORE INTO run_matches (run_id, match_id) VALUES (?, ?)", (run_id, match_id))
         conn.commit()
         conn.close()
+
+    def count_legacy_run_deep_matches_for_job(self, run_id, job_id):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT COUNT(*)
+            FROM run_matches rm
+            JOIN matches m ON m.id = rm.match_id
+            WHERE rm.run_id = ? AND m.job_id = ? AND COALESCE(m.strategy, 'Standard') = 'Deep'
+            """,
+            (int(run_id), int(job_id)),
+        )
+        row = c.fetchone()
+        conn.close()
+        return int((row[0] if row else 0) or 0)
 
     def delete_legacy_run(self, run_id, delete_linked_matches=False):
         conn = self.get_connection()

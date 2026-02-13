@@ -147,8 +147,14 @@ class Repository:
     def create_run(self, run_name: str, threshold: int) -> int:
         return int(self.db.create_run(run_name, threshold=threshold))
 
+    def rename_legacy_run(self, run_id: int, run_name: str) -> bool:
+        return bool(self.db.rename_legacy_run(run_id=run_id, name=run_name))
+
     def link_run_match(self, run_id: int, match_id: int) -> None:
         self.db.link_run_match(run_id, match_id)
+
+    def count_legacy_run_deep_matches_for_job(self, run_id: int, job_id: int) -> int:
+        return int(self.db.count_legacy_run_deep_matches_for_job(run_id=run_id, job_id=job_id))
 
     def save_match(
         self,

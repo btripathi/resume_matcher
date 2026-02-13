@@ -395,18 +395,66 @@ def render_console() -> HTMLResponse:
     .run-results-panel .section {
       margin-bottom: 20px;
     }
-    .export-block {
-      border: 1px solid #e2e8f0;
-      border-radius: 10px;
-      background: #f8fbff;
-      padding: 12px;
-      margin: 8px 0 14px;
+    .actions-menu {
+      position: relative;
+      width: 220px;
     }
-    .export-actions {
+    .actions-menu > summary {
+      list-style: none;
+      cursor: pointer;
+      border: 1px solid #d0d7de;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-weight: 700;
+      color: #334155;
+      background: #fff;
+      text-align: center;
+    }
+    .actions-menu > summary::-webkit-details-marker { display: none; }
+    .actions-popover {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 6px);
+      z-index: 20;
+      width: 320px;
+      border: 1px solid #d0d7de;
+      border-radius: 12px;
+      background: #fff;
+      padding: 10px;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+      display: grid;
+      gap: 8px;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+      padding: 20px;
+    }
+    .modal-backdrop.show { display: flex; }
+    .modal-card {
+      width: min(520px, 100%);
+      border: 1px solid #d0d7de;
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: 0 16px 40px rgba(15, 23, 42, 0.28);
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+    }
+    .modal-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .modal-actions {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 10px;
-      margin-top: 8px;
     }
 
     .table-wrap {
@@ -914,12 +962,14 @@ def render_console() -> HTMLResponse:
     </div>
 
     <section class="panel active" id="panel-results">
-      <div class="subtabs">
-        <button class="subtab active" id="sub-results-simple" onclick="switchResults('simple')">📌 Simple JD View</button>
-        <button class="subtab" id="sub-results-run" onclick="switchResults('run')">📊 Run-Based Results</button>
+      <div class="section" style="margin-bottom:8px;">
+        <label class="caption check-inline">
+          <input id="resultsSimpleMode" type="checkbox" onchange="toggleResultsMode()" />
+          📌 Enable Simple JD View (off = Full Run-Based Results)
+        </label>
       </div>
 
-      <div class="subpanel active" id="panel-results-simple">
+      <div class="subpanel" id="panel-results-simple" style="display:none;">
         <div class="section">
           <label style="font-size:18px; display:block; margin-bottom:6px;">Select Job Description:</label>
           <select id="simpleJobSelect" onchange="renderSimpleResults()"></select>
@@ -948,14 +998,23 @@ def render_console() -> HTMLResponse:
         </div>
       </div>
 
-      <div class="subpanel run-results-panel" id="panel-results-run">
+      <div class="subpanel run-results-panel active" id="panel-results-run">
         <div class="section">
           <label style="font-size:18px; display:block; margin-bottom:6px;">Select Run Batch:</label>
-          <select id="legacyRunSelect" onchange="loadLegacyRunResults()"></select>
-          <div class="row2 row">
-            <label class="caption check-inline"><input id="legacyDeleteWithMatches" type="checkbox" /> Also delete matches linked to this batch</label>
-            <button class="secondary" onclick="deleteLegacyRunBatch()">Delete This Batch</button>
+          <div class="row2" style="grid-template-columns: 1fr auto; align-items:start;">
+            <select id="legacyRunSelect" onchange="loadLegacyRunResults()"></select>
+            <details class="actions-menu" id="legacyActionsMenu">
+              <summary>Batch Actions ▾</summary>
+              <div class="actions-popover">
+                <button class="secondary" onclick="renameLegacyRunBatch()">Rename This Batch</button>
+                <label class="caption check-inline"><input id="legacyDeleteWithMatches" type="checkbox" /> Also delete matches linked to this batch</label>
+                <button class="secondary" onclick="deleteLegacyRunBatch()">Delete This Batch</button>
+                <button class="secondary" onclick="downloadLegacyCsv()">📥 Download CSV</button>
+                <button class="secondary" onclick="downloadLegacyJson()">🧾 Download JSON</button>
+              </div>
+            </details>
           </div>
+          <div class="caption" id="legacyRunJobsCaption"></div>
         </div>
         <details class="expander">
           <summary>🔄 Rerun this Batch with New Settings</summary>
@@ -988,20 +1047,12 @@ def render_console() -> HTMLResponse:
           <div class="metric"><div class="k">Unique Candidates</div><div class="v" id="runUniqueCandidates">0</div></div>
           <div class="metric"><div class="k">Unique Jobs</div><div class="v" id="runUniqueJobs">0</div></div>
         </div>
-        <div class="export-block">
-          <div style="font-size:14px; font-weight:600; color:#334155;">Export Run Results</div>
-          <div class="caption">Download selected run data for sharing or audits.</div>
-          <div class="export-actions">
-            <button class="secondary" onclick="downloadLegacyCsv()">📥 Download CSV</button>
-            <button class="secondary" onclick="downloadLegacyJson()">🧾 Download JSON</button>
-          </div>
-        </div>
         <div class="section">
           <h3 id="legacyDeepHeading">✨ Deep Matches for Selected Run</h3>
           <div class="table-wrap" id="legacyDeepTable"></div>
         </div>
         <div class="section">
-          <h3>🧠 Standard Matches (Pass 1 Only)</h3>
+          <h3 id="legacyStdHeading">🧠 Standard Matches (Pass 1 Only)</h3>
           <div class="table-wrap" id="legacyStdTable"></div>
         </div>
         <div class="section row">
@@ -1061,6 +1112,10 @@ def render_console() -> HTMLResponse:
             <div class="row2" style="grid-template-columns: 1fr 60px; align-items:center;">
               <input id="threshold" type="range" min="0" max="100" value="50" oninput="q('thresholdValue').textContent=this.value" />
               <span id="thresholdValue" style="font-weight:700; text-align:right;">50</span>
+            </div>
+            <div class="row2" style="margin-top:6px; align-items:center;">
+              <label class="caption" for="maxDeepPerJdInput">Max Deep-Scans per JD (0 = unlimited)</label>
+              <input id="maxDeepPerJdInput" type="number" min="0" step="1" value="0" />
             </div>
           </div>
           <button class="primary" id="startAnalysisBtn" onclick="queueScoreMatch()">🚀 START ANALYSIS</button>
@@ -1368,9 +1423,30 @@ def render_console() -> HTMLResponse:
                 </div>
               </details>
             </div>
-          </div>
-        </section>
       </div>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="textPromptModal" onclick="onTextPromptBackdropClick(event)">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="textPromptTitle">
+      <div class="modal-title" id="textPromptTitle">Rename</div>
+      <label class="caption" id="textPromptLabel" for="textPromptInput">Name</label>
+      <input id="textPromptInput" />
+      <div class="modal-actions">
+        <button class="secondary" onclick="closeTextPrompt(null)">Cancel</button>
+        <button class="primary" id="textPromptConfirm" onclick="confirmTextPrompt()">Save</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal-backdrop" id="confirmModal" onclick="onConfirmBackdropClick(event)">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <div class="modal-title" id="confirmTitle">Confirm Action</div>
+      <div class="caption" id="confirmMessage">Are you sure?</div>
+      <div class="modal-actions">
+        <button class="secondary" onclick="closeConfirmModal(false)">Cancel</button>
+        <button class="primary" id="confirmOkBtn" onclick="closeConfirmModal(true)">Confirm</button>
+      </div>
+    </div>
+  </div>
 
 <script>
   const state = {
@@ -1396,6 +1472,8 @@ def render_console() -> HTMLResponse:
   const DEBUG_LOG_LIMIT = 300;
   const ANALYSIS_BATCH_STORAGE_KEY = 'talentscout.analysisQueuedRunIds';
   const debugLines = [];
+  let textPromptResolver = null;
+  let confirmModalResolver = null;
 
   function loadPersistedBatchRunIds() {
     try {
@@ -2110,7 +2188,12 @@ def render_console() -> HTMLResponse:
 
   async function resetDatabase() {
     try {
-      if (!window.confirm('Reset DB will delete jobs, resumes, matches, and runs. Continue?')) return;
+      const ok = await openConfirmModal({
+        title: 'Reset Database',
+        message: 'Reset DB will delete jobs, resumes, matches, and runs. Continue?',
+        confirmText: 'Reset DB',
+      });
+      if (!ok) return;
       const r = await send('/v1/settings/reset-db', 'POST', {});
       await refreshAll();
       await loadSettings();
@@ -2129,9 +2212,16 @@ def render_console() -> HTMLResponse:
 
   function switchResults(name) {
     ['simple', 'run'].forEach((t) => {
-      q(`sub-results-${t}`).classList.toggle('active', t === name);
-      q(`panel-results-${t}`).classList.toggle('active', t === name);
+      const panel = q(`panel-results-${t}`);
+      if (!panel) return;
+      panel.classList.toggle('active', t === name);
+      panel.style.display = t === name ? '' : 'none';
     });
+  }
+
+  function toggleResultsMode() {
+    const simple = !!(q('resultsSimpleMode') && q('resultsSimpleMode').checked);
+    switchResults(simple ? 'simple' : 'run');
   }
 
   function decisionBadge(decision) {
@@ -2325,6 +2415,16 @@ def render_console() -> HTMLResponse:
       effectiveJobs,
       effectivePairs,
     };
+  }
+
+  function buildLegacyRunNameForJob(baseRunName, job) {
+    const jdName = (job && job.filename) ? String(job.filename).replace(/\\.[^/.]+$/, '') : '';
+    const trimmedBase = String(baseRunName || '').trim();
+    if (!trimmedBase) return jdName ? `Auto: ${jdName}` : 'Auto: Job';
+    if (!jdName) return trimmedBase;
+    if (trimmedBase.toLowerCase().includes(jdName.toLowerCase())) return trimmedBase;
+    if (trimmedBase.toLowerCase().startsWith('batch run:')) return `Run: ${jdName}`;
+    return `${trimmedBase} • ${jdName}`;
   }
 
   function onAnalysisSelectionChange() {
@@ -2692,7 +2792,11 @@ def render_console() -> HTMLResponse:
       const candidate = decodeURIComponent(String((btn && btn.dataset && btn.dataset.candidate) || 'candidate'));
       if (!jobId) throw new Error('Select a job first.');
       if (!resumeId) throw new Error('Invalid JD × Resume pair.');
-      const ok = window.confirm(`Delete all historical matches for JD × Resume pair for "${candidate}"? This cannot be undone.`);
+      const ok = await openConfirmModal({
+        title: 'Delete JD × Resume Matches',
+        message: `Delete all historical matches for JD × Resume pair for "${candidate}"? This cannot be undone.`,
+        confirmText: 'Delete',
+      });
       if (!ok) return;
       const resp = await send(`/v1/matches/by-pair?job_id=${jobId}&resume_id=${resumeId}`, 'DELETE', null);
       await refreshAll();
@@ -2705,6 +2809,11 @@ def render_console() -> HTMLResponse:
 
   function renderLegacyRunResults() {
     const rows = state.legacyRunResults || [];
+    const jobNames = Array.from(new Set(rows.map((r) => String(r.job_name || '').trim()).filter(Boolean)));
+    const primaryJob = jobNames.length ? jobNames[0] : '';
+    const jobSummary = jobNames.length === 0
+      ? 'No JD data'
+      : (jobNames.length === 1 ? primaryJob : `${jobNames.length} JDs (${jobNames.slice(0, 3).join(', ')}${jobNames.length > 3 ? ', ...' : ''})`);
     const byScoreDesc = (a, b) => {
       const sa = Number(a && a.match_score ? a.match_score : 0);
       const sb = Number(b && b.match_score ? b.match_score : 0);
@@ -2720,7 +2829,14 @@ def render_console() -> HTMLResponse:
     q('runDeepCount').textContent = String(deep.length);
     q('runStdCount').textContent = String(std.length);
     q('runUniqueCandidates').textContent = String(new Set(rows.map((r) => r.candidate_name || '')).size);
-    q('runUniqueJobs').textContent = String(new Set(rows.map((r) => r.job_name || '')).size);
+    q('runUniqueJobs').textContent = String(jobNames.length);
+    if (q('legacyRunJobsCaption')) q('legacyRunJobsCaption').textContent = `JD Scope: ${jobSummary}`;
+    if (q('legacyDeepHeading')) q('legacyDeepHeading').textContent = jobNames.length === 1
+      ? `✨ Deep Matches for ${primaryJob}`
+      : `✨ Deep Matches for ${jobSummary}`;
+    if (q('legacyStdHeading')) q('legacyStdHeading').textContent = jobNames.length === 1
+      ? `🧠 Standard Matches (Pass 1 Only) for ${primaryJob}`
+      : `🧠 Standard Matches (Pass 1 Only) for ${jobSummary}`;
 
     const tableHTML = (arr) => `<table><thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th></tr></thead><tbody>` +
       arr.map((r) => `<tr style="cursor:pointer" onclick="showLegacyMatch(${r.id})"><td>${r.candidate_name || ''}</td><td><b>${r.match_score}%</b>${r.standard_score !== null && r.standard_score !== undefined ? `<span class="score-sub">Pass 1: ${r.standard_score}%</span>` : ''}</td><td>${decisionBadge(r.decision || '')}</td><td>${r.reasoning || ''}</td></tr>`).join('') +
@@ -3069,8 +3185,10 @@ def render_console() -> HTMLResponse:
       state.selectedLegacyMatchId = null;
       renderLegacyRunResults();
       q('legacyRunCaption').textContent = '';
+      if (q('legacyRunJobsCaption')) q('legacyRunJobsCaption').textContent = '';
       q('legacyMatchDetail').textContent = 'Select a row to inspect.';
       q('legacyDeepHeading').textContent = '✨ Deep Matches for Selected Run';
+      if (q('legacyStdHeading')) q('legacyStdHeading').textContent = '🧠 Standard Matches (Pass 1 Only)';
       q('legacySingleRerunMatch').innerHTML = '<option value="">No candidates in selected run</option>';
       setMsg('msgLegacyRerun', '');
       return;
@@ -3078,7 +3196,9 @@ def render_console() -> HTMLResponse:
     state.legacyRunResults = await getJson(`/v1/runs/legacy/${runId}/results`);
     const meta = state.legacyRuns.find((r) => Number(r.id) === runId);
     q('legacyRunCaption').textContent = meta ? `Results showing against Deep Match Threshold of ${meta.threshold}% used in this run.` : '';
-    q('legacyDeepHeading').textContent = meta ? `✨ Deep Matches for ${meta.name}` : '✨ Deep Matches for Selected Run';
+    if (q('legacyRunJobsCaption')) q('legacyRunJobsCaption').textContent = '';
+    q('legacyDeepHeading').textContent = '✨ Deep Matches for Selected Run';
+    if (q('legacyStdHeading')) q('legacyStdHeading').textContent = '🧠 Standard Matches (Pass 1 Only)';
     populateLegacyRerunDefaults(meta || null);
     renderLegacyRunResults();
 
@@ -3094,6 +3214,100 @@ def render_console() -> HTMLResponse:
     q('legacyMatchDetail').textContent = 'Select a row to inspect.';
   }
 
+  function closeLegacyActionsMenu() {
+    const menu = q('legacyActionsMenu');
+    if (menu) menu.open = false;
+  }
+
+  function onTextPromptBackdropClick(ev) {
+    if (ev && ev.target && ev.target.id === 'textPromptModal') {
+      closeTextPrompt(null);
+    }
+  }
+
+  function openTextPrompt(opts = {}) {
+    const modal = q('textPromptModal');
+    const input = q('textPromptInput');
+    const title = q('textPromptTitle');
+    const label = q('textPromptLabel');
+    const confirmBtn = q('textPromptConfirm');
+    if (!modal || !input || !title || !label || !confirmBtn) return Promise.resolve(null);
+    title.textContent = String(opts.title || 'Enter value');
+    label.textContent = String(opts.label || 'Value');
+    input.placeholder = String(opts.placeholder || '');
+    input.value = String(opts.value || '');
+    confirmBtn.textContent = String(opts.confirmText || 'Save');
+    modal.classList.add('show');
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 0);
+    return new Promise((resolve) => {
+      textPromptResolver = resolve;
+      input.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          confirmTextPrompt();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          closeTextPrompt(null);
+        }
+      };
+    });
+  }
+
+  function closeTextPrompt(result) {
+    const modal = q('textPromptModal');
+    const input = q('textPromptInput');
+    if (modal) modal.classList.remove('show');
+    if (input) input.onkeydown = null;
+    const resolve = textPromptResolver;
+    textPromptResolver = null;
+    if (resolve) resolve(result);
+  }
+
+  function confirmTextPrompt() {
+    const input = q('textPromptInput');
+    closeTextPrompt(input ? input.value : '');
+  }
+
+  function onConfirmBackdropClick(ev) {
+    if (ev && ev.target && ev.target.id === 'confirmModal') {
+      closeConfirmModal(false);
+    }
+  }
+
+  function openConfirmModal(opts = {}) {
+    const modal = q('confirmModal');
+    const title = q('confirmTitle');
+    const message = q('confirmMessage');
+    const okBtn = q('confirmOkBtn');
+    if (!modal || !title || !message || !okBtn) return Promise.resolve(false);
+    title.textContent = String(opts.title || 'Confirm Action');
+    message.textContent = String(opts.message || 'Are you sure?');
+    okBtn.textContent = String(opts.confirmText || 'Confirm');
+    modal.classList.add('show');
+    return new Promise((resolve) => {
+      confirmModalResolver = resolve;
+      document.addEventListener('keydown', onConfirmEscape);
+    });
+  }
+
+  function onConfirmEscape(e) {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    closeConfirmModal(false);
+  }
+
+  function closeConfirmModal(result) {
+    const modal = q('confirmModal');
+    if (modal) modal.classList.remove('show');
+    document.removeEventListener('keydown', onConfirmEscape);
+    const resolve = confirmModalResolver;
+    confirmModalResolver = null;
+    if (resolve) resolve(!!result);
+  }
+
   async function deleteLegacyRunBatch() {
     try {
       const runId = Number((q('legacyRunSelect') && q('legacyRunSelect').value) || 0);
@@ -3102,10 +3316,38 @@ def render_console() -> HTMLResponse:
       const msg = deleteLinked
         ? 'Delete this batch and all matches linked to it? This cannot be undone.'
         : 'Delete this batch record only? Linked matches will remain.';
-      if (!window.confirm(msg)) return;
+      const ok = await openConfirmModal({ title: 'Delete Run Batch', message: msg, confirmText: 'Delete' });
+      if (!ok) return;
       const resp = await send(`/v1/runs/legacy/${runId}?delete_linked_matches=${deleteLinked ? 'true' : 'false'}`, 'DELETE', null);
       setMsg('msgLegacyRerun', `Batch deleted. Links removed: ${resp.deleted_links || 0}; matches removed: ${resp.deleted_matches || 0}.`);
+      closeLegacyActionsMenu();
       await refreshAll();
+    } catch (e) {
+      setMsg('msgLegacyRerun', e.message, false);
+    }
+  }
+
+  async function renameLegacyRunBatch() {
+    try {
+      const runId = Number((q('legacyRunSelect') && q('legacyRunSelect').value) || 0);
+      if (!runId) throw new Error('Select a run batch first.');
+      const current = (state.legacyRuns || []).find((r) => Number(r.id) === runId) || null;
+      const proposed = await openTextPrompt({
+        title: 'Rename Run Batch',
+        label: 'Run name',
+        placeholder: 'Enter run name',
+        value: String((current && current.name) || ''),
+        confirmText: 'Save Name',
+      });
+      if (proposed === null) return;
+      const name = String(proposed || '').trim();
+      if (!name) throw new Error('Run name is required.');
+      await send(`/v1/runs/legacy/${runId}/name`, 'PUT', { name });
+      setMsg('msgLegacyRerun', `Run name updated to "${name}".`);
+      closeLegacyActionsMenu();
+      await refreshAll();
+      if (q('legacyRunSelect')) q('legacyRunSelect').value = String(runId);
+      await loadLegacyRunResults(true);
     } catch (e) {
       setMsg('msgLegacyRerun', e.message, false);
     }
@@ -3144,6 +3386,7 @@ def render_console() -> HTMLResponse:
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    closeLegacyActionsMenu();
     setMsg('msgLegacyRerun', `CSV exported (${rows.length} rows).`);
   }
 
@@ -3176,6 +3419,7 @@ def render_console() -> HTMLResponse:
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    closeLegacyActionsMenu();
     setMsg('msgLegacyRerun', `JSON exported (${rows.length} rows).`);
   }
 
@@ -3442,6 +3686,7 @@ def render_console() -> HTMLResponse:
       const runName = q('runName').value.trim() || null;
       const forceRerunPass1 = q('forceRerunPass1').checked;
       const forceRerunDeep = q('forceRerunDeep').checked;
+      const maxDeepPerJd = Math.max(0, Number(q('maxDeepPerJdInput').value || 0));
 
       let queued = 0;
       const queuedRunIds = [];
@@ -3460,7 +3705,7 @@ def render_console() -> HTMLResponse:
         }
 
         if (!perJobResumeIds.length) continue;
-        const defaultRunName = runName || `Auto: ${(job && job.filename) ? job.filename : `Job ${job_id}`}`;
+        const defaultRunName = buildLegacyRunNameForJob(runName || state.lastAutoRunName || '', job);
         const legacyRun = await createLegacyRun(defaultRunName, threshold);
 
         for (const resume_id of perJobResumeIds) {
@@ -3475,6 +3720,7 @@ def render_console() -> HTMLResponse:
               legacy_run_id: Number(legacyRun.id),
               force_rerun_pass1: forceRerunPass1,
               force_rerun_deep: forceRerunDeep,
+              max_deep_scans_per_jd: maxDeepPerJd,
             },
           });
           queued += 1;
@@ -3654,7 +3900,11 @@ def render_console() -> HTMLResponse:
       if (status !== 'queued' && status !== 'running') {
         throw new Error(`Run ${runId} is ${status} and cannot be stopped.`);
       }
-      const ok = window.confirm(`Stop and clean run #${runId}? This will mark it canceled and clear resumable checkpoint state.`);
+      const ok = await openConfirmModal({
+        title: 'Stop & Clean Run',
+        message: `Stop and clean run #${runId}? This will mark it canceled and clear resumable checkpoint state.`,
+        confirmText: 'Stop Run',
+      });
       if (!ok) return;
       const resp = await send(`/v1/runs/${runId}/cancel`, 'POST', {
         reason: 'Stopped by user from web console',
@@ -3671,7 +3921,11 @@ def render_console() -> HTMLResponse:
 
   async function skipCurrentRun() {
     try {
-      const ok = window.confirm('Skip the current running job and continue with the rest of the queue?');
+      const ok = await openConfirmModal({
+        title: 'Skip Current Job',
+        message: 'Skip the current running job and continue with the rest of the queue?',
+        confirmText: 'Skip Job',
+      });
       if (!ok) return;
       const resp = await send('/v1/queue/cancel-current', 'POST', {
         reason: 'Skipped current job from web console',
@@ -3692,7 +3946,11 @@ def render_console() -> HTMLResponse:
 
   async function cancelWholeBatch() {
     try {
-      const ok = window.confirm('Stop the whole active batch? This cancels all queued/running/paused jobs.');
+      const ok = await openConfirmModal({
+        title: 'Stop Whole Batch',
+        message: 'Stop the whole active batch? This cancels all queued/running/paused jobs.',
+        confirmText: 'Stop Batch',
+      });
       if (!ok) return;
       const resp = await send('/v1/queue/cancel-all', 'POST', {
         reason: 'Stopped whole batch from web console',
@@ -3849,7 +4107,11 @@ def render_console() -> HTMLResponse:
       const name = q('deleteTagSel').value;
       if (!name) throw new Error('Select tag');
       const usage = getTagUsage(name);
-      const ok = confirm(`Delete tag "${name}"?\n\nIt will be removed from ${usage.jd} JD(s) and ${usage.resume} resume(s).`);
+      const ok = await openConfirmModal({
+        title: 'Delete Tag',
+        message: `Delete tag "${name}"? It will be removed from ${usage.jd} JD(s) and ${usage.resume} resume(s).`,
+        confirmText: 'Delete Tag',
+      });
       if (!ok) return;
       const r = await fetch(`/v1/tags/${encodeURIComponent(name)}`, { method: 'DELETE' });
       if (!r.ok) throw new Error('Delete failed');
@@ -4129,6 +4391,7 @@ def render_console() -> HTMLResponse:
   async function boot() {
     try {
       await refreshAll();
+      toggleResultsMode();
       const persistedBatchIds = loadPersistedBatchRunIds();
       if (persistedBatchIds.length) {
         setTrackedBatchRunIds(persistedBatchIds);

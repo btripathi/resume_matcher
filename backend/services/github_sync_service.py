@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -242,6 +243,10 @@ class GitHubSyncService:
         header = f"blob {len(content)}\0".encode("utf-8")
         return hashlib.sha1(header + content).hexdigest()
 
+    def _blob_sha_from_bytes(self, content: bytes) -> str:
+        header = f"blob {len(content)}\0".encode("utf-8")
+        return hashlib.sha1(header + content).hexdigest()
+
     def remote_db_sha(self) -> tuple[str | None, str | None]:
         _, repo, err = self._client()
         if not repo:
@@ -278,22 +283,37 @@ class GitHubSyncService:
             content = self._build_sanitized_db_bytes_for_push()
         except Exception as exc:
             return False, f"Error preparing DB for push: {exc}"
-        try:
+        local_blob_sha = self._blob_sha_from_bytes(content)
+        max_attempts = 5
+        for attempt in range(1, max_attempts + 1):
             try:
-                existing = repo.get_contents(self.remote_db_filename)
-                repo.update_file(
-                    existing.path,
-                    f"Update DB: {dt.datetime.now().isoformat()}",
-                    content,
-                    existing.sha,
-                )
+                try:
+                    existing = repo.get_contents(self.remote_db_filename)
+                    if str(existing.sha) == local_blob_sha:
+                        return True, "Database already up-to-date on GitHub."
+                    repo.update_file(
+                        existing.path,
+                        f"Update DB: {dt.datetime.now().isoformat()}",
+                        content,
+                        existing.sha,
+                    )
+                except GithubException as exc:
+                    if exc.status == 404:
+                        repo.create_file(self.remote_db_filename, "Initial DB Commit", content)
+                    elif exc.status == 409 and attempt < max_attempts:
+                        time.sleep(0.2 * attempt)
+                        continue
+                    else:
+                        raise
+                return True, "Database pushed to GitHub (queue history includes completed/failed runs only)."
             except GithubException as exc:
-                if exc.status != 404:
-                    raise
-                repo.create_file(self.remote_db_filename, "Initial DB Commit", content)
-            return True, "Database pushed to GitHub (queue history includes completed/failed runs only)."
-        except Exception as exc:
-            return False, f"Error pushing DB: {exc}"
+                if exc.status == 409 and attempt < max_attempts:
+                    time.sleep(0.2 * attempt)
+                    continue
+                return False, f"Error pushing DB: {exc}"
+            except Exception as exc:
+                return False, f"Error pushing DB: {exc}"
+        return False, "Error pushing DB: retries exhausted after concurrent update conflicts."
 
     def get_lock(self, timeout_hours: int | None = None) -> dict | None:
         _, repo, _ = self._client()

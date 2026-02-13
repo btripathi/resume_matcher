@@ -275,6 +275,7 @@ def create_app() -> FastAPI:
                 legacy_run_id=payload.legacy_run_id,
                 force_rerun_pass1=payload.force_rerun_pass1,
                 force_rerun_deep=payload.force_rerun_deep,
+                max_deep_scans_per_jd=payload.max_deep_scans_per_jd,
             )
             _after_db_write("score_match")
             return MatchOut(**row)
@@ -305,7 +306,6 @@ def create_app() -> FastAPI:
         if payload.job_type not in allowed:
             raise HTTPException(status_code=400, detail=f"job_type must be one of {sorted(allowed)}")
         run_id = repo.enqueue_run(job_type=payload.job_type, payload=payload.payload)
-        _after_db_write(f"enqueue_run:{run_id}")
         row = repo.get_run(run_id)
         if not row:
             raise HTTPException(status_code=500, detail="Failed to enqueue run")
@@ -334,6 +334,17 @@ def create_app() -> FastAPI:
         run_id = repo.create_run(run_name=name, threshold=threshold)
         _after_db_write(f"create_legacy_run:{run_id}")
         return {"id": run_id, "name": name, "threshold": threshold}
+
+    @app.put("/v1/runs/legacy/{run_id}/name")
+    def rename_legacy_run(run_id: int, payload: dict) -> dict:
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        ok = repo.rename_legacy_run(run_id=run_id, run_name=name)
+        if not ok:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        _after_db_write(f"rename_legacy_run:{run_id}")
+        return {"ok": True, "id": run_id, "name": name}
 
     @app.get("/v1/runs/legacy/{run_id}/results")
     def legacy_run_results(run_id: int) -> list[dict]:

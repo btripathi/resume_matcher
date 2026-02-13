@@ -33,6 +33,7 @@ class AnalysisService:
         legacy_run_id: int | None = None,
         force_rerun_pass1: bool = False,
         force_rerun_deep: bool = False,
+        max_deep_scans_per_jd: int = 0,
         log_fn=None,
         deep_resume_from: int = 0,
         deep_partial_details: list[dict] | None = None,
@@ -123,6 +124,19 @@ class AnalysisService:
             should_run_deep = False
         else:
             should_run_deep = (auto_deep and standard_score >= threshold) or force_rerun_deep
+
+        # Optional per-JD deep-scan cap scoped to current legacy run batch.
+        # 0 means unlimited.
+        deep_cap = max(0, int(max_deep_scans_per_jd or 0))
+        if should_run_deep and deep_cap > 0 and legacy_run_id:
+            deep_used = self.repo.count_legacy_run_deep_matches_for_job(run_id=int(legacy_run_id), job_id=int(job_id))
+            if deep_used >= deep_cap:
+                should_run_deep = False
+                if callable(log_fn):
+                    log_fn(
+                        f"Deep Scan skipped: reached max deep scans for JD in this batch "
+                        f"({deep_used}/{deep_cap})."
+                    )
         if should_run_deep:
             strategy = "Deep"
             deep_details = list(deep_partial_details or [])
