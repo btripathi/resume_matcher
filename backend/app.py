@@ -236,6 +236,11 @@ def create_app() -> FastAPI:
     def list_matches() -> list[dict]:
         return repo.list_matches(limit=200)
 
+    @app.delete("/v1/matches/by-pair")
+    def delete_matches_by_pair(job_id: int, resume_id: int) -> dict:
+        out = repo.delete_matches_by_pair(job_id=job_id, resume_id=resume_id)
+        return {"ok": True, **out}
+
     @app.get("/v1/matches/{match_id}")
     def get_match(match_id: int) -> dict:
         row = repo.get_match_summary(match_id)
@@ -265,6 +270,13 @@ def create_app() -> FastAPI:
     @app.get("/v1/runs/legacy/{run_id}/results")
     def legacy_run_results(run_id: int) -> list[dict]:
         return repo.list_legacy_run_results(run_id)
+
+    @app.delete("/v1/runs/legacy/{run_id}")
+    def delete_legacy_run(run_id: int, delete_linked_matches: bool = False) -> dict:
+        out = repo.delete_legacy_run(run_id=run_id, delete_linked_matches=delete_linked_matches)
+        if not out.get("deleted_run"):
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        return {"ok": True, **out}
 
     @app.get("/v1/runs/{run_id}", response_model=RunOut)
     def get_run(run_id: int) -> RunOut:

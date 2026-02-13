@@ -389,6 +389,60 @@ class DBManager:
         conn.commit()
         conn.close()
 
+    def delete_legacy_run(self, run_id, delete_linked_matches=False):
+        conn = self.get_connection()
+        c = conn.cursor()
+        run_id = int(run_id)
+        c.execute("SELECT COUNT(*) FROM runs WHERE id = ?", (run_id,))
+        exists = int(c.fetchone()[0] or 0)
+        if not exists:
+            conn.close()
+            return {"deleted_run": False, "deleted_links": 0, "deleted_matches": 0}
+
+        deleted_matches = 0
+        if delete_linked_matches:
+            c.execute("SELECT match_id FROM run_matches WHERE run_id = ?", (run_id,))
+            match_ids = [int(row[0]) for row in c.fetchall()]
+            if match_ids:
+                placeholders = ",".join(["?"] * len(match_ids))
+                c.execute(
+                    f"DELETE FROM run_matches WHERE match_id IN ({placeholders})",
+                    tuple(match_ids),
+                )
+                c.execute(
+                    f"DELETE FROM matches WHERE id IN ({placeholders})",
+                    tuple(match_ids),
+                )
+                deleted_matches = int(c.rowcount or 0)
+
+        c.execute("DELETE FROM run_matches WHERE run_id = ?", (run_id,))
+        deleted_links = int(c.rowcount or 0)
+        c.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+        deleted_run = int(c.rowcount or 0) == 1
+        conn.commit()
+        conn.close()
+        return {"deleted_run": deleted_run, "deleted_links": deleted_links, "deleted_matches": deleted_matches}
+
+    def delete_matches_by_pair(self, job_id, resume_id):
+        conn = self.get_connection()
+        c = conn.cursor()
+        job_id = int(job_id)
+        resume_id = int(resume_id)
+        c.execute("SELECT id FROM matches WHERE job_id = ? AND resume_id = ?", (job_id, resume_id))
+        match_ids = [int(row[0]) for row in c.fetchall()]
+        if not match_ids:
+            conn.close()
+            return {"deleted_matches": 0, "deleted_links": 0}
+
+        placeholders = ",".join(["?"] * len(match_ids))
+        c.execute(f"DELETE FROM run_matches WHERE match_id IN ({placeholders})", tuple(match_ids))
+        deleted_links = int(c.rowcount or 0)
+        c.execute(f"DELETE FROM matches WHERE id IN ({placeholders})", tuple(match_ids))
+        deleted_matches = int(c.rowcount or 0)
+        conn.commit()
+        conn.close()
+        return {"deleted_matches": deleted_matches, "deleted_links": deleted_links}
+
     def get_match_if_exists(self, job_id, resume_id):
         conn = self.get_connection()
         c = conn.cursor()

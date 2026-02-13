@@ -287,6 +287,7 @@ class Repository:
                         row.get("candidate_name"),
                         row.get("resume_name"),
                     ),
+                    "resume_name": row.get("resume_name") or "",
                     "match_score": _as_int(row.get("match_score"), default=0),
                     "strategy": row["strategy"] or "Standard",
                     "decision": row["decision"] or "",
@@ -294,6 +295,12 @@ class Repository:
                 }
             )
         return rows
+
+    def delete_legacy_run(self, run_id: int, delete_linked_matches: bool = False) -> dict:
+        return self.db.delete_legacy_run(run_id=run_id, delete_linked_matches=delete_linked_matches)
+
+    def delete_matches_by_pair(self, job_id: int, resume_id: int) -> dict:
+        return self.db.delete_matches_by_pair(job_id=job_id, resume_id=resume_id)
 
     def get_match_summary(self, match_id: int) -> dict | None:
         df = self.db.fetch_dataframe(

@@ -907,8 +907,8 @@ def render_console() -> HTMLResponse:
         <div class="section">
           <label style="font-size:18px; display:block; margin-bottom:6px;">Select Job Description:</label>
           <select id="simpleJobSelect" onchange="renderSimpleResults()"></select>
-          <label class="caption row check-inline"><input id="simpleFilterByJdTags" type="checkbox" checked onchange="renderSimpleResults()" /> Show only resumes matching selected JD tag(s)</label>
           <div class="caption" id="simpleResultScope">Showing all saved matches for selected JD.</div>
+          <div class="caption">Use the row-level <b>Delete</b> action to remove all historical matches for a specific JD × Resume pair.</div>
         </div>
 
         <div class="metrics3">
@@ -925,12 +925,21 @@ def render_console() -> HTMLResponse:
           <h3>🧠 Standard Matches</h3>
           <div class="table-wrap" id="simpleStdTable"></div>
         </div>
+        <div class="section" id="simpleTagMismatchSection" style="display:none;">
+          <h3>⚠️ Tag Mismatch Watchlist</h3>
+          <div class="caption" id="simpleTagMismatchCaption"></div>
+          <div class="table-wrap" id="simpleTagMismatchTable"></div>
+        </div>
       </div>
 
       <div class="subpanel run-results-panel" id="panel-results-run">
         <div class="section">
           <label style="font-size:18px; display:block; margin-bottom:6px;">Select Run Batch:</label>
           <select id="legacyRunSelect" onchange="loadLegacyRunResults()"></select>
+          <div class="row2 row">
+            <label class="caption check-inline"><input id="legacyDeleteWithMatches" type="checkbox" /> Also delete matches linked to this batch</label>
+            <button class="secondary" onclick="deleteLegacyRunBatch()">Delete This Batch</button>
+          </div>
         </div>
         <details class="expander">
           <summary>🔄 Rerun this Batch with New Settings</summary>
@@ -2407,20 +2416,22 @@ def render_console() -> HTMLResponse:
 
   function renderSimpleResults() {
     const selectedJob = Number(q('simpleJobSelect').value);
-    const onlyTagged = !!(q('simpleFilterByJdTags') && q('simpleFilterByJdTags').checked);
     const allRows = state.matches.filter((m) => !selectedJob || Number(m.job_id) === selectedJob);
-    let rows = allRows;
-    let excludedByTag = 0;
-    if (selectedJob && onlyTagged) {
+    const rows = allRows;
+    let mismatchedRows = [];
+    if (selectedJob) {
       const job = state.jobs.find((j) => Number(j.id) === selectedJob);
       const jdTags = (job && job.tags) ? job.tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : [];
       if (jdTags.length) {
-        rows = allRows.filter((m) => {
-          const rs = state.resumes.find((r) => Number(r.id) === Number(m.resume_id));
-          const rsTags = (rs && rs.tags) ? rs.tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : [];
-          return jdTags.some((t) => rsTags.includes(t));
+        mismatchedRows = allRows.filter((m) => {
+          const resume = state.resumes.find((r) => Number(r.id) === Number(m.resume_id));
+          const rsTags = (resume && resume.tags) ? resume.tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : [];
+          return !jdTags.some((t) => rsTags.includes(t));
+        }).map((m) => {
+          const resume = state.resumes.find((r) => Number(r.id) === Number(m.resume_id));
+          const resumeTags = (resume && resume.tags) ? resume.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+          return { ...m, resume_tags_text: resumeTags.length ? resumeTags.join(', ') : '(none)' };
         });
-        excludedByTag = Math.max(0, allRows.length - rows.length);
       }
     }
     const byScoreDesc = (a, b) => {
@@ -2440,21 +2451,70 @@ def render_console() -> HTMLResponse:
     if (q('simpleResultScope')) {
       if (!selectedJob) {
         q('simpleResultScope').textContent = 'Showing all saved matches.';
-      } else if (onlyTagged && excludedByTag > 0) {
-        q('simpleResultScope').textContent = `Showing tag-compatible matches for selected JD. ${excludedByTag} historical match(es) hidden by tag filter.`;
-      } else if (onlyTagged) {
-        q('simpleResultScope').textContent = 'Showing tag-compatible matches for selected JD.';
       } else {
         q('simpleResultScope').textContent = 'Showing all saved matches for selected JD (including historical).';
       }
     }
 
-    const renderTable = (arr) => `<table><thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th></tr></thead><tbody>` +
-      arr.map((r) => `<tr><td>${r.candidate_name || ''}</td><td><b>${r.match_score}%</b></td><td>${decisionBadge(r.decision)}</td><td>${r.reasoning || ''}</td></tr>`).join('') +
+    const renderTable = (arr) => `<table><thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th><th>Action</th></tr></thead><tbody>` +
+      arr.map((r) => `<tr><td>${r.candidate_name || ''}</td><td><b>${r.match_score}%</b></td><td>${decisionBadge(r.decision)}</td><td>${r.reasoning || ''}</td><td><button class="secondary" data-job="${Number(r.job_id || 0)}" data-resume="${Number(r.resume_id || 0)}" data-candidate="${encodeURIComponent(String(r.candidate_name || 'candidate'))}" onclick="deletePairMatchesFromRow(this)">Delete</button></td></tr>`).join('') +
       `</tbody></table>`;
 
     q('simpleDeepTable').innerHTML = renderTable(deep);
     q('simpleStdTable').innerHTML = renderTable(std);
+
+    const mismatchSection = q('simpleTagMismatchSection');
+    const mismatchCaption = q('simpleTagMismatchCaption');
+    const mismatchTable = q('simpleTagMismatchTable');
+    if (mismatchSection && mismatchCaption && mismatchTable) {
+      if (!selectedJob || !mismatchedRows.length) {
+        mismatchSection.style.display = 'none';
+        mismatchCaption.textContent = '';
+        mismatchTable.innerHTML = '';
+      } else {
+        const byScoreDesc = (a, b) => {
+          const sa = Number(a && a.match_score ? a.match_score : 0);
+          const sb = Number(b && b.match_score ? b.match_score : 0);
+          if (sb !== sa) return sb - sa;
+          return String(a && a.candidate_name ? a.candidate_name : '').localeCompare(
+            String(b && b.candidate_name ? b.candidate_name : '')
+          );
+        };
+        const sortedMismatch = mismatchedRows.slice().sort(byScoreDesc);
+        mismatchSection.style.display = 'block';
+        mismatchCaption.textContent = `${sortedMismatch.length} resume(s) in this JD result set do not share any tag with the selected JD.`;
+        mismatchTable.innerHTML =
+          `<table><thead><tr><th>Candidate</th><th>Resume Tags</th><th>Score</th><th>Decision</th><th>Action</th></tr></thead><tbody>` +
+          sortedMismatch.map((r) =>
+            `<tr>
+              <td>${escapeHtml(r.candidate_name || '')}</td>
+              <td>${escapeHtml(r.resume_tags_text || '(none)')}</td>
+              <td><b>${Number(r.match_score || 0)}%</b></td>
+              <td>${decisionBadge(r.decision)}</td>
+              <td><button class="secondary" data-job="${Number(r.job_id || 0)}" data-resume="${Number(r.resume_id || 0)}" data-candidate="${encodeURIComponent(String(r.candidate_name || 'candidate'))}" onclick="deletePairMatchesFromRow(this)">Delete</button></td>
+            </tr>`
+          ).join('') +
+          `</tbody></table>`;
+      }
+    }
+  }
+
+  async function deletePairMatchesFromRow(btn) {
+    try {
+      const jobId = Number((btn && btn.dataset && btn.dataset.job) || 0);
+      const resumeId = Number((btn && btn.dataset && btn.dataset.resume) || 0);
+      const candidate = decodeURIComponent(String((btn && btn.dataset && btn.dataset.candidate) || 'candidate'));
+      if (!jobId) throw new Error('Select a job first.');
+      if (!resumeId) throw new Error('Invalid JD × Resume pair.');
+      const ok = window.confirm(`Delete all historical matches for JD × Resume pair for "${candidate}"? This cannot be undone.`);
+      if (!ok) return;
+      const resp = await send(`/v1/matches/by-pair?job_id=${jobId}&resume_id=${resumeId}`, 'DELETE', null);
+      await refreshAll();
+      setMsg('msgMatch', `Deleted ${resp.deleted_matches || 0} match row(s) and ${resp.deleted_links || 0} run-link row(s).`);
+      renderSimpleResults();
+    } catch (e) {
+      setMsg('msgMatch', e.message, false);
+    }
   }
 
   function renderLegacyRunResults() {
@@ -2805,6 +2865,23 @@ def render_console() -> HTMLResponse:
 
     state.selectedLegacyMatchId = null;
     q('legacyMatchDetail').textContent = 'Select a row to inspect.';
+  }
+
+  async function deleteLegacyRunBatch() {
+    try {
+      const runId = Number((q('legacyRunSelect') && q('legacyRunSelect').value) || 0);
+      if (!runId) throw new Error('Select a run batch first.');
+      const deleteLinked = !!(q('legacyDeleteWithMatches') && q('legacyDeleteWithMatches').checked);
+      const msg = deleteLinked
+        ? 'Delete this batch and all matches linked to it? This cannot be undone.'
+        : 'Delete this batch record only? Linked matches will remain.';
+      if (!window.confirm(msg)) return;
+      const resp = await send(`/v1/runs/legacy/${runId}?delete_linked_matches=${deleteLinked ? 'true' : 'false'}`, 'DELETE', null);
+      setMsg('msgLegacyRerun', `Batch deleted. Links removed: ${resp.deleted_links || 0}; matches removed: ${resp.deleted_matches || 0}.`);
+      await refreshAll();
+    } catch (e) {
+      setMsg('msgLegacyRerun', e.message, false);
+    }
   }
 
   function downloadLegacyCsv() {
