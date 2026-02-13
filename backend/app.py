@@ -1,5 +1,4 @@
 import os
-import time
 import urllib.request
 
 from fastapi import FastAPI, HTTPException
@@ -71,44 +70,59 @@ def create_app() -> FastAPI:
     gh_sync = GitHubSyncService(db_path=settings.db_path)
 
     auto_push_on_run = os.getenv("RESUME_MATCHER_AUTO_PUSH_DB_ON_RUN", "true").strip().lower() in ("1", "true", "yes", "on")
-    auto_push_cooldown_sec = max(0, int(os.getenv("RESUME_MATCHER_AUTO_PUSH_COOLDOWN_SEC", "30") or 30))
-    push_state = {"last_push_ts": 0.0}
+
+    def _auto_push_db(reason: str) -> tuple[bool, str]:
+        if not auto_push_on_run:
+            return True, "Auto-push disabled by env."
+        if not runtime_settings.get("write_mode"):
+            return True, "Read-only mode; auto-push skipped."
+        ok, msg = gh_sync.push_db()
+        print(f"[sync] auto-push after {reason}: {'ok' if ok else 'failed'}: {msg}")
+        return ok, msg
 
     def _maybe_auto_push_db(run_id: int, status: str) -> None:
-        if not auto_push_on_run:
-            return
-        if not runtime_settings.get("write_mode"):
-            return
-        now = time.time()
-        if auto_push_cooldown_sec > 0 and (now - float(push_state["last_push_ts"])) < auto_push_cooldown_sec:
-            return
-        ok, msg = gh_sync.push_db()
-        print(f"[run {run_id}] auto-push after {status}: {'ok' if ok else 'failed'}: {msg}")
-        if ok:
-            push_state["last_push_ts"] = now
+        _auto_push_db(f"run {run_id} {status}")
+
+    def _after_db_write(reason: str) -> None:
+        _auto_push_db(reason)
+
+    def _pull_if_behind(reason: str) -> tuple[bool, str, bool]:
+        token, repo_name = gh_sync._credentials()
+        if not (token and repo_name):
+            return True, "GitHub credentials not configured; pull skipped.", False
+        ok, msg, pulled = gh_sync.pull_if_behind()
+        print(f"[sync] precheck pull ({reason}): {'ok' if ok else 'failed'}: {msg}")
+        if ok and pulled:
+            # Ensure migrations are present if pulled snapshot is older schema.
+            db._init_db()
+        return ok, msg, pulled
 
     runner = JobRunner(repo=repo, analysis=analysis, on_run_terminal=_maybe_auto_push_db)
 
     @app.on_event("startup")
     def _startup() -> None:
-        auto_pull_mode = os.getenv("RESUME_MATCHER_AUTO_PULL_DB_ON_START", "if_missing").strip().lower()
-        should_pull = False
+        auto_pull_mode = os.getenv("RESUME_MATCHER_AUTO_PULL_DB_ON_START", "if_behind").strip().lower()
         if auto_pull_mode in ("1", "true", "yes", "on", "always"):
-            should_pull = True
-        elif auto_pull_mode in ("if_missing", "missing"):
-            db_missing = not os.path.exists(settings.db_path)
-            db_empty = (os.path.exists(settings.db_path) and os.path.getsize(settings.db_path) == 0)
-            should_pull = db_missing or db_empty
-        elif auto_pull_mode in ("0", "false", "no", "off", "never"):
-            should_pull = False
-
-        if should_pull:
             token, repo_name = gh_sync._credentials()
             if token and repo_name:
                 ok, msg = gh_sync.pull_db()
                 print(f"[startup] DB pull {'ok' if ok else 'failed'}: {msg}")
             else:
                 print("[startup] DB pull skipped: GitHub credentials not configured.")
+        elif auto_pull_mode in ("if_behind", "behind"):
+            ok, msg, _ = _pull_if_behind("startup")
+            if not ok:
+                print(f"[startup] DB pull failed: {msg}")
+        elif auto_pull_mode in ("if_missing", "missing"):
+            db_missing = not os.path.exists(settings.db_path)
+            db_empty = (os.path.exists(settings.db_path) and os.path.getsize(settings.db_path) == 0)
+            if db_missing or db_empty:
+                token, repo_name = gh_sync._credentials()
+                if token and repo_name:
+                    ok, msg = gh_sync.pull_db()
+                    print(f"[startup] DB pull {'ok' if ok else 'failed'}: {msg}")
+                else:
+                    print("[startup] DB pull skipped: GitHub credentials not configured.")
         else:
             print(f"[startup] DB pull skipped (mode={auto_pull_mode}).")
         # Re-apply schema migrations after optional DB pull, so older DB snapshots
@@ -145,6 +159,7 @@ def create_app() -> FastAPI:
             row = analysis.ingest_job(
                 filename=payload.filename, content=payload.content, tags=payload.tags
             )
+            _after_db_write("ingest_job")
             return JobOut(**row)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -157,6 +172,7 @@ def create_app() -> FastAPI:
                 criteria=payload.get("criteria"),
                 tags=payload.get("tags"),
             )
+            _after_db_write(f"update_job:{job_id}")
             return {"ok": True}
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -167,6 +183,7 @@ def create_app() -> FastAPI:
     def delete_job(job_id: int) -> dict:
         try:
             repo.delete_job(job_id)
+            _after_db_write(f"delete_job:{job_id}")
             return {"ok": True}
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -188,6 +205,7 @@ def create_app() -> FastAPI:
             row = analysis.ingest_resume(
                 filename=payload.filename, content=payload.content, tags=payload.tags
             )
+            _after_db_write("ingest_resume")
             return ResumeOut(**row)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -200,6 +218,7 @@ def create_app() -> FastAPI:
                 profile=payload.get("profile"),
                 tags=payload.get("tags"),
             )
+            _after_db_write(f"update_resume:{resume_id}")
             return {"ok": True}
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -210,6 +229,7 @@ def create_app() -> FastAPI:
     def delete_resume(resume_id: int) -> dict:
         try:
             repo.delete_resume(resume_id)
+            _after_db_write(f"delete_resume:{resume_id}")
             return {"ok": True}
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -226,6 +246,7 @@ def create_app() -> FastAPI:
                 force_rerun_pass1=payload.force_rerun_pass1,
                 force_rerun_deep=payload.force_rerun_deep,
             )
+            _after_db_write("score_match")
             return MatchOut(**row)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -254,6 +275,7 @@ def create_app() -> FastAPI:
         if payload.job_type not in allowed:
             raise HTTPException(status_code=400, detail=f"job_type must be one of {sorted(allowed)}")
         run_id = repo.enqueue_run(job_type=payload.job_type, payload=payload.payload)
+        _after_db_write(f"enqueue_run:{run_id}")
         row = repo.get_run(run_id)
         if not row:
             raise HTTPException(status_code=500, detail="Failed to enqueue run")
@@ -327,6 +349,7 @@ def create_app() -> FastAPI:
                 repo.add_run_log(run_id, "warn", "Run resumed from queue using existing run id.")
         else:
             repo.add_run_log(run_id, "warn", "Run resumed from queue using existing run id.")
+        _after_db_write(f"resume_run:{run_id}")
         return {"ok": True, "message": f"Run {run_id} requeued.", "run_id": run_id}
 
     @app.get("/v1/runs/{run_id}/logs", response_model=list[RunLogOut])
@@ -350,6 +373,7 @@ def create_app() -> FastAPI:
         if not name:
             raise HTTPException(status_code=400, detail="name is required")
         repo.add_tag(name)
+        _after_db_write(f"add_tag:{name}")
         return {"ok": True}
 
     @app.put("/v1/tags/rename")
@@ -359,11 +383,13 @@ def create_app() -> FastAPI:
         if not old or not new:
             raise HTTPException(status_code=400, detail="old and new are required")
         repo.rename_tag(old, new)
+        _after_db_write(f"rename_tag:{old}->{new}")
         return {"ok": True}
 
     @app.delete("/v1/tags/{name}")
     def delete_tag(name: str) -> dict:
         repo.delete_tag(name)
+        _after_db_write(f"delete_tag:{name}")
         return {"ok": True}
 
     @app.get("/v1/settings/state")
@@ -446,6 +472,9 @@ def create_app() -> FastAPI:
     def enable_write_mode(payload: dict) -> dict:
         if runtime_settings["write_mode_locked"]:
             raise HTTPException(status_code=403, detail="Write mode is locked by launcher/env.")
+        ok, msg, _ = _pull_if_behind("enable_write_mode")
+        if not ok:
+            raise HTTPException(status_code=409, detail=f"Write mode blocked: could not sync latest DB from remote ({msg})")
         writer_cfg = gh_sync.writer_config()
         writer_name, _ = _resolve_writer_identity(payload, require_password=True)
         timeout_hours = int(writer_cfg.get("lock_timeout_hours", 6) or 6)
@@ -500,8 +529,7 @@ def create_app() -> FastAPI:
     @app.post("/v1/settings/reset-db")
     def reset_db() -> dict:
         repo.reset_all_data()
-        if runtime_settings["write_mode"]:
-            gh_sync.push_db()
+        _after_db_write("reset_db")
         return {"ok": True, "message": "Database reset complete."}
 
     return app

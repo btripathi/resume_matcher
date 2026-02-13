@@ -1,5 +1,6 @@
 import base64
 import datetime as dt
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -134,6 +135,41 @@ class GitHubSyncService:
             return False, f"Error pulling DB: {exc}"
         except Exception as exc:
             return False, f"Error pulling DB: {exc}"
+
+    def _local_blob_sha(self) -> str | None:
+        local_db = Path(self.db_path)
+        if not local_db.exists():
+            return None
+        try:
+            content = local_db.read_bytes()
+        except Exception:
+            return None
+        header = f"blob {len(content)}\0".encode("utf-8")
+        return hashlib.sha1(header + content).hexdigest()
+
+    def remote_db_sha(self) -> tuple[str | None, str | None]:
+        _, repo, err = self._client()
+        if not repo:
+            return None, err or "GitHub repo not accessible."
+        try:
+            contents = repo.get_contents(self.remote_db_filename)
+            return str(contents.sha), None
+        except GithubException as exc:
+            if exc.status == 404:
+                return None, "Remote DB not found in repository."
+            return None, f"Error reading remote DB metadata: {exc}"
+        except Exception as exc:
+            return None, f"Error reading remote DB metadata: {exc}"
+
+    def pull_if_behind(self) -> tuple[bool, str, bool]:
+        remote_sha, err = self.remote_db_sha()
+        if err:
+            return False, err, False
+        local_sha = self._local_blob_sha()
+        if local_sha and remote_sha and local_sha == remote_sha:
+            return True, "Local DB already up-to-date with remote.", False
+        ok, msg = self.pull_db()
+        return ok, msg, bool(ok)
 
     def push_db(self) -> tuple[bool, str]:
         local_db = Path(self.db_path)
