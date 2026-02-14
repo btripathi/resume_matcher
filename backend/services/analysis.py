@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import json
 
@@ -35,6 +36,7 @@ class AnalysisService:
         force_rerun_deep: bool = False,
         max_deep_scans_per_jd: int = 0,
         deep_single_prompt: bool = False,
+        ai_concurrency: int = 1,
         debug_bulk_log: bool = False,
         log_fn=None,
         deep_resume_from: int = 0,
@@ -54,6 +56,7 @@ class AnalysisService:
         existing_match_id = int(existing["id"]) if existing else None
         force_any = bool(force_rerun_pass1 or force_rerun_deep)
         wants_deep = bool(auto_deep or force_rerun_deep)
+        existing_strategy = str((existing or {}).get("strategy") or "")
         if existing and not force_any:
             existing_strategy = str(existing.get("strategy") or "Standard")
             can_reuse = (not wants_deep) or (wants_deep and existing_strategy == "Deep")
@@ -68,17 +71,30 @@ class AnalysisService:
                         self.repo.link_run_match(run_id=run_id, match_id=int(row["id"]))
                     return row
 
-        standard = self.llm.evaluate_standard(resume["content"], job["criteria"], resume["profile"])
-        if not isinstance(standard, dict):
-            if callable(log_fn):
-                log_fn("Standard evaluation failed or malformed; using fallback standard result.")
+        standard = None
+        if existing and wants_deep and (not force_rerun_pass1) and existing_strategy == "Standard":
+            # In deep-cap second-wave reruns, reuse cached Pass 1 output and only run Deep Scan.
             standard = {
-                "candidate_name": str((resume or {}).get("filename") or "Unknown Candidate"),
-                "match_score": 0,
-                "decision": "Review",
-                "reasoning": "Standard evaluation failed; fallback result applied.",
+                "candidate_name": str(existing.get("candidate_name") or (resume or {}).get("filename") or "Unknown Candidate"),
+                "match_score": int(existing.get("standard_score") if existing.get("standard_score") is not None else existing.get("match_score") or 0),
+                "decision": str(existing.get("decision") or "Review"),
+                "reasoning": str(existing.get("standard_reasoning") or existing.get("reasoning") or ""),
                 "missing_skills": [],
             }
+            if callable(log_fn):
+                log_fn("Pass 1 reused from existing Standard match (force_rerun_pass1=false).")
+        else:
+            standard = self.llm.evaluate_standard(resume["content"], job["criteria"], resume["profile"])
+            if not isinstance(standard, dict):
+                if callable(log_fn):
+                    log_fn("Standard evaluation failed or malformed; using fallback standard result.")
+                standard = {
+                    "candidate_name": str((resume or {}).get("filename") or "Unknown Candidate"),
+                    "match_score": 0,
+                    "decision": "Review",
+                    "reasoning": "Standard evaluation failed; fallback result applied.",
+                    "missing_skills": [],
+                }
 
         def _preferred_candidate_name() -> str:
             profile = resume.get("profile")
@@ -110,7 +126,6 @@ class AnalysisService:
         strategy = "Standard"
         result = standard
 
-        existing_strategy = str((existing or {}).get("strategy") or "")
         existing_deep_row = None
         if existing_match_id and existing_strategy == "Deep":
             existing_deep_row = self.repo.get_match(existing_match_id)
@@ -151,9 +166,10 @@ class AnalysisService:
         if should_run_deep:
             strategy = "Deep"
             deep_details = list(deep_partial_details or [])
+            deep_ai_concurrency = max(1, int(ai_concurrency or 1))
             if callable(log_fn):
                 mode_text = "single prompt" if deep_single_prompt else "per requirement"
-                log_fn(f"Starting Deep Scan requirement checks ({mode_text})")
+                log_fn(f"Starting Deep Scan requirement checks ({mode_text}, concurrency={deep_ai_concurrency})")
             criteria = job.get("criteria") or {}
             if isinstance(criteria, str):
                 import json
@@ -195,6 +211,21 @@ class AnalysisService:
                 deep_details = deep_details[:resume_from]
 
             remaining_items = criteria_items[resume_from:]
+
+            def _normalize_deep_eval(raw: dict | None, category: str, value: str) -> dict:
+                evaluation = raw if isinstance(raw, dict) else {}
+                if not evaluation:
+                    return {
+                        "requirement": value,
+                        "category": category,
+                        "status": "Missing",
+                        "evidence": "Evaluation timed out or failed",
+                    }
+                evaluation["category"] = evaluation.get("category") or category
+                evaluation["requirement"] = evaluation.get("requirement") or value
+                evaluation["status"] = evaluation.get("status") or "Missing"
+                evaluation["evidence"] = evaluation.get("evidence") or "None"
+                return evaluation
             if deep_single_prompt and remaining_items:
                 def _norm_eval(raw_item, default_category: str, default_requirement: str) -> dict:
                     raw = raw_item if isinstance(raw_item, dict) else {}
@@ -409,37 +440,60 @@ class AnalysisService:
 
                 # Final fallback to per-requirement for anything still missing.
                 fallback_logged_rel: set[int] = set()
-                for rel_idx in missing_rel:
-                    idx = resume_from + rel_idx + 1
-                    category, value = remaining_items[rel_idx]
+                if deep_ai_concurrency > 1 and len(missing_rel) > 1:
                     if callable(log_fn):
-                        log_fn(f"Deep Scan fallback {idx}/{total_reqs}: [{category}] {value}")
-                    evaluation = self.llm.evaluate_criterion(resume["content"], category, value)
-                    if not isinstance(evaluation, dict):
-                        evaluation = {
-                            "requirement": value,
-                            "category": category,
-                            "status": "Missing",
-                            "evidence": "Evaluation timed out or failed",
-                        }
-                    else:
-                        evaluation["category"] = evaluation.get("category") or category
-                        evaluation["requirement"] = evaluation.get("requirement") or value
-                        evaluation["status"] = evaluation.get("status") or "Missing"
-                        evaluation["evidence"] = evaluation.get("evidence") or "None"
-                    bulk_resolved[rel_idx] = evaluation
-                    fallback_logged_rel.add(rel_idx)
-                    if callable(log_fn):
-                        status = str(evaluation.get("status") or "Missing")
-                        icon = "✅" if status == "Met" else "⚠️" if status == "Partial" else "❌"
-                        log_fn(f"  ↳ {icon} {status} — {evaluation.get('requirement')}")
-                    if callable(progress_fn):
-                        # Update run progress/step while fallback checks are actively running.
-                        ordered_partial = []
-                        for i in range(len(remaining_items)):
-                            if i in bulk_resolved:
-                                ordered_partial.append(bulk_resolved[i])
-                        progress_fn(idx, total_reqs, deep_details + ordered_partial)
+                        log_fn(
+                            f"Deep Scan fallback running concurrently with {min(deep_ai_concurrency, len(missing_rel))} worker(s)."
+                        )
+                    with ThreadPoolExecutor(max_workers=min(deep_ai_concurrency, len(missing_rel))) as pool:
+                        futures = {}
+                        for rel_idx in missing_rel:
+                            idx = resume_from + rel_idx + 1
+                            category, value = remaining_items[rel_idx]
+                            if callable(log_fn):
+                                log_fn(f"Deep Scan fallback {idx}/{total_reqs}: [{category}] {value}")
+                            fut = pool.submit(self.llm.evaluate_criterion, resume["content"], category, value)
+                            futures[fut] = (rel_idx, idx, category, value)
+                        for fut in as_completed(futures):
+                            rel_idx, idx, category, value = futures[fut]
+                            try:
+                                raw_eval = fut.result()
+                            except Exception:
+                                raw_eval = None
+                            evaluation = _normalize_deep_eval(raw_eval, category, value)
+                            bulk_resolved[rel_idx] = evaluation
+                            fallback_logged_rel.add(rel_idx)
+                            if callable(log_fn):
+                                status = str(evaluation.get("status") or "Missing")
+                                icon = "✅" if status == "Met" else "⚠️" if status == "Partial" else "❌"
+                                log_fn(f"  ↳ {icon} {status} — {evaluation.get('requirement')}")
+                            if callable(progress_fn):
+                                ordered_partial = []
+                                for i in range(len(remaining_items)):
+                                    if i in bulk_resolved:
+                                        ordered_partial.append(bulk_resolved[i])
+                                progress_fn(idx, total_reqs, deep_details + ordered_partial)
+                else:
+                    for rel_idx in missing_rel:
+                        idx = resume_from + rel_idx + 1
+                        category, value = remaining_items[rel_idx]
+                        if callable(log_fn):
+                            log_fn(f"Deep Scan fallback {idx}/{total_reqs}: [{category}] {value}")
+                        raw_eval = self.llm.evaluate_criterion(resume["content"], category, value)
+                        evaluation = _normalize_deep_eval(raw_eval, category, value)
+                        bulk_resolved[rel_idx] = evaluation
+                        fallback_logged_rel.add(rel_idx)
+                        if callable(log_fn):
+                            status = str(evaluation.get("status") or "Missing")
+                            icon = "✅" if status == "Met" else "⚠️" if status == "Partial" else "❌"
+                            log_fn(f"  ↳ {icon} {status} — {evaluation.get('requirement')}")
+                        if callable(progress_fn):
+                            # Update run progress/step while fallback checks are actively running.
+                            ordered_partial = []
+                            for i in range(len(remaining_items)):
+                                if i in bulk_resolved:
+                                    ordered_partial.append(bulk_resolved[i])
+                            progress_fn(idx, total_reqs, deep_details + ordered_partial)
 
                 # Append in original requirement order and emit standard progress/log events.
                 for rel_idx, (category, value) in enumerate(remaining_items):
@@ -461,30 +515,51 @@ class AnalysisService:
                         log_fn(f"Deep Scan {idx}/{total_reqs}: [{evaluation.get('category')}] {evaluation.get('requirement')}")
                         log_fn(f"  ↳ {icon} {status} — {evaluation.get('requirement')}")
             else:
-                for idx, (category, value) in enumerate(remaining_items, start=resume_from + 1):
+                if deep_ai_concurrency > 1 and len(remaining_items) > 1:
                     if callable(log_fn):
-                        log_fn(f"Deep Scan {idx}/{total_reqs}: [{category}] {value}")
-                    evaluation = self.llm.evaluate_criterion(resume["content"], category, value)
-                    if not isinstance(evaluation, dict):
-                        evaluation = {
-                            "requirement": value,
-                            "category": category,
-                            "status": "Missing",
-                            "evidence": "Evaluation timed out or failed",
-                        }
-                    else:
-                        evaluation["category"] = evaluation.get("category") or category
-                        evaluation["requirement"] = evaluation.get("requirement") or value
-                        evaluation["status"] = evaluation.get("status") or "Missing"
-                        evaluation["evidence"] = evaluation.get("evidence") or "None"
-                    deep_details.append(evaluation)
-                    if callable(progress_fn):
-                        progress_fn(idx, total_reqs, deep_details)
+                        log_fn(
+                            f"Deep Scan per-requirement mode running concurrently with {min(deep_ai_concurrency, len(remaining_items))} worker(s)."
+                        )
+                    results_by_rel: dict[int, dict] = {}
+                    with ThreadPoolExecutor(max_workers=min(deep_ai_concurrency, len(remaining_items))) as pool:
+                        futures = {}
+                        for rel_idx, (category, value) in enumerate(remaining_items):
+                            idx = resume_from + rel_idx + 1
+                            if callable(log_fn):
+                                log_fn(f"Deep Scan {idx}/{total_reqs}: [{category}] {value}")
+                            fut = pool.submit(self.llm.evaluate_criterion, resume["content"], category, value)
+                            futures[fut] = (rel_idx, idx, category, value)
+                        for fut in as_completed(futures):
+                            rel_idx, idx, category, value = futures[fut]
+                            try:
+                                raw_eval = fut.result()
+                            except Exception:
+                                raw_eval = None
+                            evaluation = _normalize_deep_eval(raw_eval, category, value)
+                            results_by_rel[rel_idx] = evaluation
+                            if callable(log_fn):
+                                status = str(evaluation.get("status") or "Missing")
+                                icon = "✅" if status == "Met" else "⚠️" if status == "Partial" else "❌"
+                                log_fn(f"  ↳ {icon} {status} — {evaluation.get('requirement')}")
+                            if callable(progress_fn):
+                                ordered_partial = [results_by_rel[i] for i in sorted(results_by_rel.keys())]
+                                progress_fn(idx, total_reqs, deep_details + ordered_partial)
+                    for rel_idx in range(len(remaining_items)):
+                        deep_details.append(results_by_rel.get(rel_idx) or _normalize_deep_eval(None, remaining_items[rel_idx][0], remaining_items[rel_idx][1]))
+                else:
+                    for idx, (category, value) in enumerate(remaining_items, start=resume_from + 1):
+                        if callable(log_fn):
+                            log_fn(f"Deep Scan {idx}/{total_reqs}: [{category}] {value}")
+                        raw_eval = self.llm.evaluate_criterion(resume["content"], category, value)
+                        evaluation = _normalize_deep_eval(raw_eval, category, value)
+                        deep_details.append(evaluation)
+                        if callable(progress_fn):
+                            progress_fn(idx, total_reqs, deep_details)
 
-                    if callable(log_fn):
-                        status = str(evaluation.get("status") or "Missing")
-                        icon = "✅" if status == "Met" else "⚠️" if status == "Partial" else "❌"
-                        log_fn(f"  ↳ {icon} {status} — {evaluation.get('requirement')}")
+                        if callable(log_fn):
+                            status = str(evaluation.get("status") or "Missing")
+                            icon = "✅" if status == "Met" else "⚠️" if status == "Partial" else "❌"
+                            log_fn(f"  ↳ {icon} {status} — {evaluation.get('requirement')}")
 
             final_score, final_decision, final_reasoning = self.llm.generate_final_decision(
                 candidate_name, deep_details, strategy="Deep"

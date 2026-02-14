@@ -44,6 +44,7 @@ class ScoreMatchRequest(BaseModel):
     force_rerun_deep: bool = False
     deep_single_prompt: bool = False
     max_deep_scans_per_jd: int = Field(default=0, ge=0)
+    ai_concurrency: int = Field(default=1, ge=1, le=32)
 
 
 class MatchOut(BaseModel):

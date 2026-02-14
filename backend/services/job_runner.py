@@ -29,23 +29,40 @@ class JobRunner:
     poll_seconds: float = 0.6
     on_run_terminal: Callable[[int, str], None] | None = None
     can_pick_next_run: Callable[[], bool] | None = None
+    max_running_getter: Callable[[], int] | int = 1
+    worker_pool_size: int = field(
+        default_factory=lambda: max(1, int(os.getenv("RESUME_MATCHER_JOB_WORKER_POOL", "16") or 16))
+    )
     _stop_event: threading.Event = field(default_factory=threading.Event)
-    _thread: threading.Thread | None = None
+    _threads: list[threading.Thread] = field(default_factory=list)
     _heartbeat_interval_sec: float = field(
         default_factory=lambda: max(5.0, float(os.getenv("RESUME_MATCHER_RUN_HEARTBEAT_SEC", "20") or 20.0))
     )
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+        if any(t.is_alive() for t in self._threads):
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run_loop, name="job-runner", daemon=True)
-        self._thread.start()
+        self._threads = []
+        workers = max(1, int(self.worker_pool_size or 1))
+        for i in range(workers):
+            t = threading.Thread(target=self._run_loop, name=f"job-runner-{i+1}", daemon=True)
+            t.start()
+            self._threads.append(t)
 
     def stop(self) -> None:
         self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=2.0)
+        for t in self._threads:
+            t.join(timeout=2.0)
+        self._threads = []
+
+    def _max_running(self) -> int:
+        src = self.max_running_getter
+        try:
+            value = int(src() if callable(src) else src)
+        except Exception:
+            value = 1
+        return max(1, value)
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -53,7 +70,7 @@ class JobRunner:
                 if self.can_pick_next_run and not self.can_pick_next_run():
                     time.sleep(self.poll_seconds)
                     continue
-                run = self.repo.claim_next_run()
+                run = self.repo.claim_next_run(max_running=self._max_running())
                 if not run:
                     time.sleep(self.poll_seconds)
                     continue
@@ -541,6 +558,7 @@ class JobRunner:
             deep_single_prompt = bool(payload.get("deep_single_prompt", False))
             debug_bulk_log = bool(payload.get("debug_bulk_log", False))
             max_deep_scans_per_jd = int(payload.get("max_deep_scans_per_jd", 0) or 0)
+            ai_concurrency = max(1, int(payload.get("ai_concurrency", 1) or 1))
             deep_resume_from = int(payload.get("deep_resume_from", 0) or 0)
             deep_partial_details = payload.get("deep_partial_details") or []
 
@@ -552,7 +570,7 @@ class JobRunner:
                     f"(job_id={job_id}, resume_id={resume_id}, threshold={threshold}, "
                     f"auto_deep={auto_deep}, force_pass1={force_rerun_pass1}, force_deep={force_rerun_deep}, "
                     f"deep_single_prompt={deep_single_prompt}, debug_bulk_log={debug_bulk_log}, "
-                    f"max_deep_per_jd={max_deep_scans_per_jd})"
+                    f"max_deep_per_jd={max_deep_scans_per_jd}, ai_concurrency={ai_concurrency})"
                 ),
             )
             job = self.repo.get_job(job_id)
@@ -612,6 +630,7 @@ class JobRunner:
                 force_rerun_deep=force_rerun_deep,
                 max_deep_scans_per_jd=max_deep_scans_per_jd,
                 deep_single_prompt=deep_single_prompt,
+                ai_concurrency=ai_concurrency,
                 debug_bulk_log=debug_bulk_log,
                 log_fn=lambda msg: self.repo.add_run_log(run_id, "info", str(msg)),
                 deep_resume_from=deep_resume_from,
@@ -644,9 +663,83 @@ class JobRunner:
                     ),
                 )
             self.repo.update_run_progress(run_id, 100, "match scored")
+            self._maybe_enqueue_top_deep_wave_after_standard(run_id=run_id, payload=payload)
             return {"match_id": row["id"], "score": row["match_score"], "decision": row["decision"]}
 
         raise ValueError(f"Unsupported job_type: {job_type}")
+
+    def _maybe_enqueue_top_deep_wave_after_standard(self, run_id: int, payload: dict) -> None:
+        try:
+            if not isinstance(payload, dict):
+                return
+            if not bool(payload.get("deep_cap_batch_mode")):
+                return
+            legacy_run_id = int(payload.get("legacy_run_id") or 0)
+            job_id = int(payload.get("job_id") or 0)
+            threshold = int(payload.get("threshold", 50) or 50)
+            deep_cap = max(0, int(payload.get("batch_deep_cap", 0) or 0))
+            batch_total = max(0, int(payload.get("batch_total_for_job", 0) or 0))
+            batch_key = str(payload.get("batch_group_key") or "").strip()
+            if not legacy_run_id or not job_id or deep_cap <= 0 or batch_total <= 0 or not batch_key:
+                return
+
+            linked_now = self.repo.count_legacy_run_matches_for_job(run_id=legacy_run_id, job_id=job_id)
+            if linked_now < batch_total:
+                return
+
+            wave_flag = f"deep-wave:{batch_key}"
+            if not self.repo.try_set_group_flag(wave_flag):
+                return
+
+            rows = [
+                r
+                for r in self.repo.list_legacy_run_results(run_id=legacy_run_id)
+                if int(r.get("job_id") or 0) == job_id
+            ]
+            if not rows:
+                self.repo.add_run_log(run_id, "warn", "Deep-cap wave skipped: no linked matches found for JD batch.")
+                return
+
+            rows_sorted = sorted(
+                rows,
+                key=lambda r: (
+                    -int(r.get("standard_score") if r.get("standard_score") is not None else -1),
+                    -int(r.get("match_score") if r.get("match_score") is not None else -1),
+                    int(r.get("resume_id") or 0),
+                ),
+            )
+            target = rows_sorted[:deep_cap]
+            target_resume_ids = [int(r.get("resume_id") or 0) for r in target if int(r.get("resume_id") or 0)]
+            if not target_resume_ids:
+                self.repo.add_run_log(run_id, "warn", "Deep-cap wave skipped: no eligible resume IDs.")
+                return
+
+            queued_ids = []
+            for resume_id in target_resume_ids:
+                run_payload = {
+                    "job_id": job_id,
+                    "resume_id": resume_id,
+                    "threshold": threshold,
+                    "auto_deep": True,
+                    "run_name": payload.get("run_name"),
+                    "legacy_run_id": legacy_run_id,
+                    "force_rerun_pass1": False,
+                    "force_rerun_deep": False,
+                    "deep_single_prompt": bool(payload.get("deep_single_prompt", False)),
+                    "debug_bulk_log": bool(payload.get("debug_bulk_log", False)),
+                    "max_deep_scans_per_jd": 0,
+                    "ai_concurrency": max(1, int(payload.get("ai_concurrency", 1) or 1)),
+                    "batch_group_key": batch_key,
+                    "deep_wave_from_cap": True,
+                }
+                queued_ids.append(int(self.repo.enqueue_run(job_type="score_match", payload=run_payload)))
+            self.repo.add_run_log(
+                run_id,
+                "info",
+                f"Deep-cap wave queued for top {len(target_resume_ids)}/{len(rows)} by Pass 1 score. Runs #{', '.join(map(str, queued_ids))}.",
+            )
+        except Exception as exc:
+            self.repo.add_run_log(run_id, "warn", f"Failed to enqueue deep-cap wave: {exc}")
 
     def _checkpoint_deep_progress(self, run_id: int, payload: dict, idx: int, total: int, details: list) -> None:
         self._ensure_not_canceled(run_id)

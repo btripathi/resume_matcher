@@ -1,4 +1,5 @@
 import os
+import threading
 import urllib.request
 
 from fastapi import FastAPI, HTTPException
@@ -67,6 +68,8 @@ def create_app() -> FastAPI:
     llm_timeout_sec = _env_int("RESUME_MATCHER_LLM_TIMEOUT_SEC", 600, min_value=1)
     llm_bulk_timeout_sec = _env_int("RESUME_MATCHER_LLM_BULK_TIMEOUT_SEC", 600, min_value=1)
     llm_bulk_resume_chars = _env_int("RESUME_MATCHER_LLM_BULK_RESUME_CHARS", 10000, min_value=1000)
+    ai_concurrency = _env_int("RESUME_MATCHER_AI_CONCURRENCY", 1, min_value=1)
+    job_concurrency = _env_int("RESUME_MATCHER_JOB_CONCURRENCY", 1, min_value=1)
     runtime_settings = {
         "lm_base_url": lm_base_url,
         "lm_api_key": lm_api_key,
@@ -74,6 +77,8 @@ def create_app() -> FastAPI:
         "llm_timeout_sec": llm_timeout_sec,
         "llm_bulk_timeout_sec": llm_bulk_timeout_sec,
         "llm_bulk_resume_chars": llm_bulk_resume_chars,
+        "ai_concurrency": ai_concurrency,
+        "job_concurrency": job_concurrency,
         "ocr_enabled": True,
         "local_lm_available": local_lm_available,
         "write_mode": False,
@@ -97,15 +102,28 @@ def create_app() -> FastAPI:
     gh_sync = GitHubSyncService(db_path=settings.db_path)
 
     auto_push_on_run = os.getenv("RESUME_MATCHER_AUTO_PUSH_DB_ON_RUN", "true").strip().lower() in ("1", "true", "yes", "on")
+    auto_push_lock = threading.Lock()
 
     def _auto_push_db(reason: str) -> tuple[bool, str]:
         if not auto_push_on_run:
             return True, "Auto-push disabled by env."
         if not runtime_settings.get("write_mode"):
             return True, "Read-only mode; auto-push skipped."
-        ok, msg = gh_sync.push_db()
-        print(f"[sync] auto-push after {reason}: {'ok' if ok else 'failed'}: {msg}")
-        return ok, msg
+        with auto_push_lock:
+            ok, msg = gh_sync.push_db()
+            if not ok and "409" in str(msg):
+                # Concurrent update conflict (same machine threads or remote update).
+                # Try one recovery cycle: pull latest remote snapshot if behind, then retry push once.
+                pull_ok, pull_msg, pulled = _pull_if_behind(f"auto-push-retry:{reason}")
+                if pull_ok:
+                    ok2, msg2 = gh_sync.push_db()
+                    ok, msg = ok2, (
+                        msg2 if ok2 else f"{msg2} (after pull: {pull_msg}{'; pulled' if pulled else ''})"
+                    )
+                else:
+                    msg = f"{msg} (pull retry failed: {pull_msg})"
+            print(f"[sync] auto-push after {reason}: {'ok' if ok else 'failed'}: {msg}")
+            return ok, msg
 
     def _maybe_auto_push_db(run_id: int, status: str) -> None:
         # Queue status transitions (paused/canceled/failed) are local-machine runtime state.
@@ -146,6 +164,7 @@ def create_app() -> FastAPI:
         analysis=analysis,
         on_run_terminal=_maybe_auto_push_db,
         can_pick_next_run=lambda: not bool(runtime_settings.get("run_queue_paused")),
+        max_running_getter=lambda: int(runtime_settings.get("job_concurrency") or 1),
     )
 
     @app.on_event("startup")
@@ -303,6 +322,7 @@ def create_app() -> FastAPI:
                 force_rerun_deep=payload.force_rerun_deep,
                 deep_single_prompt=payload.deep_single_prompt,
                 max_deep_scans_per_jd=payload.max_deep_scans_per_jd,
+                ai_concurrency=payload.ai_concurrency or int(runtime_settings["ai_concurrency"]),
             )
             _after_db_write("score_match")
             return MatchOut(**row)
@@ -349,7 +369,7 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/runs", response_model=list[RunOut])
     def list_runs() -> list[RunOut]:
-        rows = repo.list_runs(limit=200)
+        rows = repo.list_runs(limit=500)
         if bool(runtime_settings.get("run_queue_paused")):
             for row in rows:
                 if str(row.get("status") or "") == "running":
@@ -678,6 +698,8 @@ def create_app() -> FastAPI:
             "llm_timeout_sec": int(runtime_settings["llm_timeout_sec"]),
             "llm_bulk_timeout_sec": int(runtime_settings["llm_bulk_timeout_sec"]),
             "llm_bulk_resume_chars": int(runtime_settings["llm_bulk_resume_chars"]),
+            "ai_concurrency": int(runtime_settings["ai_concurrency"]),
+            "job_concurrency": int(runtime_settings["job_concurrency"]),
             "ocr_enabled": bool(runtime_settings["ocr_enabled"]),
             "local_lm_available": bool(runtime_settings["local_lm_available"]),
             "write_mode": bool(runtime_settings["write_mode"]),
@@ -740,6 +762,16 @@ def create_app() -> FastAPI:
         if "llm_bulk_resume_chars" in payload:
             try:
                 runtime_settings["llm_bulk_resume_chars"] = max(1000, int(payload.get("llm_bulk_resume_chars")))
+            except Exception:
+                pass
+        if "ai_concurrency" in payload:
+            try:
+                runtime_settings["ai_concurrency"] = max(1, int(payload.get("ai_concurrency")))
+            except Exception:
+                pass
+        if "job_concurrency" in payload:
+            try:
+                runtime_settings["job_concurrency"] = max(1, int(payload.get("job_concurrency")))
             except Exception:
                 pass
         if "ocr_enabled" in payload:
@@ -847,6 +879,19 @@ def create_app() -> FastAPI:
         repo.reset_all_data()
         _after_db_write("reset_db")
         return {"ok": True, "message": "Database reset complete."}
+
+    @app.post("/v1/settings/clear-results")
+    def clear_results_only() -> dict:
+        active = [
+            r for r in repo.list_runs(limit=5000)
+            if str(r.get("status") or "") in ("queued", "running", "paused")
+        ]
+        if active:
+            raise HTTPException(status_code=409, detail="Cannot clear results while queue has active runs.")
+        repo.reset_results_only()
+        runtime_settings["run_queue_paused"] = False
+        _after_db_write("clear_results_only")
+        return {"ok": True, "message": "Cleared matches and run history. Jobs/resumes/tags were kept."}
 
     return app
 

@@ -105,6 +105,10 @@ class DBManager:
                       created_at TIMESTAMP,
                       FOREIGN KEY(run_id) REFERENCES job_runs(id))''')
 
+        c.execute('''CREATE TABLE IF NOT EXISTS job_run_group_flags
+                     (flag_key TEXT PRIMARY KEY,
+                      created_at TIMESTAMP)''')
+
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_job_runs_status_created_at ON job_runs(status, created_at)"
         )
@@ -516,7 +520,23 @@ class DBManager:
         conn.close()
         return run_id
 
-    def list_job_runs(self, limit=100):
+    def _row_to_job_run(self, row):
+        return {
+            "id": row[0],
+            "job_type": row[1],
+            "payload": json.loads(row[2]) if row[2] else {},
+            "status": row[3],
+            "progress": int(row[4] or 0),
+            "current_step": row[5],
+            "error": row[6],
+            "result": json.loads(row[7]) if row[7] else {},
+            "created_at": row[8],
+            "started_at": row[9],
+            "finished_at": row[10],
+            "last_log_at": row[11],
+        }
+
+    def list_job_runs(self, limit=100, include_all_active=False):
         conn = self.get_connection()
         c = conn.cursor()
         c.execute(
@@ -529,23 +549,22 @@ class DBManager:
             (int(limit),),
         )
         rows = c.fetchall()
+        out_map = {int(r[0]): self._row_to_job_run(r) for r in rows}
+        if include_all_active:
+            c.execute(
+                '''SELECT jr.id, jr.job_type, jr.payload_json, jr.status, jr.progress, jr.current_step, jr.error,
+                          jr.result_json, jr.created_at, jr.started_at, jr.finished_at,
+                          (SELECT MAX(l.created_at) FROM job_run_logs l WHERE l.run_id = jr.id) AS last_log_at
+                   FROM job_runs jr
+                   WHERE jr.status IN ('queued', 'running', 'paused')
+                   ORDER BY jr.id DESC'''
+            )
+            active_rows = c.fetchall() or []
+            for r in active_rows:
+                out_map[int(r[0])] = self._row_to_job_run(r)
         conn.close()
-        out = []
-        for row in rows:
-            out.append({
-                "id": row[0],
-                "job_type": row[1],
-                "payload": json.loads(row[2]) if row[2] else {},
-                "status": row[3],
-                "progress": int(row[4] or 0),
-                "current_step": row[5],
-                "error": row[6],
-                "result": json.loads(row[7]) if row[7] else {},
-                "created_at": row[8],
-                "started_at": row[9],
-                "finished_at": row[10],
-                "last_log_at": row[11],
-            })
+        out = list(out_map.values())
+        out.sort(key=lambda x: int(x.get("id") or 0), reverse=True)
         return out
 
     def get_job_run(self, run_id):
@@ -579,7 +598,7 @@ class DBManager:
             "last_log_at": row[11],
         }
 
-    def _normalize_active_queue_locked(self, cursor):
+    def _normalize_active_queue_locked(self, cursor, max_running=1):
         """
         Ensure strict single-run semantics:
         - Active queue order is by lowest id among queued/running/paused.
@@ -596,11 +615,14 @@ class DBManager:
         if not active_rows:
             return [], 0
 
+        max_running = max(1, int(max_running or 1))
         head_id = active_rows[0][0]
         fixed = 0
         now_iso = datetime.datetime.now().isoformat()
-        for run_id, status in active_rows[1:]:
-            if status != "running":
+        running_ids = [rid for rid, status in active_rows if status == "running"]
+        keep_running = set(running_ids[:max_running])
+        for run_id, status in active_rows:
+            if status != "running" or run_id in keep_running:
                 continue
             cursor.execute(
                 """
@@ -635,10 +657,10 @@ class DBManager:
             active_rows = [(int(r[0]), str(r[1] or "")) for r in (cursor.fetchall() or [])]
         return active_rows, fixed
 
-    def normalize_active_queue(self):
+    def normalize_active_queue(self, max_running=1):
         conn = self.get_connection()
         c = conn.cursor()
-        active_rows, fixed = self._normalize_active_queue_locked(c)
+        active_rows, fixed = self._normalize_active_queue_locked(c, max_running=max_running)
         conn.commit()
         conn.close()
         return {"active": active_rows, "fixed": int(fixed)}
@@ -714,24 +736,39 @@ class DBManager:
                 )
 
         # Re-apply strict single-run normalization after recovery.
-        self._normalize_active_queue_locked(c)
+        self._normalize_active_queue_locked(c, max_running=1)
         conn.commit()
         conn.close()
         return {"requeued": requeued, "paused": paused}
 
-    def claim_next_job_run(self):
+    def claim_next_job_run(self, max_running=1):
         conn = self.get_connection()
         c = conn.cursor()
-        active_rows, _ = self._normalize_active_queue_locked(c)
+        try:
+            c.execute("BEGIN IMMEDIATE")
+        except Exception:
+            pass
+        active_rows, _ = self._normalize_active_queue_locked(c, max_running=max_running)
         if not active_rows:
-            conn.close()
-            return None
-        run_id, head_status = active_rows[0]
-        # Strict FIFO gate: never jump ahead while front run is not cleared.
-        if head_status != "queued":
             conn.commit()
             conn.close()
             return None
+        # Paused queue always blocks new claims until explicit unpause.
+        if any(status == "paused" for _, status in active_rows):
+            conn.commit()
+            conn.close()
+            return None
+        running = sum(1 for _, status in active_rows if status == "running")
+        if running >= max(1, int(max_running or 1)):
+            conn.commit()
+            conn.close()
+            return None
+        queued_ids = [rid for rid, status in active_rows if status == "queued"]
+        if not queued_ids:
+            conn.commit()
+            conn.close()
+            return None
+        run_id = int(queued_ids[0])
 
         c.execute(
             '''UPDATE job_runs
@@ -745,6 +782,32 @@ class DBManager:
         if changed != 1:
             return None
         return self.get_job_run(run_id)
+
+    def try_set_group_flag(self, flag_key):
+        key = str(flag_key or "").strip()
+        if not key:
+            return False
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            "INSERT OR IGNORE INTO job_run_group_flags (flag_key, created_at) VALUES (?, ?)",
+            (key, datetime.datetime.now().isoformat()),
+        )
+        changed = int(c.rowcount or 0)
+        conn.commit()
+        conn.close()
+        return changed == 1
+
+    def has_group_flag(self, flag_key):
+        key = str(flag_key or "").strip()
+        if not key:
+            return False
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT 1 FROM job_run_group_flags WHERE flag_key = ? LIMIT 1", (key,))
+        row = c.fetchone()
+        conn.close()
+        return bool(row)
 
     def update_job_run_progress(self, run_id, progress=0, current_step=None):
         conn = self.get_connection()

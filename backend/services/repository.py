@@ -156,6 +156,17 @@ class Repository:
     def count_legacy_run_deep_matches_for_job(self, run_id: int, job_id: int) -> int:
         return int(self.db.count_legacy_run_deep_matches_for_job(run_id=run_id, job_id=job_id))
 
+    def count_legacy_run_matches_for_job(self, run_id: int, job_id: int) -> int:
+        df = self.db.fetch_dataframe(
+            "SELECT COUNT(*) AS c "
+            "FROM run_matches rm "
+            "JOIN matches m ON m.id = rm.match_id "
+            f"WHERE rm.run_id = {int(run_id)} AND m.job_id = {int(job_id)}"
+        )
+        if df.empty:
+            return 0
+        return int(df.iloc[0]["c"] or 0)
+
     def save_match(
         self,
         job_id: int,
@@ -271,9 +282,18 @@ class Repository:
         self.db.execute_query("DELETE FROM jobs")
         self.db.execute_query("DELETE FROM resumes")
 
+    def reset_results_only(self) -> None:
+        # Keep source data intact (jobs/resumes/tags). Remove only matching outputs and run history.
+        self.db.execute_query("DELETE FROM run_matches")
+        self.db.execute_query("DELETE FROM matches")
+        self.db.execute_query("DELETE FROM runs")
+        self.db.execute_query("DELETE FROM job_run_logs")
+        self.db.execute_query("DELETE FROM job_runs")
+
     def list_matches(self, limit: int = 200) -> list[dict]:
         df = self.db.fetch_dataframe(
-            "SELECT m.id, m.job_id, m.resume_id, m.candidate_name, m.match_score, m.strategy, m.decision, m.reasoning, "
+            "SELECT m.id, m.job_id, m.resume_id, m.candidate_name, m.match_score, m.standard_score, m.standard_reasoning, "
+            "m.strategy, m.decision, m.reasoning, "
             "r.profile AS resume_profile, r.filename AS resume_name "
             "FROM matches m "
             "JOIN (SELECT MAX(id) AS id FROM matches GROUP BY job_id, resume_id) latest ON latest.id = m.id "
@@ -295,6 +315,8 @@ class Repository:
                     ),
                     "resume_name": row.get("resume_name") or "",
                     "match_score": _as_int(row.get("match_score"), default=0),
+                    "standard_score": _as_int(row.get("standard_score"), nullable=True),
+                    "standard_reasoning": row.get("standard_reasoning") or "",
                     "strategy": row["strategy"] or "Standard",
                     "decision": row["decision"] or "",
                     "reasoning": row["reasoning"] or "",
@@ -358,7 +380,7 @@ class Repository:
 
     def list_legacy_run_results(self, run_id: int) -> list[dict]:
         df = self.db.fetch_dataframe(
-            "SELECT m.id, m.job_id, m.resume_id, m.candidate_name, m.match_score, m.standard_score, m.decision, m.reasoning, "
+            "SELECT m.id, m.job_id, m.resume_id, m.candidate_name, m.match_score, m.standard_score, m.standard_reasoning, m.decision, m.reasoning, "
             "m.strategy, j.filename AS job_name, r.filename AS resume_name, r.profile AS resume_profile "
             "FROM matches m "
             "JOIN run_matches rm ON rm.match_id = m.id "
@@ -383,6 +405,7 @@ class Repository:
                     ),
                     "match_score": _as_int(row.get("match_score"), default=0),
                     "standard_score": _as_int(row.get("standard_score"), nullable=True),
+                    "standard_reasoning": row.get("standard_reasoning") or "",
                     "decision": row["decision"] or "",
                     "reasoning": row["reasoning"] or "",
                     "strategy": row["strategy"] or "Standard",
@@ -397,7 +420,7 @@ class Repository:
         return dict(self.db.recover_running_runs_after_restart() or {})
 
     def list_runs(self, limit: int = 100) -> list[dict]:
-        rows = self.db.list_job_runs(limit=limit)
+        rows = self.db.list_job_runs(limit=limit, include_all_active=True)
         now = dt.datetime.now()
         for row in rows:
             row["is_stuck"] = False
@@ -463,8 +486,8 @@ class Repository:
             return 420
         return 300
 
-    def claim_next_run(self) -> dict | None:
-        return self.db.claim_next_job_run()
+    def claim_next_run(self, max_running: int = 1) -> dict | None:
+        return self.db.claim_next_job_run(max_running=max_running)
 
     def update_run_progress(self, run_id: int, progress: int, current_step: str) -> None:
         self.db.update_job_run_progress(run_id=run_id, progress=progress, current_step=current_step)
@@ -512,6 +535,12 @@ class Repository:
 
     def add_run_log(self, run_id: int, level: str, message: str) -> int:
         return self.db.append_job_run_log(run_id=run_id, level=level, message=message)
+
+    def try_set_group_flag(self, flag_key: str) -> bool:
+        return bool(self.db.try_set_group_flag(flag_key))
+
+    def has_group_flag(self, flag_key: str) -> bool:
+        return bool(self.db.has_group_flag(flag_key))
 
     def list_run_logs(self, run_id: int, limit: int = 500) -> list[dict]:
         # Return ascending timeline for UI readability.

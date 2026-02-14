@@ -639,7 +639,8 @@ def render_console() -> HTMLResponse:
       padding: 0;
       background: transparent;
     }
-    #legacyMatchDetail {
+    #legacyMatchDetail,
+    #simpleMatchDetail {
       border: none;
       border-radius: 0;
       min-height: 0;
@@ -932,6 +933,7 @@ def render_console() -> HTMLResponse:
                   <button class="settings-item" onclick="pushToGithub()">💾 Push to GitHub</button>
                   <button class="settings-item" onclick="pullFromGithub()">📥 Force Pull</button>
                 </div>
+                <button class="settings-item row" onclick="clearResultsOnly()">🧹 Clear Results Only</button>
                 <button class="settings-item row" onclick="resetDatabase()">🗑️ Reset DB</button>
               </div>
             </div>
@@ -996,6 +998,14 @@ def render_console() -> HTMLResponse:
         <div class="section">
           <h3>🧠 Standard Matches</h3>
           <div class="table-wrap" id="simpleStdTable"></div>
+        </div>
+        <div class="section row">
+          <h3>🔎 Match Evidence Investigator</h3>
+          <div class="investigator-controls">
+            <select id="simpleEvidenceSelect" onchange="onSimpleEvidenceSelect()"></select>
+            <button class="secondary" onclick="queueSimpleSingleRerun()">🔁 Rerun Selected Candidate</button>
+          </div>
+          <div class="detail" id="simpleMatchDetail">Select a row to inspect.</div>
         </div>
         <div class="section" id="simpleTagMismatchSection" style="display:none;">
           <h3>⚠️ Tag Mismatch Watchlist</h3>
@@ -1124,6 +1134,14 @@ def render_console() -> HTMLResponse:
             <div class="row2" style="margin-top:6px; align-items:center;">
               <label class="caption" for="maxDeepPerJdInput">Max Deep-Scans per JD (0 = unlimited)</label>
               <input id="maxDeepPerJdInput" type="number" min="0" step="1" value="0" />
+            </div>
+            <div class="row2" style="margin-top:6px; align-items:center;">
+              <label class="caption" for="aiConcurrencyInput">AI Request Concurrency (1 = sequential)</label>
+              <input id="aiConcurrencyInput" type="number" min="1" max="32" step="1" value="1" />
+            </div>
+            <div class="row2" style="margin-top:6px; align-items:center;">
+              <label class="caption" for="jobConcurrencyInput">Queue Job Concurrency (parallel resumes)</label>
+              <input id="jobConcurrencyInput" type="number" min="1" max="32" step="1" value="1" />
             </div>
           </div>
           <button class="primary" id="startAnalysisBtn" onclick="queueScoreMatch()">🚀 START ANALYSIS</button>
@@ -1539,6 +1557,7 @@ def render_console() -> HTMLResponse:
     verifyItems: [],
     selectedLegacyRunId: null,
     selectedLegacyMatchId: null,
+    selectedSimpleMatchId: null,
     lastAutoRunName: null,
     analysisQueuedRunIds: [],
     analysisAutoPollEnabled: false,
@@ -2200,6 +2219,14 @@ def render_console() -> HTMLResponse:
     q('setApiKey').value = s.lm_api_key || '';
     renderSettingsModelSelect(Array.isArray(state.settingsModels) ? state.settingsModels : [], s.lm_model || '');
     q('setOcrEnabled').checked = !!s.ocr_enabled;
+    if (q('aiConcurrencyInput')) {
+      const v = Number(s.ai_concurrency || 1);
+      q('aiConcurrencyInput').value = String(Math.max(1, Number.isFinite(v) ? v : 1));
+    }
+    if (q('jobConcurrencyInput')) {
+      const v = Number(s.job_concurrency || 1);
+      q('jobConcurrencyInput').value = String(Math.max(1, Number.isFinite(v) ? v : 1));
+    }
     q('setWriterName').value = q('setWriterName').value || s.writer_default_name || '';
     const users = Array.isArray(s.writer_users) ? s.writer_users.filter(Boolean) : [];
     const usersHint = q('setWriterUsersHint');
@@ -2282,6 +2309,8 @@ def render_console() -> HTMLResponse:
         lm_api_key: q('setApiKey').value.trim(),
         lm_model: q('setLmModel').value.trim(),
         ocr_enabled: q('setOcrEnabled').checked,
+        ai_concurrency: Math.max(1, Number(q('aiConcurrencyInput')?.value || 1)),
+        job_concurrency: Math.max(1, Number(q('jobConcurrencyInput')?.value || 1)),
       });
       await loadSettings();
       setSettingsMsg('Configuration saved.');
@@ -2378,6 +2407,25 @@ def render_console() -> HTMLResponse:
       await refreshAll();
       await loadSettings();
       setSettingsMsg(r.message || 'Database reset complete.');
+    } catch (e) {
+      setSettingsMsg(e.message, false);
+    }
+  }
+
+  async function clearResultsOnly() {
+    try {
+      const ok = await openConfirmModal({
+        title: 'Clear Results Only',
+        message: 'This will delete matches and run history only. Jobs, resumes, tags, and extracted content will be kept. Continue?',
+        confirmText: 'Clear Results',
+      });
+      if (!ok) return;
+      const r = await send('/v1/settings/clear-results', 'POST', {});
+      clearTrackedBatchRunIds();
+      state.logPinnedRunId = null;
+      await refreshAll();
+      await loadSettings();
+      setSettingsMsg(r.message || 'Cleared matches and run history.');
     } catch (e) {
       setSettingsMsg(e.message, false);
     }
@@ -3260,11 +3308,12 @@ def render_console() -> HTMLResponse:
     }
 
     const renderTable = (arr) => `<table><thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th><th>Action</th></tr></thead><tbody>` +
-      arr.map((r) => `<tr><td>${r.candidate_name || ''}</td><td><b>${r.match_score}%</b></td><td>${decisionBadge(r.decision)}</td><td>${r.reasoning || ''}</td><td><button class="secondary" data-job="${Number(r.job_id || 0)}" data-resume="${Number(r.resume_id || 0)}" data-candidate="${encodeURIComponent(String(r.candidate_name || 'candidate'))}" onclick="deletePairMatchesFromRow(this)">Delete</button></td></tr>`).join('') +
+      arr.map((r) => `<tr style="cursor:pointer" onclick="showSimpleMatch(${r.id})"><td>${r.candidate_name || ''}</td><td>${renderScoreCell(r)}</td><td>${decisionBadge(r.decision)}</td><td>${r.reasoning || ''}</td><td><button class="secondary" data-job="${Number(r.job_id || 0)}" data-resume="${Number(r.resume_id || 0)}" data-candidate="${encodeURIComponent(String(r.candidate_name || 'candidate'))}" onclick="event.stopPropagation(); deletePairMatchesFromRow(this)">Delete</button></td></tr>`).join('') +
       `</tbody></table>`;
 
     q('simpleDeepTable').innerHTML = renderTable(deep);
     q('simpleStdTable').innerHTML = renderTable(std);
+    populateSimpleEvidenceSelector(rows);
 
     const mismatchSection = q('simpleTagMismatchSection');
     const mismatchCaption = q('simpleTagMismatchCaption');
@@ -3299,6 +3348,68 @@ def render_console() -> HTMLResponse:
           ).join('') +
           `</tbody></table>`;
       }
+    }
+  }
+
+  function populateSimpleEvidenceSelector(rows) {
+    const sel = q('simpleEvidenceSelect');
+    if (!sel) return;
+    const allRows = Array.isArray(rows) ? rows : [];
+    if (!allRows.length) {
+      sel.innerHTML = '<option value="">No candidates in selected JD</option>';
+      q('simpleMatchDetail').textContent = 'Select a row to inspect.';
+      return;
+    }
+    const prev = String(sel.value || '');
+    sel.innerHTML = '<option value="">Select candidate</option>' +
+      allRows.map((r) => {
+        const job = (state.jobs || []).find((j) => Number(j.id) === Number(r.job_id));
+        const jobName = String((job && job.filename) || '').trim();
+        return `<option value="${r.id}">${escapeHtml(r.candidate_name || 'Unknown')} | ${escapeHtml(jobName)} | ${Number(r.match_score || 0)}%</option>`;
+      }).join('');
+    if (state.selectedSimpleMatchId && allRows.some((r) => Number(r.id) === Number(state.selectedSimpleMatchId))) {
+      sel.value = String(state.selectedSimpleMatchId);
+    } else if (prev && allRows.some((r) => String(r.id) === prev)) {
+      sel.value = prev;
+    }
+  }
+
+  async function onSimpleEvidenceSelect() {
+    const id = Number((q('simpleEvidenceSelect') && q('simpleEvidenceSelect').value) || 0);
+    if (!id) return;
+    await showSimpleMatch(id);
+  }
+
+  async function queueSimpleSingleRerun() {
+    try {
+      const matchId = Number((q('simpleEvidenceSelect') && q('simpleEvidenceSelect').value) || 0);
+      if (!matchId) throw new Error('Select candidate');
+      const row = (state.matches || []).find((r) => Number(r.id) === matchId);
+      if (!row) throw new Error('Selected candidate was not found.');
+      const cfg = getLegacyRerunConfig();
+      const run = await send('/v1/runs', 'POST', {
+        job_type: 'score_match',
+        payload: {
+          job_id: Number(row.job_id),
+          resume_id: Number(row.resume_id),
+          threshold: cfg.threshold,
+          auto_deep: cfg.autoDeep,
+          run_name: cfg.runName || `Rerun Single: ${row.candidate_name || 'Candidate'}`,
+          force_rerun_pass1: cfg.forcePass1,
+          force_rerun_deep: cfg.forceDeep,
+          deep_single_prompt: cfg.deepSinglePrompt,
+          ai_concurrency: cfg.aiConcurrency,
+        },
+      });
+      state.logPinnedRunId = null;
+      q('selectedRunId').value = String(run.id);
+      setTrackedBatchRunIds([Number(run.id)]);
+      startAnalysisAutoPoll();
+      await refreshRunPanels();
+      await loadLogs(run.id);
+      setMsg('msgMatch', `Queued single rerun as run #${run.id}.`);
+    } catch (e) {
+      setMsg('msgMatch', e.message, false);
     }
   }
 
@@ -3356,7 +3467,7 @@ def render_console() -> HTMLResponse:
       : `🧠 Standard Matches (Pass 1 Only) for ${jobSummary}`;
 
     const tableHTML = (arr) => `<table><thead><tr><th>Candidate</th><th>Score</th><th>Decision</th><th>Reasoning</th></tr></thead><tbody>` +
-      arr.map((r) => `<tr style="cursor:pointer" onclick="showLegacyMatch(${r.id})"><td>${r.candidate_name || ''}</td><td><b>${r.match_score}%</b>${r.standard_score !== null && r.standard_score !== undefined ? `<span class="score-sub">Pass 1: ${r.standard_score}%</span>` : ''}</td><td>${decisionBadge(r.decision || '')}</td><td>${r.reasoning || ''}</td></tr>`).join('') +
+      arr.map((r) => `<tr style="cursor:pointer" onclick="showLegacyMatch(${r.id})"><td>${r.candidate_name || ''}</td><td>${renderScoreCell(r)}</td><td>${decisionBadge(r.decision || '')}</td><td>${r.reasoning || ''}</td></tr>`).join('') +
       `</tbody></table>`;
 
     q('legacyDeepTable').innerHTML = tableHTML(deep);
@@ -3424,6 +3535,7 @@ def render_console() -> HTMLResponse:
       forcePass1: !!q('legacyRerunForcePass1').checked,
       forceDeep: !!q('legacyRerunForceDeep').checked,
       deepSinglePrompt: !!(q('legacyRerunDeepSinglePrompt') && q('legacyRerunDeepSinglePrompt').checked),
+      aiConcurrency: Math.max(1, Number(q('aiConcurrencyInput')?.value || 1)),
       runName: (q('legacyRerunName').value || '').trim() || null,
     };
   }
@@ -3476,6 +3588,7 @@ def render_console() -> HTMLResponse:
             force_rerun_pass1: cfg.forcePass1,
             force_rerun_deep: cfg.forceDeep,
             deep_single_prompt: cfg.deepSinglePrompt,
+            ai_concurrency: cfg.aiConcurrency,
           },
         });
         queued += 1;
@@ -3510,6 +3623,7 @@ def render_console() -> HTMLResponse:
           force_rerun_pass1: cfg.forcePass1,
           force_rerun_deep: cfg.forceDeep,
           deep_single_prompt: cfg.deepSinglePrompt,
+          ai_concurrency: cfg.aiConcurrency,
         },
       });
       state.logPinnedRunId = null;
@@ -3982,56 +4096,83 @@ def render_console() -> HTMLResponse:
       state.selectedLegacyMatchId = Number(matchId);
       if (q('legacySingleRerunMatch')) q('legacySingleRerunMatch').value = String(matchId);
       const d = await getJson(`/v1/matches/${matchId}`);
-      const statusClass = (s) => {
-        const v = String(s || '').toLowerCase();
-        if (v === 'met') return 'met';
-        if (v === 'partial') return 'partial';
-        return 'missing';
-      };
-
-      const details = Array.isArray(d.match_details) ? d.match_details : [];
-      const rows = details.map((it) => {
-        const category = String(it.category || '').replaceAll('_', ' ').toUpperCase();
-        const req = it.requirement || '';
-        const ev = it.evidence || it.evidence_found || 'None';
-        const st = it.status || 'Missing';
-        return `<tr>
-          <td>${category}</td>
-          <td>${req}</td>
-          <td>${ev}</td>
-          <td><span class="status-chip ${statusClass(st)}">${st}</span></td>
-        </tr>`;
-      }).join('');
-
-      const standardScore = (d.standard_score !== null && d.standard_score !== undefined) ? `${d.standard_score}%` : '';
-      const standardReasoning = d.standard_reasoning ? `<details class="expander" style="margin-top:8px;"><summary>📄 View Pass 1 (Standard) Analysis</summary><div class="mini-muted row">${d.standard_reasoning}</div></details>` : '';
-
-      q('legacyMatchDetail').innerHTML = `
-        <div class="investigator">
-          <div class="investigator-head">
-            <div>
-              <div class="investigator-name">${d.candidate_name || ''}</div>
-              <div class="mini-muted" style="margin-top:6px;">Pass 1 (Standard) Score: ${standardScore}</div>
-              ${d.strategy === 'Deep' ? '<div class="mini-muted" style="margin-top:4px;">✨ Evaluated with High-Precision Multi-Pass Tiered Weighting</div>' : ''}
-            </div>
-            <div class="investigator-score-card">
-              <div class="mini-muted" style="text-align:right;">Weighted Score</div>
-              <div class="investigator-score">${d.match_score || 0}%</div>
-            </div>
-          </div>
-          <div class="final-decision">Final Decision: ${d.reasoning || ''}</div>
-          ${standardReasoning}
-          <div style="margin-top:8px;">
-            <table>
-              <thead><tr><th>Category</th><th>Requirement</th><th>Evidence Found</th><th>Status</th></tr></thead>
-              <tbody>${rows || '<tr><td colspan="4">Detailed requirement breakdown unavailable for this match.</td></tr>'}</tbody>
-            </table>
-          </div>
-        </div>
-      `;
+      renderMatchInvestigatorInto('legacyMatchDetail', d);
     } catch (e) {
       if (!preserve) q('legacyMatchDetail').textContent = e.message;
     }
+  }
+
+  async function showSimpleMatch(matchId, preserve = false) {
+    try {
+      state.selectedSimpleMatchId = Number(matchId);
+      if (q('simpleEvidenceSelect')) q('simpleEvidenceSelect').value = String(matchId);
+      const d = await getJson(`/v1/matches/${matchId}`);
+      renderMatchInvestigatorInto('simpleMatchDetail', d);
+    } catch (e) {
+      if (!preserve) q('simpleMatchDetail').textContent = e.message;
+    }
+  }
+
+  function renderMatchInvestigator(d) {
+    const statusClass = (s) => {
+      const v = String(s || '').toLowerCase();
+      if (v === 'met') return 'met';
+      if (v === 'partial') return 'partial';
+      return 'missing';
+    };
+    const details = Array.isArray(d.match_details) ? d.match_details : [];
+    const rows = details.map((it) => {
+      const category = String(it.category || '').replaceAll('_', ' ').toUpperCase();
+      const req = it.requirement || '';
+      const ev = it.evidence || it.evidence_found || 'None';
+      const st = it.status || 'Missing';
+      return `<tr>
+        <td>${category}</td>
+        <td>${req}</td>
+        <td>${ev}</td>
+        <td><span class="status-chip ${statusClass(st)}">${st}</span></td>
+      </tr>`;
+    }).join('');
+    const standardScore = (d.standard_score !== null && d.standard_score !== undefined) ? `${d.standard_score}%` : '';
+    const standardReasoning = d.standard_reasoning ? `<details class="expander" style="margin-top:8px;"><summary>📄 View Pass 1 (Standard) Analysis</summary><div class="mini-muted row">${d.standard_reasoning}</div></details>` : '';
+    return `
+      <div class="investigator">
+        <div class="investigator-head">
+          <div>
+            <div class="investigator-name">${d.candidate_name || ''}</div>
+            <div class="mini-muted" style="margin-top:6px;">Pass 1 (Standard) Score: ${standardScore}</div>
+            ${d.strategy === 'Deep' ? '<div class="mini-muted" style="margin-top:4px;">✨ Evaluated with High-Precision Multi-Pass Tiered Weighting</div>' : ''}
+          </div>
+          <div class="investigator-score-card">
+            <div class="mini-muted" style="text-align:right;">Weighted Score</div>
+            <div class="investigator-score">${d.match_score || 0}%</div>
+          </div>
+        </div>
+        <div class="final-decision">Final Decision: ${d.reasoning || ''}</div>
+        ${standardReasoning}
+        <div style="margin-top:8px;">
+          <table>
+            <thead><tr><th>Category</th><th>Requirement</th><th>Evidence Found</th><th>Status</th></tr></thead>
+            <tbody>${rows || '<tr><td colspan="4">Detailed requirement breakdown unavailable for this match.</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderMatchInvestigatorInto(targetId, detail) {
+    const el = q(targetId);
+    if (!el) return;
+    el.innerHTML = renderMatchInvestigator(detail);
+  }
+
+  function renderScoreCell(row) {
+    const score = Number((row && row.match_score) || 0);
+    const standardScore = (row && row.standard_score !== null && row.standard_score !== undefined)
+      ? `${Number(row.standard_score)}%`
+      : '';
+    return `<b>${score}%</b>` +
+      (standardScore ? `<span class="score-sub">Pass 1: ${standardScore}</span>` : '');
   }
 
   async function queueIngestJob() {
@@ -4300,6 +4441,9 @@ def render_console() -> HTMLResponse:
       const deepSinglePrompt = !!(q('deepSinglePrompt') && q('deepSinglePrompt').checked);
       const debugBulkLog = !!(q('debugBulkLog') && q('debugBulkLog').checked);
       const maxDeepPerJd = Math.max(0, Number(q('maxDeepPerJdInput').value || 0));
+      const aiConcurrency = Math.max(1, Number(q('aiConcurrencyInput').value || 1));
+      const jobConcurrency = Math.max(1, Number(q('jobConcurrencyInput').value || 1));
+      await send('/v1/settings/runtime', 'PUT', { job_concurrency: jobConcurrency });
 
       let queued = 0;
       const queuedRunIds = [];
@@ -4320,6 +4464,8 @@ def render_console() -> HTMLResponse:
         if (!perJobResumeIds.length) continue;
         const defaultRunName = buildLegacyRunNameForJob(runName || state.lastAutoRunName || '', job);
         const legacyRun = await createLegacyRun(defaultRunName, threshold);
+        const batchGroupKey = `legacy:${Number(legacyRun.id)}:job:${Number(job_id)}:cap:${maxDeepPerJd}`;
+        const useDeepCapTwoPhase = autoDeep && maxDeepPerJd > 0 && !forceRerunDeep;
 
         for (const resume_id of perJobResumeIds) {
           const run = await send('/v1/runs', 'POST', {
@@ -4328,7 +4474,7 @@ def render_console() -> HTMLResponse:
               job_id,
               resume_id,
               threshold,
-              auto_deep: autoDeep,
+              auto_deep: useDeepCapTwoPhase ? false : autoDeep,
               run_name: runName || null,
               legacy_run_id: Number(legacyRun.id),
               force_rerun_pass1: forceRerunPass1,
@@ -4336,6 +4482,11 @@ def render_console() -> HTMLResponse:
               deep_single_prompt: deepSinglePrompt,
               debug_bulk_log: debugBulkLog,
               max_deep_scans_per_jd: maxDeepPerJd,
+              ai_concurrency: aiConcurrency,
+              deep_cap_batch_mode: useDeepCapTwoPhase,
+              batch_group_key: batchGroupKey,
+              batch_total_for_job: perJobResumeIds.length,
+              batch_deep_cap: maxDeepPerJd,
             },
           });
           queued += 1;
