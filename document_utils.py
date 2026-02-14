@@ -168,19 +168,23 @@ def clean_json_response(text):
         if match:
             text_content = match.group(1).strip()
         else:
-            # 2. Fallback: Find the outermost curly braces or square brackets
-            start = text.find('{')
-            end = text.rfind('}')
-            if start != -1 and end != -1:
-                text_content = text[start:end+1].strip()
-            else:
-                # Try finding list brackets if object failed
-                start_list = text.find('[')
+            # 2. Fallback: choose the first outer container in the response.
+            # This avoids mis-parsing list responses that contain object braces.
+            start_obj = text.find('{')
+            start_list = text.find('[')
+            if start_obj == -1 and start_list == -1:
+                return None
+
+            if start_list != -1 and (start_obj == -1 or start_list < start_obj):
                 end_list = text.rfind(']')
-                if start_list != -1 and end_list != -1 and end_list > start_list:
-                    text_content = text[start_list:end_list+1].strip()
-                else:
+                if end_list == -1 or end_list <= start_list:
                     return None
+                text_content = text[start_list:end_list + 1].strip()
+            else:
+                end_obj = text.rfind('}')
+                if end_obj == -1 or end_obj <= start_obj:
+                    return None
+                text_content = text[start_obj:end_obj + 1].strip()
 
         # Normalize smart quotes and non-standard characters
         text_content = text_content.replace("\u2019", "'").replace("\u201c", '"').replace("\u201d", '"')

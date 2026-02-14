@@ -538,6 +538,8 @@ class JobRunner:
             legacy_run_id = int(payload.get("legacy_run_id", 0) or 0) or None
             force_rerun_pass1 = bool(payload.get("force_rerun_pass1", False))
             force_rerun_deep = bool(payload.get("force_rerun_deep", False))
+            deep_single_prompt = bool(payload.get("deep_single_prompt", False))
+            debug_bulk_log = bool(payload.get("debug_bulk_log", False))
             max_deep_scans_per_jd = int(payload.get("max_deep_scans_per_jd", 0) or 0)
             deep_resume_from = int(payload.get("deep_resume_from", 0) or 0)
             deep_partial_details = payload.get("deep_partial_details") or []
@@ -549,6 +551,7 @@ class JobRunner:
                     "Scoring match "
                     f"(job_id={job_id}, resume_id={resume_id}, threshold={threshold}, "
                     f"auto_deep={auto_deep}, force_pass1={force_rerun_pass1}, force_deep={force_rerun_deep}, "
+                    f"deep_single_prompt={deep_single_prompt}, debug_bulk_log={debug_bulk_log}, "
                     f"max_deep_per_jd={max_deep_scans_per_jd})"
                 ),
             )
@@ -608,6 +611,8 @@ class JobRunner:
                 force_rerun_pass1=force_rerun_pass1,
                 force_rerun_deep=force_rerun_deep,
                 max_deep_scans_per_jd=max_deep_scans_per_jd,
+                deep_single_prompt=deep_single_prompt,
+                debug_bulk_log=debug_bulk_log,
                 log_fn=lambda msg: self.repo.add_run_log(run_id, "info", str(msg)),
                 deep_resume_from=deep_resume_from,
                 deep_partial_details=deep_partial_details if isinstance(deep_partial_details, list) else [],
@@ -618,6 +623,7 @@ class JobRunner:
                     total=total,
                     details=details,
                 ),
+                debug_run_id=run_id,
             )
             if predicted_reuse and existing_before and int(row["id"]) == int(existing_before["id"]):
                 self.repo.add_run_log(

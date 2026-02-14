@@ -914,6 +914,12 @@ def render_console() -> HTMLResponse:
                 <div class="settings-title">Configuration</div>
                 <input id="setLmUrl" placeholder="LM URL" />
                 <input id="setApiKey" class="row" placeholder="API Key" />
+                <div class="row2 row">
+                  <select id="setLmModel">
+                    <option value="">Auto-select model</option>
+                  </select>
+                  <button class="settings-item" onclick="loadSettingsModels()">Load Models</button>
+                </div>
                 <label class="settings-help check-inline row"><input id="setOcrEnabled" type="checkbox" /> Enable OCR</label>
                 <div class="row2 row">
                   <button class="settings-item" onclick="saveSettingsConfig()">Save Config</button>
@@ -1033,8 +1039,8 @@ def render_console() -> HTMLResponse:
           <label class="caption row check-inline"><input id="legacyRerunMatchTags" type="checkbox" /> 🎯 Auto-match based on JD Tags</label>
           <div class="row3 row">
             <label class="caption check-inline"><input id="legacyRerunForcePass1" type="checkbox" /> Force Re-run Pass 1</label>
-          <label class="caption check-inline"><input id="legacyRerunForceDeep" type="checkbox" onchange="syncLegacyDeepForce()" /> Force Re-run Deep Scan</label>
-            <div></div>
+            <label class="caption check-inline"><input id="legacyRerunForceDeep" type="checkbox" onchange="syncLegacyDeepForce()" /> Force Re-run Deep Scan</label>
+            <label class="caption check-inline"><input id="legacyRerunDeepSinglePrompt" type="checkbox" /> 🧪 Single Prompt Deep Scan</label>
           </div>
           <button class="primary row" onclick="queueLegacyBatchRerun()">🚀 Rerun Batch</button>
           <div class="msg" id="msgLegacyRerun"></div>
@@ -1098,6 +1104,8 @@ def render_console() -> HTMLResponse:
         </label>
         <label class="caption check-inline"><input id="forceRerunPass1" type="checkbox" /> Force Re-run Pass 1</label>
         <label class="caption check-inline"><input id="forceRerunDeep" type="checkbox" onchange="syncAnalysisDeepForce()" /> Force Re-run Deep Scan</label>
+        <label class="caption check-inline"><input id="deepSinglePrompt" type="checkbox" /> 🧪 Single Prompt Deep Scan</label>
+        <label class="caption check-inline"><input id="debugBulkLog" type="checkbox" /> 🐞 Keep Bulk Debug File</label>
       </div>
       <div class="caption section">
         <div id="selectedCountJd">Selected JDs: 0 / 0</div>
@@ -1546,6 +1554,8 @@ def render_console() -> HTMLResponse:
     selectedUnifiedType: null,
     selectedUnifiedId: null,
     reprocessRunId: null,
+    logAutoFollow: true,
+    lastLoadedLogRunId: null,
   };
 
   const q = (id) => document.getElementById(id);
@@ -2130,6 +2140,7 @@ def render_console() -> HTMLResponse:
   async function onActiveRunSelection() {
     const id = Number((q('selectedRunId') && q('selectedRunId').value) || 0);
     state.logPinnedRunId = id || null;
+    state.logAutoFollow = true;
     if (q('historyRunId') && id) q('historyRunId').value = '';
     await loadLogs(id || null);
   }
@@ -2137,6 +2148,7 @@ def render_console() -> HTMLResponse:
   async function onHistoryRunSelection() {
     const raw = String((q('historyRunId') && q('historyRunId').value) || '').trim();
     state.logPinnedRunId = raw || null;
+    state.logAutoFollow = true;
     if (q('selectedRunId') && raw) q('selectedRunId').value = '';
     if (!raw) return;
     if (raw.startsWith('legacy:')) {
@@ -2186,6 +2198,7 @@ def render_console() -> HTMLResponse:
     const s = state.settings || {};
     q('setLmUrl').value = s.lm_base_url || '';
     q('setApiKey').value = s.lm_api_key || '';
+    renderSettingsModelSelect(Array.isArray(state.settingsModels) ? state.settingsModels : [], s.lm_model || '');
     q('setOcrEnabled').checked = !!s.ocr_enabled;
     q('setWriterName').value = q('setWriterName').value || s.writer_default_name || '';
     const users = Array.isArray(s.writer_users) ? s.writer_users.filter(Boolean) : [];
@@ -2229,8 +2242,36 @@ def render_console() -> HTMLResponse:
     try {
       state.settings = await getJson('/v1/settings/state');
       renderSettingsControls();
+      await loadSettingsModels(false);
     } catch (e) {
       setSettingsMsg(e.message, false);
+    }
+  }
+
+  function renderSettingsModelSelect(models, selected) {
+    const sel = q('setLmModel');
+    if (!sel) return;
+    const uniq = Array.from(new Set((models || []).map((x) => String(x || '').trim()).filter(Boolean)));
+    sel.innerHTML = '<option value="">Auto-select model</option>' + uniq.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+    const wanted = String(selected || '').trim();
+    if (wanted && !uniq.includes(wanted)) {
+      sel.innerHTML += `<option value="${escapeHtml(wanted)}">${escapeHtml(wanted)} (current)</option>`;
+    }
+    if (wanted) sel.value = wanted;
+  }
+
+  async function loadSettingsModels(showMsg = true) {
+    try {
+      const r = await send('/v1/settings/models', 'POST', {
+        lm_base_url: q('setLmUrl').value.trim(),
+        lm_api_key: q('setApiKey').value.trim(),
+      });
+      if (!r.ok) throw new Error(r.message || 'Failed to fetch models');
+      state.settingsModels = Array.isArray(r.models) ? r.models : [];
+      renderSettingsModelSelect(state.settingsModels, (state.settings && state.settings.lm_model) || q('setLmModel').value);
+      if (showMsg) setSettingsMsg(`Loaded ${state.settingsModels.length} model(s).`);
+    } catch (e) {
+      if (showMsg) setSettingsMsg(e.message, false);
     }
   }
 
@@ -2239,6 +2280,7 @@ def render_console() -> HTMLResponse:
       await send('/v1/settings/runtime', 'PUT', {
         lm_base_url: q('setLmUrl').value.trim(),
         lm_api_key: q('setApiKey').value.trim(),
+        lm_model: q('setLmModel').value.trim(),
         ocr_enabled: q('setOcrEnabled').checked,
       });
       await loadSettings();
@@ -3381,6 +3423,7 @@ def render_console() -> HTMLResponse:
       autoTag: !!q('legacyRerunMatchTags').checked,
       forcePass1: !!q('legacyRerunForcePass1').checked,
       forceDeep: !!q('legacyRerunForceDeep').checked,
+      deepSinglePrompt: !!(q('legacyRerunDeepSinglePrompt') && q('legacyRerunDeepSinglePrompt').checked),
       runName: (q('legacyRerunName').value || '').trim() || null,
     };
   }
@@ -3432,6 +3475,7 @@ def render_console() -> HTMLResponse:
             legacy_run_id: Number(legacyRun.id),
             force_rerun_pass1: cfg.forcePass1,
             force_rerun_deep: cfg.forceDeep,
+            deep_single_prompt: cfg.deepSinglePrompt,
           },
         });
         queued += 1;
@@ -3465,6 +3509,7 @@ def render_console() -> HTMLResponse:
           run_name: cfg.runName || `Rerun Single: ${row.candidate_name || row.resume_name || 'Candidate'}`,
           force_rerun_pass1: cfg.forcePass1,
           force_rerun_deep: cfg.forceDeep,
+          deep_single_prompt: cfg.deepSinglePrompt,
         },
       });
       state.logPinnedRunId = null;
@@ -3613,8 +3658,6 @@ def render_console() -> HTMLResponse:
         const historyRaw = String((q('historyRunId') && q('historyRunId').value) || '').trim();
         if (historyRaw) {
           await loadHistoryLogs();
-        } else {
-          q('runLogs').textContent = 'No active run selected.';
         }
       }
     }
@@ -4254,6 +4297,8 @@ def render_console() -> HTMLResponse:
       const runName = q('runName').value.trim() || null;
       const forceRerunPass1 = q('forceRerunPass1').checked;
       const forceRerunDeep = q('forceRerunDeep').checked;
+      const deepSinglePrompt = !!(q('deepSinglePrompt') && q('deepSinglePrompt').checked);
+      const debugBulkLog = !!(q('debugBulkLog') && q('debugBulkLog').checked);
       const maxDeepPerJd = Math.max(0, Number(q('maxDeepPerJdInput').value || 0));
 
       let queued = 0;
@@ -4288,6 +4333,8 @@ def render_console() -> HTMLResponse:
               legacy_run_id: Number(legacyRun.id),
               force_rerun_pass1: forceRerunPass1,
               force_rerun_deep: forceRerunDeep,
+              deep_single_prompt: deepSinglePrompt,
+              debug_bulk_log: debugBulkLog,
               max_deep_scans_per_jd: maxDeepPerJd,
             },
           });
@@ -4330,7 +4377,6 @@ def render_console() -> HTMLResponse:
   async function loadLogs(runId = null) {
     const id = Number(runId || q('selectedRunId').value || 0);
     if (!id) {
-      q('runLogs').textContent = 'No active run selected.';
       return;
     }
     try {
@@ -4339,6 +4385,9 @@ def render_console() -> HTMLResponse:
         getJson(`/v1/runs/${id}/logs`),
       ]);
       const el = q('runLogs');
+      const prevTop = el.scrollTop;
+      const prevHeight = el.scrollHeight;
+      const runChanged = Number(state.lastLoadedLogRunId || 0) !== Number(id);
       const header = [
         `Run #${run.id} | ${run.job_type} | status=${run.status} | progress=${run.progress || 0}%`,
         `Step: ${run.current_step || '-'}`,
@@ -4352,7 +4401,13 @@ def render_console() -> HTMLResponse:
         timeline.push('No run log lines were recorded for this run.');
       }
       el.textContent = [...header, '', ...timeline].join(String.fromCharCode(10));
-      el.scrollTop = el.scrollHeight;
+      if (state.logAutoFollow || runChanged) {
+        el.scrollTop = el.scrollHeight;
+      } else {
+        const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+        el.scrollTop = Math.min(prevTop, maxTop);
+      }
+      state.lastLoadedLogRunId = Number(id);
     } catch (e) {
       q('runLogs').textContent = e.message;
     }
@@ -4978,6 +5033,14 @@ def render_console() -> HTMLResponse:
         startAnalysisAutoPoll();
       }
       renderVerifySelectors();
+      const logEl = q('runLogs');
+      if (logEl && !logEl.dataset.boundScroll) {
+        logEl.addEventListener('scroll', () => {
+          const delta = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight;
+          state.logAutoFollow = delta <= 24;
+        });
+        logEl.dataset.boundScroll = '1';
+      }
       debugLog('Boot complete.');
     } catch (e) {
       debugLog(`Boot failed: ${e.message}`, 'error');

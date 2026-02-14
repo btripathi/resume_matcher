@@ -42,6 +42,7 @@ class ScoreMatchRequest(BaseModel):
     auto_deep: bool = False
     force_rerun_pass1: bool = False
     force_rerun_deep: bool = False
+    deep_single_prompt: bool = False
     max_deep_scans_per_jd: int = Field(default=0, ge=0)
 
 

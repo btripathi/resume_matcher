@@ -4,14 +4,47 @@ import json
 import re
 import os
 import time
+from pathlib import Path
 
 class AIEngine:
-    def __init__(self, base_url, api_key):
+    def __init__(
+        self,
+        base_url,
+        api_key,
+        request_timeout_sec=None,
+        bulk_timeout_sec=None,
+        bulk_resume_chars=None,
+        preferred_model=None,
+    ):
         self.base_url = base_url
         self.api_key = api_key
         self.use_mock = base_url.startswith("mock://")
-        self.request_timeout_sec = int(os.getenv("RESUME_MATCHER_LLM_TIMEOUT_SEC", "30") or 30)
-        self.preferred_model = str(os.getenv("RESUME_MATCHER_LM_MODEL", "") or "").strip()
+        self.request_timeout_sec = int(
+            request_timeout_sec
+            if request_timeout_sec is not None
+            else (os.getenv("RESUME_MATCHER_LLM_TIMEOUT_SEC", "600") or 600)
+        )
+        self.bulk_timeout_sec = int(
+            bulk_timeout_sec
+            if bulk_timeout_sec is not None
+            else (os.getenv("RESUME_MATCHER_LLM_BULK_TIMEOUT_SEC", "600") or 600)
+        )
+        self.bulk_resume_chars = int(
+            bulk_resume_chars
+            if bulk_resume_chars is not None
+            else (os.getenv("RESUME_MATCHER_LLM_BULK_RESUME_CHARS", "10000") or 10000)
+        )
+        self.preferred_model = str(
+            preferred_model
+            if preferred_model is not None
+            else (os.getenv("RESUME_MATCHER_LM_MODEL", "") or "")
+        ).strip()
+        self.debug_bulk_log = str(os.getenv("RESUME_MATCHER_DEBUG_BULK_LOG", "")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
         self._resolved_chat_model = None
 
         if not self.use_mock:
@@ -247,6 +280,8 @@ class AIEngine:
         OUTPUT RULES:
         - Return ONLY a single JSON object.
         - Do NOT include explanations, markdown, or multiple JSON blocks.
+        - Do NOT include <think>...</think> reasoning blocks.
+        - Do NOT include chain-of-thought.
         - Use double quotes for all keys and strings.
 
         NORMALIZATION RULES:
@@ -270,16 +305,144 @@ class AIEngine:
             if len(resume_str) > overflow:
                 resume_str = resume_str[:max_resume - overflow]
             user_prompt = f"JD CRITERIA:\n{jd_str}\n\nRESUME PROFILE:\n{profile_str}\n\nRESUME TEXT:\n{resume_str}"
-        try:
-            resp = self.client.chat.completions.create(
-                model=self._chat_model(),
-                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-                temperature=0.1,
-                max_tokens=1024,
-                timeout=self.request_timeout_sec,
+        def _fallback(reason: str) -> dict:
+            name = "Unknown Candidate"
+            try:
+                parsed = resume_profile if isinstance(resume_profile, dict) else json.loads(str(resume_profile or "{}"))
+                if isinstance(parsed, dict):
+                    profile_name = str(parsed.get("candidate_name") or "").strip()
+                    if profile_name:
+                        name = profile_name
+            except Exception:
+                pass
+            return {
+                "candidate_name": name,
+                "match_score": 0,
+                "decision": "Review",
+                "reasoning": f"Standard evaluation fallback used ({reason}).",
+                "missing_skills": [],
+            }
+
+        def _normalize(data):
+            if not isinstance(data, dict):
+                return None
+            try:
+                score = int(data.get("match_score", 0) or 0)
+            except Exception:
+                score = 0
+            score = max(0, min(100, score))
+            decision = str(data.get("decision") or "").strip() or ("Reject" if score < 60 else "Review")
+            reasoning = data.get("reasoning", "")
+            if isinstance(reasoning, list):
+                reasoning = "\n".join([str(x) for x in reasoning if str(x).strip()])
+            reasoning = str(reasoning or "").strip() or "No reasoning returned by model."
+            missing = data.get("missing_skills", [])
+            if isinstance(missing, str):
+                missing = [x.strip() for x in missing.split(",") if x.strip()]
+            if not isinstance(missing, list):
+                missing = []
+            candidate = str(data.get("candidate_name") or "").strip() or "Unknown Candidate"
+            return {
+                "candidate_name": candidate,
+                "match_score": score,
+                "decision": decision,
+                "reasoning": reasoning,
+                "missing_skills": [str(x) for x in missing],
+            }
+
+        def _recover_from_text(raw_text: str):
+            txt = str(raw_text or "").strip()
+            if not txt:
+                return None
+            # Strip DeepSeek-style thinking block if present.
+            txt = re.sub(r"<think>.*?</think>", "", txt, flags=re.IGNORECASE | re.DOTALL).strip()
+            if not txt:
+                return None
+
+            # Try JSON extraction again after stripping think block.
+            recovered_json = document_utils.clean_json_response(txt)
+            norm = _normalize(recovered_json)
+            if norm is not None:
+                return norm
+
+            lowered = txt.lower()
+            score = None
+            m = re.search(r'"match_score"\s*:\s*(\d{1,3})', txt, flags=re.IGNORECASE)
+            if not m:
+                m = re.search(r"\bmatch[_\s-]*score\b[^0-9]{0,20}(\d{1,3})", txt, flags=re.IGNORECASE)
+            if not m:
+                m = re.search(r"\bscore\b[^0-9]{0,20}(\d{1,3})", txt, flags=re.IGNORECASE)
+            if m:
+                try:
+                    score = max(0, min(100, int(m.group(1))))
+                except Exception:
+                    score = None
+
+            decision = None
+            if re.search(r"\bmove\s*forward\b", lowered):
+                decision = "Move Forward"
+            elif re.search(r"\breview\b", lowered):
+                decision = "Review"
+            elif re.search(r"\breject\b", lowered):
+                decision = "Reject"
+
+            if score is None and decision is None:
+                return None
+
+            if score is None:
+                score = 30 if decision == "Reject" else 70 if decision == "Review" else 85
+            if decision is None:
+                decision = "Reject" if score < 60 else "Review" if score < 80 else "Move Forward"
+
+            reasoning = ""
+            for line in txt.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                # skip obvious JSON scaffolding lines
+                if line in ("{", "}", "[", "]"):
+                    continue
+                if line.startswith('"') and ":" in line:
+                    continue
+                reasoning = line
+                break
+            if not reasoning:
+                reasoning = "Recovered standard evaluation from non-JSON model output."
+
+            return _normalize(
+                {
+                    "candidate_name": "Unknown Candidate",
+                    "match_score": score,
+                    "decision": decision,
+                    "reasoning": reasoning,
+                    "missing_skills": [],
+                }
             )
-            return document_utils.clean_json_response(resp.choices[0].message.content)
-        except: return None
+
+        last_error = "unknown"
+        for attempt in range(2):
+            try:
+                resp = self.client.chat.completions.create(
+                    model=self._chat_model(),
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    temperature=0.0 if attempt else 0.1,
+                    max_tokens=1024,
+                    timeout=self.request_timeout_sec,
+                )
+                raw = resp.choices[0].message.content
+                data = document_utils.clean_json_response(raw)
+                norm = _normalize(data)
+                if norm is not None:
+                    return norm
+                recovered = _recover_from_text(raw)
+                if recovered is not None:
+                    return recovered
+                last_error = "malformed JSON output"
+                self._log_parse_failure(raw, reason=f"evaluate_standard attempt={attempt + 1} malformed")
+            except Exception as e:
+                last_error = str(e)
+                self._log_parse_failure(f"[EXCEPTION] {e}", reason=f"evaluate_standard attempt={attempt + 1} exception")
+        return _fallback(last_error)
 
     def evaluate_criterion(self, resume_text, category, value):
         if self.use_mock:
@@ -368,13 +531,23 @@ class AIEngine:
             return data
         except: return None
 
-    def evaluate_bulk_criteria(self, resume_text, criteria_list):
+    def evaluate_bulk_criteria(self, resume_text, criteria_list, debug_context=None):
         if self.use_mock:
             return [self._mock_evaluate_criterion(resume_text, cat, val) for cat, val in criteria_list]
         document_utils = self._document_utils()
         if not criteria_list: return []
 
-        reqs_str = "\n".join([f"- [{cat}] {val}" for cat, val in criteria_list])
+        expected_len = len(criteria_list)
+        debug_context = debug_context if isinstance(debug_context, dict) else {}
+        req_objects = [
+            {
+                "requirement_id": idx,
+                "category": str(cat),
+                "requirement": str(val),
+            }
+            for idx, (cat, val) in enumerate(criteria_list, start=1)
+        ]
+        reqs_json = json.dumps(req_objects, ensure_ascii=False, indent=2)
 
         system_prompt = """
         You are a Technical Auditor. Evaluate the candidate against the list of requirements provided.
@@ -384,26 +557,231 @@ class AIEngine:
         - Degree equivalence: B.Tech/BTech/B.E./BE/B.S./BS/B.Sc counts as Bachelor's. M.Tech/MTech/M.E./ME/M.S./MS/M.Sc counts as Master's.
         - Cloud platforms: AWS, Azure, GCP, Google Cloud count as cloud platform experience.
 
+        CRITICAL OUTPUT REQUIREMENTS (STRICT):
+        - Return EXACTLY one JSON object per input requirement.
+        - Output ARRAY length MUST equal number of requirements provided.
+        - Preserve input order exactly (1..N).
+        - Echo the exact requirement_id for each row.
+        - Echo requirement text exactly as provided for that requirement_id.
+        - Do not skip or merge requirements.
+        - If evidence is weak/unclear, still return the row with status "Missing" or "Partial" and evidence "None" if needed.
+        - Return ONLY JSON (no markdown, no explanations).
+
         RETURN ONLY A JSON ARRAY of objects:
         [
-            { "requirement": "text from list", "category": "category from list", "status": "Met/Partial/Missing", "evidence": "brief quote" },
+            { "requirement_id": 1, "requirement": "exact text from list", "category": "category from list", "status": "Met/Partial/Missing", "evidence": "brief quote or None" },
             ...
         ]
         """
-        user_prompt = f"REQUIREMENTS:\n{reqs_str}\n\nRESUME TEXT:\n{resume_text[:15000]}"
+        resume_snippet = str(resume_text or "")[: max(1000, int(self.bulk_resume_chars))]
+        user_prompt = (
+            f"REQUIREMENTS COUNT: {expected_len}\n"
+            f"REQUIREMENTS (ordered JSON):\n{reqs_json}\n\n"
+            f"RESUME TEXT:\n{resume_snippet}"
+        )
 
         try:
+            # Attempt 1: full bulk window with longer timeout.
             resp = self.client.chat.completions.create(
                 model=self._chat_model(),
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                 temperature=0.0,
-                timeout=self.request_timeout_sec,
+                max_tokens=3500,
+                timeout=max(self.request_timeout_sec, self.bulk_timeout_sec),
             )
-            data = document_utils.clean_json_response(resp.choices[0].message.content)
-            if isinstance(data, list): return data
-            if isinstance(data, dict) and "results" in data: return data["results"]
-            return []
-        except: return []
+            raw_content = resp.choices[0].message.content
+            self._debug_bulk_dump(
+                stage="attempt1_raw",
+                raw_content=raw_content,
+                expected_len=expected_len,
+                criteria_list=criteria_list,
+                resume_snippet=resume_snippet,
+                extra=debug_context,
+            )
+            data = document_utils.clean_json_response(raw_content)
+            if isinstance(data, dict) and "results" in data:
+                data = data["results"]
+            if not isinstance(data, list):
+                self._debug_bulk_dump(
+                    stage="attempt1_non_list",
+                    raw_content=raw_content,
+                    expected_len=expected_len,
+                    criteria_list=criteria_list,
+                    resume_snippet=resume_snippet,
+                    extra={"parsed_type": type(data).__name__ if data is not None else "None", **debug_context},
+                )
+                self._log_parse_failure(
+                    f"[bulk] expected={expected_len} parsed_type={type(data).__name__ if data is not None else 'None'}\n{raw_content}",
+                    reason="evaluate_bulk_criteria non-list output",
+                )
+                return []
+
+            # Preserve partial bulk output so caller can recover missing rows in staged fallbacks.
+            normalized = []
+            for idx, raw in enumerate(data):
+                if not isinstance(raw, dict):
+                    continue
+                default_category = criteria_list[idx][0] if idx < len(criteria_list) else ""
+                default_requirement = criteria_list[idx][1] if idx < len(criteria_list) else ""
+                status = str(raw.get("status") or "Missing")
+                if status not in ("Met", "Partial", "Missing"):
+                    status = "Missing"
+                normalized.append({
+                    "requirement_id": int(raw.get("requirement_id") or (idx + 1)),
+                    "requirement": str(raw.get("requirement") or default_requirement),
+                    "category": str(raw.get("category") or default_category),
+                    "status": status,
+                    "evidence": str(raw.get("evidence") or "None"),
+                })
+            if len(normalized) < expected_len:
+                self._log_parse_failure(
+                    f"[bulk] expected={expected_len} parsed_rows={len(normalized)} raw_rows={len(data)}\n{raw_content}",
+                    reason="evaluate_bulk_criteria incomplete rows",
+                )
+            self._debug_bulk_dump(
+                stage="attempt1_parsed",
+                raw_content=raw_content,
+                expected_len=expected_len,
+                criteria_list=criteria_list,
+                resume_snippet=resume_snippet,
+                extra={
+                    "parsed_rows": len(normalized),
+                    "raw_rows": len(data),
+                    **debug_context,
+                },
+            )
+            return normalized
+        except Exception as e:
+            self._log_parse_failure(f"[EXCEPTION] {e}", reason="evaluate_bulk_criteria exception")
+            self._debug_bulk_dump(
+                stage="attempt1_exception",
+                raw_content=f"[EXCEPTION] {e}",
+                expected_len=expected_len,
+                criteria_list=criteria_list,
+                resume_snippet=resume_snippet,
+                extra=debug_context,
+            )
+            # Attempt 2: shorter resume context to reduce model latency.
+            try:
+                reduced_resume = str(resume_snippet)[: max(1500, int(len(resume_snippet) * 0.55))]
+                retry_prompt = (
+                    f"REQUIREMENTS COUNT: {expected_len}\n"
+                    f"REQUIREMENTS (ordered JSON):\n{reqs_json}\n\n"
+                    f"RESUME TEXT:\n{reduced_resume}"
+                )
+                resp = self.client.chat.completions.create(
+                    model=self._chat_model(),
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": retry_prompt}],
+                    temperature=0.0,
+                    max_tokens=2500,
+                    timeout=max(self.request_timeout_sec, int(self.bulk_timeout_sec * 0.75)),
+                )
+                raw_content = resp.choices[0].message.content
+                self._debug_bulk_dump(
+                    stage="attempt2_raw",
+                    raw_content=raw_content,
+                    expected_len=expected_len,
+                    criteria_list=criteria_list,
+                    resume_snippet=reduced_resume,
+                    extra=debug_context,
+                )
+                data = document_utils.clean_json_response(raw_content)
+                if isinstance(data, dict) and "results" in data:
+                    data = data["results"]
+                if not isinstance(data, list):
+                    self._debug_bulk_dump(
+                        stage="attempt2_non_list",
+                        raw_content=raw_content,
+                        expected_len=expected_len,
+                        criteria_list=criteria_list,
+                        resume_snippet=reduced_resume,
+                        extra={"parsed_type": type(data).__name__ if data is not None else "None", **debug_context},
+                    )
+                    self._log_parse_failure(
+                        f"[bulk-retry] expected={expected_len} parsed_type={type(data).__name__ if data is not None else 'None'}\n{raw_content}",
+                        reason="evaluate_bulk_criteria retry non-list output",
+                    )
+                    return []
+                normalized = []
+                for idx, raw in enumerate(data):
+                    if not isinstance(raw, dict):
+                        continue
+                    default_category = criteria_list[idx][0] if idx < len(criteria_list) else ""
+                    default_requirement = criteria_list[idx][1] if idx < len(criteria_list) else ""
+                    status = str(raw.get("status") or "Missing")
+                    if status not in ("Met", "Partial", "Missing"):
+                        status = "Missing"
+                    normalized.append({
+                        "requirement_id": int(raw.get("requirement_id") or (idx + 1)),
+                        "requirement": str(raw.get("requirement") or default_requirement),
+                        "category": str(raw.get("category") or default_category),
+                        "status": status,
+                        "evidence": str(raw.get("evidence") or "None"),
+                    })
+                if len(normalized) < expected_len:
+                    self._log_parse_failure(
+                        f"[bulk-retry] expected={expected_len} parsed_rows={len(normalized)} raw_rows={len(data)}\n{raw_content}",
+                        reason="evaluate_bulk_criteria retry incomplete rows",
+                    )
+                self._debug_bulk_dump(
+                    stage="attempt2_parsed",
+                    raw_content=raw_content,
+                    expected_len=expected_len,
+                    criteria_list=criteria_list,
+                    resume_snippet=reduced_resume,
+                    extra={
+                        "parsed_rows": len(normalized),
+                        "raw_rows": len(data),
+                        **debug_context,
+                    },
+                )
+                return normalized
+            except Exception as e2:
+                self._log_parse_failure(f"[EXCEPTION] {e2}", reason="evaluate_bulk_criteria retry exception")
+                self._debug_bulk_dump(
+                    stage="attempt2_exception",
+                    raw_content=f"[EXCEPTION] {e2}",
+                    expected_len=expected_len,
+                    criteria_list=criteria_list,
+                    resume_snippet=reduced_resume if "reduced_resume" in locals() else resume_snippet,
+                    extra=debug_context,
+                )
+                return []
+
+    def _debug_bulk_dump(self, stage, raw_content, expected_len, criteria_list, resume_snippet, extra=None):
+        extra = extra if isinstance(extra, dict) else {}
+        per_call_enabled = bool(extra.get("debug_bulk_log"))
+        if not self.debug_bulk_log and not per_call_enabled:
+            return
+        try:
+            safe_stage = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(stage or "bulk"))
+            run_id = ""
+            attempt = ""
+            run_id = str(extra.get("run_id") or "")
+            attempt = str(extra.get("attempt") or "")
+            safe_run = re.sub(r"[^a-zA-Z0-9_.-]+", "_", run_id) if run_id else "adhoc"
+            safe_attempt = re.sub(r"[^a-zA-Z0-9_.-]+", "_", attempt) if attempt else "na"
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            out_dir = Path("logs") / "bulk_debug"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_file = out_dir / f"{ts}_{safe_run}_{safe_attempt}_{safe_stage}.json"
+            payload = {
+                "stage": stage,
+                "run_id": run_id or None,
+                "attempt": attempt or None,
+                "expected_len": int(expected_len or 0),
+                "criteria_list": [
+                    {"category": str(c), "requirement": str(r)}
+                    for c, r in (criteria_list or [])
+                ],
+                "resume_snippet": str(resume_snippet or ""),
+                "raw_content": str(raw_content or ""),
+                "extra": extra or {},
+            }
+            out_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            # Debug dump must never break scoring path.
+            return
 
     def generate_final_decision(self, candidate_name, match_details, strategy="Deep"):
         if not match_details: return 0, "Reject", "No data analyzed."

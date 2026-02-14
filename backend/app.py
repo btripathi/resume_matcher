@@ -39,6 +39,17 @@ def _check_local_lm_available() -> bool:
         return False
 
 
+def _env_int(name: str, default: int, min_value: int = 1) -> int:
+    raw = str(os.getenv(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+        return max(min_value, value)
+    except Exception:
+        return default
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Resume Matcher API",
@@ -52,9 +63,17 @@ def create_app() -> FastAPI:
     default_lm_url = DEFAULT_LOCAL_URL if local_lm_available else DEFAULT_CLOUD_URL
     lm_base_url = os.getenv("RESUME_MATCHER_LM_BASE_URL", default_lm_url)
     lm_api_key = os.getenv("RESUME_MATCHER_LM_API_KEY", "lm-studio")
+    lm_model = str(os.getenv("RESUME_MATCHER_LM_MODEL", "") or "").strip()
+    llm_timeout_sec = _env_int("RESUME_MATCHER_LLM_TIMEOUT_SEC", 600, min_value=1)
+    llm_bulk_timeout_sec = _env_int("RESUME_MATCHER_LLM_BULK_TIMEOUT_SEC", 600, min_value=1)
+    llm_bulk_resume_chars = _env_int("RESUME_MATCHER_LLM_BULK_RESUME_CHARS", 10000, min_value=1000)
     runtime_settings = {
         "lm_base_url": lm_base_url,
         "lm_api_key": lm_api_key,
+        "lm_model": lm_model,
+        "llm_timeout_sec": llm_timeout_sec,
+        "llm_bulk_timeout_sec": llm_bulk_timeout_sec,
+        "llm_bulk_resume_chars": llm_bulk_resume_chars,
         "ocr_enabled": True,
         "local_lm_available": local_lm_available,
         "write_mode": False,
@@ -66,7 +85,14 @@ def create_app() -> FastAPI:
         runtime_settings["write_mode"] = True
         runtime_settings["write_mode_locked"] = False
 
-    llm = AIEngine(base_url=runtime_settings["lm_base_url"], api_key=runtime_settings["lm_api_key"])
+    llm = AIEngine(
+        base_url=runtime_settings["lm_base_url"],
+        api_key=runtime_settings["lm_api_key"],
+        request_timeout_sec=runtime_settings["llm_timeout_sec"],
+        bulk_timeout_sec=runtime_settings["llm_bulk_timeout_sec"],
+        bulk_resume_chars=runtime_settings["llm_bulk_resume_chars"],
+        preferred_model=runtime_settings["lm_model"],
+    )
     analysis = AnalysisService(repo=repo, llm=llm)
     gh_sync = GitHubSyncService(db_path=settings.db_path)
 
@@ -275,6 +301,7 @@ def create_app() -> FastAPI:
                 legacy_run_id=payload.legacy_run_id,
                 force_rerun_pass1=payload.force_rerun_pass1,
                 force_rerun_deep=payload.force_rerun_deep,
+                deep_single_prompt=payload.deep_single_prompt,
                 max_deep_scans_per_jd=payload.max_deep_scans_per_jd,
             )
             _after_db_write("score_match")
@@ -647,6 +674,10 @@ def create_app() -> FastAPI:
         return {
             "lm_base_url": runtime_settings["lm_base_url"],
             "lm_api_key": runtime_settings["lm_api_key"],
+            "lm_model": runtime_settings["lm_model"],
+            "llm_timeout_sec": int(runtime_settings["llm_timeout_sec"]),
+            "llm_bulk_timeout_sec": int(runtime_settings["llm_bulk_timeout_sec"]),
+            "llm_bulk_resume_chars": int(runtime_settings["llm_bulk_resume_chars"]),
             "ocr_enabled": bool(runtime_settings["ocr_enabled"]),
             "local_lm_available": bool(runtime_settings["local_lm_available"]),
             "write_mode": bool(runtime_settings["write_mode"]),
@@ -694,11 +725,32 @@ def create_app() -> FastAPI:
             runtime_settings["lm_base_url"] = str(payload.get("lm_base_url", "")).strip() or runtime_settings["lm_base_url"]
         if "lm_api_key" in payload:
             runtime_settings["lm_api_key"] = str(payload.get("lm_api_key", "")).strip() or runtime_settings["lm_api_key"]
+        if "lm_model" in payload:
+            runtime_settings["lm_model"] = str(payload.get("lm_model", "")).strip()
+        if "llm_timeout_sec" in payload:
+            try:
+                runtime_settings["llm_timeout_sec"] = max(1, int(payload.get("llm_timeout_sec")))
+            except Exception:
+                pass
+        if "llm_bulk_timeout_sec" in payload:
+            try:
+                runtime_settings["llm_bulk_timeout_sec"] = max(1, int(payload.get("llm_bulk_timeout_sec")))
+            except Exception:
+                pass
+        if "llm_bulk_resume_chars" in payload:
+            try:
+                runtime_settings["llm_bulk_resume_chars"] = max(1000, int(payload.get("llm_bulk_resume_chars")))
+            except Exception:
+                pass
         if "ocr_enabled" in payload:
             runtime_settings["ocr_enabled"] = bool(payload.get("ocr_enabled"))
         analysis.llm = AIEngine(
             base_url=runtime_settings["lm_base_url"],
             api_key=runtime_settings["lm_api_key"],
+            request_timeout_sec=runtime_settings["llm_timeout_sec"],
+            bulk_timeout_sec=runtime_settings["llm_bulk_timeout_sec"],
+            bulk_resume_chars=runtime_settings["llm_bulk_resume_chars"],
+            preferred_model=runtime_settings["lm_model"],
         )
         return {"ok": True}
 
@@ -714,6 +766,23 @@ def create_app() -> FastAPI:
             return {"ok": True, "message": f"Connected to LM Studio. Found {count} model(s)."}
         except Exception as exc:
             return {"ok": False, "message": f"Connection failed: {exc}"}
+
+    @app.post("/v1/settings/models")
+    def list_models(payload: dict | None = None) -> dict:
+        p = payload or {}
+        url = str(p.get("lm_base_url") or runtime_settings["lm_base_url"])
+        key = str(p.get("lm_api_key") or runtime_settings["lm_api_key"])
+        try:
+            client = OpenAI(base_url=url, api_key=key)
+            models = client.models.list()
+            data = list(getattr(models, "data", []) or [])
+            ids = [str(getattr(m, "id", "") or "").strip() for m in data]
+            ids = [m for m in ids if m]
+            # Prefer non-embedding chat-capable model IDs first.
+            ids = sorted(ids, key=lambda x: ("embed" in x.lower(), x.lower()))
+            return {"ok": True, "models": ids}
+        except Exception as exc:
+            return {"ok": False, "models": [], "message": f"Model list failed: {exc}"}
 
     @app.post("/v1/settings/write-mode/enable")
     def enable_write_mode(payload: dict) -> dict:
