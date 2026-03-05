@@ -1,111 +1,115 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Colors for output
+set -euo pipefail
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-echo -e "${GREEN}=========================================${NC}"
-echo -e "${GREEN}   Resume Matcher App - Setup & Run      ${NC}"
-echo -e "${GREEN}=========================================${NC}"
+echo -e "${GREEN}============================================${NC}"
+echo -e "${GREEN} Resume Matcher Web App - Setup and Run     ${NC}"
+echo -e "${GREEN}============================================${NC}"
 
-# 1. Check for Homebrew (Required for system tools on Mac)
-if ! command -v brew &> /dev/null; then
-    echo -e "${RED}Error: Homebrew is not installed.${NC}"
-    echo "Please install it from https://brew.sh/ and run this script again."
-    exit 1
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# 2. Install System Dependencies
-echo -e "\n${YELLOW}[1/4] Checking System Dependencies (OCR Tools)...${NC}"
-if ! brew list tesseract &>/dev/null; then
-    echo "Installing Tesseract..."
-    brew install tesseract
-else
-    echo "✅ Tesseract is installed."
-fi
-
-if ! brew list poppler &>/dev/null; then
-    echo "Installing Poppler..."
-    brew install poppler
-else
-    echo "✅ Poppler is installed."
-fi
-
-# 3. Pyenv Auto-Fix (NEW)
-# If pyenv is installed but no version is selected, try to set one
-if command -v pyenv &> /dev/null; then
-    # Check if a python version is currently active
-    if ! pyenv version-name &> /dev/null || [[ $(pyenv version-name) == "system" ]]; then
-        echo -e "\n${YELLOW}[Pyenv Detected] No local python version set.${NC}"
-        # Try to find 3.12.8 or similar
-        AVAILABLE_PY=$(pyenv versions --bare | grep "3.12" | tail -1)
-        if [ -n "$AVAILABLE_PY" ]; then
-            echo "⚡ Automatically setting local python to $AVAILABLE_PY"
-            pyenv local "$AVAILABLE_PY"
-        else
-            echo "⚠️ Could not auto-detect a suitable Python 3.12 version."
-        fi
-    fi
-fi
-
-# 4. Install Python Dependencies
-echo -e "\n${YELLOW}[2/4] Installing Python Libraries...${NC}"
-# Check if pip exists
-if ! command -v pip &> /dev/null; then
-    echo -e "${RED}Error: pip (Python Package Manager) not found.${NC}"
-    echo "Tip: Run 'pyenv local 3.12.8' (or your installed version) to fix this."
-    exit 1
-fi
-pip install -r requirements.txt --quiet
-echo -e "✅ Python libraries installed."
-
-# 5. Verify LM Studio Server
-echo -e "\n${YELLOW}[3/4] Verifying Local AI Server (LM Studio)...${NC}"
-LM_URL="http://localhost:1234/v1/models"
-
-# Function to check server
-check_server() {
-    curl -s --connect-timeout 2 "$LM_URL" > /dev/null
-    return $?
-}
-
-if check_server; then
-    echo -e "✅ LM Studio Server is UP and responding."
-else
-    echo -e "${RED}❌ Cannot connect to LM Studio at localhost:1234${NC}"
-    echo -e "${YELLOW}Action Required:${NC}"
-    echo "  1. Open LM Studio."
-    echo "  2. Go to the 'Local Server' tab (double arrow icon)."
-    echo "  3. Click 'Start Server'."
-    echo "  4. Ensure a model is loaded."
-
-    echo -e "\nWaiting for server to start (Press Ctrl+C to quit)..."
-
-    # Loop to wait for user to start server
-    while ! check_server; do
-        sleep 2
-        echo -n "."
-    done
-    echo -e "\n${GREEN}✅ Connection established!${NC}"
-fi
-
-# 6. Choose Write Mode (flag-based)
 WRITE_MODE=0
-if [[ "$1" == "-write" ]]; then
-    WRITE_MODE=1
-fi
+SMOKE_TEST=0
+for arg in "$@"; do
+  case "$arg" in
+    -write|--write)
+      WRITE_MODE=1
+      ;;
+    --smoke-test)
+      SMOKE_TEST=1
+      ;;
+    *)
+      echo -e "${RED}Unknown argument: ${arg}${NC}"
+      echo "Usage: ./install_and_run.sh [--write] [--smoke-test]"
+      exit 1
+      ;;
+  esac
+done
 
-STREAMLIT_ENV=""
-if [[ "$WRITE_MODE" -eq 1 ]]; then
-    echo -e "${GREEN}Write mode ENABLED via -write.${NC}"
-    STREAMLIT_ENV="RESUME_MATCHER_WRITE_MODE=1 RESUME_MATCHER_READ_ONLY=0"
+echo -e "\n${YELLOW}[1/4] Checking Homebrew...${NC}"
+if ! command -v brew >/dev/null 2>&1; then
+  echo "Homebrew not found. Installing Homebrew..."
+  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+  # Ensure brew is available in this shell after install.
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
+
+  if ! command -v brew >/dev/null 2>&1; then
+    echo -e "${RED}Error: Homebrew installation did not complete successfully.${NC}"
+    exit 1
+  fi
+  echo "Homebrew installed."
 else
-    echo -e "${YELLOW}Read-only mode (default). Use -write to enable shared DB updates.${NC}"
-    STREAMLIT_ENV="RESUME_MATCHER_READ_ONLY=1 RESUME_MATCHER_WRITE_MODE=0"
+  echo "Homebrew already installed."
 fi
 
-# 7. Launch App
-echo -e "\n${GREEN}[5/5] 🚀 Launching Resume Matcher App...${NC}"
-env $STREAMLIT_ENV streamlit run resume_matcher_app.py
+echo -e "\n${YELLOW}[2/4] Installing system dependencies...${NC}"
+if ! brew list tesseract >/dev/null 2>&1; then
+  brew install tesseract
+else
+  echo "tesseract already installed."
+fi
+if ! brew list poppler >/dev/null 2>&1; then
+  brew install poppler
+else
+  echo "poppler already installed."
+fi
+
+echo -e "\n${YELLOW}[3/4] Installing Python dependencies...${NC}"
+if command -v pip >/dev/null 2>&1; then
+  PIP_CMD="pip"
+elif command -v pip3 >/dev/null 2>&1; then
+  PIP_CMD="pip3"
+else
+  echo -e "${RED}Error: pip is not installed.${NC}"
+  exit 1
+fi
+"$PIP_CMD" install -r requirements.txt
+
+echo -e "\n${YELLOW}[4/4] Starting web app on http://localhost:8000 ...${NC}"
+if [[ "$WRITE_MODE" -eq 1 ]]; then
+  echo -e "${GREEN}Write mode enabled.${NC}"
+  export RESUME_MATCHER_WRITE_MODE=1
+  export RESUME_MATCHER_READ_ONLY=0
+else
+  echo -e "${YELLOW}Read-only mode enabled (use -write to allow DB updates).${NC}"
+  export RESUME_MATCHER_READ_ONLY=1
+  export RESUME_MATCHER_WRITE_MODE=0
+fi
+
+if [[ "$SMOKE_TEST" -eq 1 ]]; then
+  echo "Smoke test mode: starting server, checking /health, then exiting."
+  uvicorn backend.app:app --host 127.0.0.1 --port 8000 >/tmp/resume_matcher_uvicorn.log 2>&1 &
+  UVICORN_PID=$!
+  cleanup() {
+    if kill -0 "$UVICORN_PID" >/dev/null 2>&1; then
+      kill "$UVICORN_PID" >/dev/null 2>&1 || true
+      wait "$UVICORN_PID" 2>/dev/null || true
+    fi
+  }
+  trap cleanup EXIT
+
+  for i in {1..30}; do
+    if curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
+      echo -e "${GREEN}Smoke test passed: /health is reachable.${NC}"
+      exit 0
+    fi
+    sleep 1
+  done
+
+  echo -e "${RED}Smoke test failed: /health did not become reachable in time.${NC}"
+  echo "Check /tmp/resume_matcher_uvicorn.log for details."
+  exit 1
+fi
+
+exec uvicorn backend.app:app --reload --port 8000

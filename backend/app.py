@@ -28,7 +28,6 @@ from .services.repository import Repository
 from .web_console import render_console
 
 
-DEFAULT_CLOUD_URL = "https://equitably-unmetalized-frieda.ngrok-free.dev/v1"
 DEFAULT_LOCAL_URL = "http://127.0.0.1:1234/v1"
 
 
@@ -61,8 +60,7 @@ def create_app() -> FastAPI:
     db = DBManager(db_path=settings.db_path)
     repo = Repository(db=db)
     local_lm_available = _check_local_lm_available()
-    default_lm_url = DEFAULT_LOCAL_URL if local_lm_available else DEFAULT_CLOUD_URL
-    lm_base_url = os.getenv("RESUME_MATCHER_LM_BASE_URL", default_lm_url)
+    lm_base_url = os.getenv("RESUME_MATCHER_LM_BASE_URL", DEFAULT_LOCAL_URL)
     lm_api_key = os.getenv("RESUME_MATCHER_LM_API_KEY", "lm-studio")
     lm_model = str(os.getenv("RESUME_MATCHER_LM_MODEL", "") or "").strip()
     llm_timeout_sec = _env_int("RESUME_MATCHER_LLM_TIMEOUT_SEC", 600, min_value=1)
@@ -795,7 +793,7 @@ def create_app() -> FastAPI:
             client = OpenAI(base_url=url, api_key=key)
             models = client.models.list()
             count = len(getattr(models, "data", []) or [])
-            return {"ok": True, "message": f"Connected to LM Studio. Found {count} model(s)."}
+            return {"ok": True, "message": f"Connected to model server. Found {count} model(s)."}
         except Exception as exc:
             return {"ok": False, "message": f"Connection failed: {exc}"}
 

@@ -50,6 +50,14 @@ def render_console() -> HTMLResponse:
       align-items: center;
       gap: 10px;
     }
+    .info.ok {
+      background: #ecfdf3;
+      color: #166534;
+    }
+    .info.warn {
+      background: #fffbeb;
+      color: #92400e;
+    }
 
     .title-row {
       display: flex;
@@ -903,6 +911,7 @@ def render_console() -> HTMLResponse:
 <body>
   <div class="shell">
     <div class="info" id="topReadOnlyInfo">🔒 Read-only mode: changes are local only and will NOT sync to the shared DB. Enable Write Mode to share results.</div>
+    <div class="info" id="topLmInfo">🤖 Model server status will appear here.</div>
 
     <div class="title-row">
       <h2 style="margin:0">🚀 TalentScout: Intelligent Resume Screening</h2>
@@ -2213,6 +2222,31 @@ def render_console() -> HTMLResponse:
     }
   }
 
+  function updateLmInfo() {
+    const s = state.settings || {};
+    const el = q('topLmInfo');
+    if (!el) return;
+
+    const lmUrl = String(s.lm_base_url || '').trim();
+    const normalized = lmUrl.toLowerCase();
+    const usingLocalLm = normalized.includes('127.0.0.1:1234') || normalized.includes('localhost:1234');
+    const localAvailable = !!s.local_lm_available;
+
+    el.className = 'info';
+    if (usingLocalLm && !localAvailable) {
+      el.classList.add('warn');
+      el.textContent = '⚠️ Local model server is not available. Open Settings to set LM URL/API key for your remote API, then click Test Connection.';
+      return;
+    }
+    if (!usingLocalLm) {
+      el.classList.add('ok');
+      el.textContent = `✅ Remote model API configured: ${lmUrl || '(not set)'}. Use Settings → Test Connection to verify.`;
+      return;
+    }
+    el.classList.add('ok');
+    el.textContent = '✅ Local model server detected.';
+  }
+
   function renderSettingsControls() {
     const s = state.settings || {};
     q('setLmUrl').value = s.lm_base_url || '';
@@ -2263,6 +2297,7 @@ def render_console() -> HTMLResponse:
       }
     }
     updateReadOnlyInfo();
+    updateLmInfo();
   }
 
   async function loadSettings() {

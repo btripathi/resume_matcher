@@ -1,11 +1,11 @@
 # 📄 AI Resume Matcher (Local & Privacy-Focused)
 
-A powerful, local recruiting tool that runs entirely on your Mac (M1/M2/M3/M4). It uses **Local LLMs** (via LM Studio) to match resumes against Job Descriptions, ensuring 100% data privacy. No data leaves your machine.
+A powerful recruiting tool that runs on your Mac (M1/M2/M3/M4) and can use either a local model server or a remote OpenAI-compatible API to match resumes against Job Descriptions.
 
 ## 🚀 Features
 
 * **Universal File Support:** Upload PDFs (native & scanned/OCR), DOCX, and Text files.
-* **Privacy First:** Uses local LLMs (Llama 3, Mistral, etc.) via LM Studio. Zero data upload to cloud clouds.
+* **Flexible Model Backends:** Use local models (LM Studio) or a remote OpenAI-compatible API.
 * **Batch Processing:** Match hundreds of resumes against multiple JDs in one go ("All x All" matrix).
 * **Intelligent Scoring:**
     * **0-49 (Reject):** Missing mandatory skills.
@@ -16,12 +16,10 @@ A powerful, local recruiting tool that runs entirely on your Mac (M1/M2/M3/M4). 
 ## 🛠️ Prerequisites
 
 1.  **Mac with Apple Silicon** (M1/M2/M3/M4 recommended for speed).
-2.  **[LM Studio](https://lmstudio.ai/)** installed.
-3.  **Homebrew** installed (for installing OCR tools).
+2.  **Python 3.10+** installed.
+3.  **Internet access** (script auto-installs Homebrew + dependencies if needed).
 
-## ⚡️ Quick Start (1-Click Setup)
-
-We have included an automated script that installs all dependencies (OCR tools, Python libraries) and launches the app.
+## ⚡️ Quick Start (Web App)
 
 1.  **Clone this repository:**
     \`\`\`bash
@@ -29,36 +27,45 @@ We have included an automated script that installs all dependencies (OCR tools, 
     cd resume-matcher
     \`\`\`
 
-2.  **Prepare LM Studio:**
-    * Open LM Studio.
-    * Load a model (Recommended: `Llama 3` or `Mistral Instruct`).
-    * Go to the **Local Server** tab (double arrow icon `<->`) on the left.
-    * Click **Start Server**.
-
-3.  **Run the Installer:**
+2.  **Run the installer/launcher (installs deps + starts app):**
     \`\`\`bash
     chmod +x install_and_run.sh
     ./install_and_run.sh
     \`\`\`
 
-The app will open in your browser at `http://localhost:8501`.
+3.  **(Optional) Start in write mode:**
+    \`\`\`bash
+    ./install_and_run.sh --write
+    \`\`\`
 
-## 🧱 API-First (Mature Architecture Path)
-
-This repo now includes a backend foundation so the product is no longer constrained to Streamlit as the primary runtime.
-
-### Run the Single App (Backend + Rich Web UI)
-
-```bash
-pip install -r requirements.txt
-uvicorn backend.app:app --reload --port 8000
-```
+4.  **Configure model API (if local server is not running):**
+    * Open **Settings** in the app.
+    * Set **LM URL** and **API Key** for your remote OpenAI-compatible endpoint.
+    * Click **Test Connection**, then **Save Config**.
 
 Open:
 - Web app: `http://localhost:8000/`
-- API docs:
-- `http://localhost:8000/docs`
-- `http://localhost:8000/redoc`
+- API docs: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
+
+## ✅ Verify on a Clean Mac
+
+Use the built-in smoke test to validate a fresh setup end-to-end:
+
+\`\`\`bash
+chmod +x install_and_run.sh
+./install_and_run.sh --smoke-test
+\`\`\`
+
+Expected result:
+- Script auto-installs Homebrew if missing.
+- Script installs `tesseract`, `poppler`, and Python packages.
+- Temporary server starts and `/health` check passes.
+- Script exits with success after verification.
+
+## 🧱 Architecture
+
+This project runs as a backend service with a rich browser UI served at the root path.
 
 ### Deploy to Render (Free)
 
@@ -68,11 +75,11 @@ This repo includes a Render blueprint at `render.yaml`.
 2. In Render, choose **New +** -> **Blueprint** and select this repo.
 3. Render will create the `resume-matcher` web service and deploy automatically.
 4. In Render service settings, set required secret env vars:
-   - `RESUME_MATCHER_LM_BASE_URL` (your public LM Studio/ngrok API base, e.g. `https://.../v1`)
+   - `RESUME_MATCHER_LM_BASE_URL` (your model API base URL, e.g. `https://.../v1`)
    - `RESUME_MATCHER_LM_API_KEY`
    - `RESUME_MATCHER_GITHUB_TOKEN`
    - `RESUME_MATCHER_GITHUB_REPO` (format: `owner/repo`)
-   - Optional writer auth from env (instead of `.streamlit/secrets.toml`):
+   - Optional writer auth from env:
      - `RESUME_MATCHER_WRITER_NAME`
      - `RESUME_MATCHER_WRITER_PASSWORD`
      - `RESUME_MATCHER_WRITER_USERS_JSON` (JSON list like `[{"name":"admin","password":"..."}]`)
@@ -138,23 +145,6 @@ curl http://localhost:8000/v1/runs/<run_id>/logs
     * **Missing Skills** list.
     * **Criteria Table:** See exactly which resume text matched which JD requirement.
 * Use the **Rerun** or **Delete** buttons to fix specific entries.
-
-## 🔧 Manual Installation (Alternative)
-
-If you prefer not to use the script:
-
-1.  **Install System Tools:**
-    \`\`\`bash
-    brew install tesseract poppler
-    \`\`\`
-2.  **Install Python Deps:**
-    \`\`\`bash
-    pip install streamlit openai pypdf python-docx pytesseract pillow pandas pdf2image matplotlib
-    \`\`\`
-3.  **Run App:**
-    \`\`\`bash
-    streamlit run resume_matcher_app.py
-    \`\`\`
 
 ## 🔒 Data Privacy Note
 This application uses a local SQLite database (`resume_matcher.db`) stored in the root folder. **Do not commit this file to GitHub** if it contains real candidate data (it is already added to `.gitignore`).
