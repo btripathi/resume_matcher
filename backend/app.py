@@ -84,6 +84,20 @@ def create_app() -> FastAPI:
         "write_mode_locked": os.getenv("RESUME_MATCHER_READ_ONLY", "").lower() in ("1", "true", "yes"),
         "run_queue_paused": False,
     }
+    _settings_lock = threading.RLock()
+
+    def rs_get(key: str, default=None):
+        with _settings_lock:
+            return runtime_settings.get(key, default)
+
+    def rs_set(key: str, value) -> None:
+        with _settings_lock:
+            runtime_settings[key] = value
+
+    def rs_snapshot() -> dict:
+        with _settings_lock:
+            return dict(runtime_settings)
+
     if os.getenv("RESUME_MATCHER_WRITE_MODE", "").lower() in ("1", "true", "yes"):
         runtime_settings["write_mode"] = True
         runtime_settings["write_mode_locked"] = False
@@ -99,52 +113,22 @@ def create_app() -> FastAPI:
     analysis = AnalysisService(repo=repo, llm=llm)
     gh_sync = GitHubSyncService(db_path=settings.db_path)
 
-    auto_push_on_run = os.getenv("RESUME_MATCHER_AUTO_PUSH_DB_ON_RUN", "true").strip().lower() in ("1", "true", "yes", "on")
-    auto_push_lock = threading.Lock()
+    def _write_mode_getter() -> bool:
+        return bool(rs_get("write_mode"))
 
     def _auto_push_db(reason: str) -> tuple[bool, str]:
-        if not auto_push_on_run:
-            return True, "Auto-push disabled by env."
-        if not runtime_settings.get("write_mode"):
-            return True, "Read-only mode; auto-push skipped."
-        with auto_push_lock:
-            ok, msg = gh_sync.push_db()
-            if not ok and "409" in str(msg):
-                # Concurrent update conflict (same machine threads or remote update).
-                # Try one recovery cycle: pull latest remote snapshot if behind, then retry push once.
-                pull_ok, pull_msg, pulled = _pull_if_behind(f"auto-push-retry:{reason}")
-                if pull_ok:
-                    ok2, msg2 = gh_sync.push_db()
-                    ok, msg = ok2, (
-                        msg2 if ok2 else f"{msg2} (after pull: {pull_msg}{'; pulled' if pulled else ''})"
-                    )
-                else:
-                    msg = f"{msg} (pull retry failed: {pull_msg})"
-            print(f"[sync] auto-push after {reason}: {'ok' if ok else 'failed'}: {msg}")
-            return ok, msg
+        return gh_sync.auto_push_db(reason, _write_mode_getter)
 
     def _maybe_auto_push_db(run_id: int, status: str) -> None:
-        # Queue status transitions (paused/canceled/failed) are local-machine runtime state.
-        # Push only after completed/failed terminal runs; pause/cancel remain local runtime controls.
-        if str(status) not in ("completed", "failed"):
-            return
-        _auto_push_db(f"run {run_id} {status}")
+        gh_sync.maybe_auto_push_after_run(run_id, status, _write_mode_getter)
 
     def _after_db_write(reason: str) -> None:
         _auto_push_db(reason)
 
     def _recompute_run_queue_paused() -> bool:
-        rows = repo.list_runs(limit=500)
-        paused_or_requested = False
-        for row in rows:
-            status = str(row.get("status") or "")
-            payload = row.get("payload") or {}
-            pause_requested = bool(payload.get("pause_requested")) if isinstance(payload, dict) else False
-            if status == "paused" or (status == "running" and (pause_requested or str(row.get("current_step") or "") == "pause_requested")):
-                paused_or_requested = True
-                break
-        runtime_settings["run_queue_paused"] = paused_or_requested
-        return paused_or_requested
+        paused = runner.recompute_paused()
+        rs_set("run_queue_paused", paused)
+        return paused
 
     def _pull_if_behind(reason: str) -> tuple[bool, str, bool]:
         token, repo_name = gh_sync._credentials()
@@ -161,8 +145,8 @@ def create_app() -> FastAPI:
         repo=repo,
         analysis=analysis,
         on_run_terminal=_maybe_auto_push_db,
-        can_pick_next_run=lambda: not bool(runtime_settings.get("run_queue_paused")),
-        max_running_getter=lambda: int(runtime_settings.get("job_concurrency") or 1),
+        can_pick_next_run=lambda: not bool(rs_get("run_queue_paused")),
+        max_running_getter=lambda: int(rs_get("job_concurrency", 1)),
     )
 
     @app.on_event("startup")
@@ -320,7 +304,7 @@ def create_app() -> FastAPI:
                 force_rerun_deep=payload.force_rerun_deep,
                 deep_single_prompt=payload.deep_single_prompt,
                 max_deep_scans_per_jd=payload.max_deep_scans_per_jd,
-                ai_concurrency=payload.ai_concurrency or int(runtime_settings["ai_concurrency"]),
+                ai_concurrency=payload.ai_concurrency or int(rs_get("ai_concurrency", 1)),
             )
             _after_db_write("score_match")
             return MatchOut(**row)
@@ -368,7 +352,7 @@ def create_app() -> FastAPI:
     @app.get("/v1/runs", response_model=list[RunOut])
     def list_runs() -> list[RunOut]:
         rows = repo.list_runs(limit=500)
-        if bool(runtime_settings.get("run_queue_paused")):
+        if bool(rs_get("run_queue_paused")):
             for row in rows:
                 if str(row.get("status") or "") == "running":
                     row["is_stuck"] = False
@@ -417,7 +401,7 @@ def create_app() -> FastAPI:
         row = repo.get_run(run_id)
         if not row:
             raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
-        if bool(runtime_settings.get("run_queue_paused")) and str(row.get("status") or "") == "running":
+        if bool(rs_get("run_queue_paused")) and str(row.get("status") or "") == "running":
             row["is_stuck"] = False
             row["stuck_seconds"] = 0
         return RunOut(**row)
@@ -522,7 +506,7 @@ def create_app() -> FastAPI:
         if not ok:
             raise HTTPException(status_code=409, detail=f"Run {run_id} could not be canceled.")
         # Ensure queue continues after skipping current job.
-        runtime_settings["run_queue_paused"] = False
+        rs_set("run_queue_paused", False)
         _recompute_run_queue_paused()
         repo.add_run_log(run_id, "warn", f"Run canceled as current-job skip: {reason}")
         return {"ok": True, "message": f"Skipped current job run #{run_id}. Queue continues.", "run_id": run_id}
@@ -544,7 +528,7 @@ def create_app() -> FastAPI:
             if repo.cancel_run(run_id=run_id, reason=reason, clean=clean):
                 canceled += 1
                 repo.add_run_log(run_id, "warn", f"Run canceled by batch stop: {reason}")
-        runtime_settings["run_queue_paused"] = False
+        rs_set("run_queue_paused", False)
         _recompute_run_queue_paused()
         return {"ok": True, "message": f"Stopped {canceled} active run(s).", "canceled": canceled}
 
@@ -558,10 +542,10 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Run {run_id} is {status} and cannot be paused.")
         p = payload or {}
         reason = str(p.get("reason") or "Paused by user")
-        runtime_settings["run_queue_paused"] = True
+        rs_set("run_queue_paused", True)
         pause_state = repo.pause_run(run_id=run_id, reason=reason)
         if not pause_state.get("ok"):
-            runtime_settings["run_queue_paused"] = False
+            rs_set("run_queue_paused", False)
             raise HTTPException(status_code=409, detail=f"Run {run_id} could not be paused.")
         _recompute_run_queue_paused()
         state = str(pause_state.get("state") or "")
@@ -577,7 +561,7 @@ def create_app() -> FastAPI:
     def pause_queue(payload: dict | None = None) -> dict:
         p = payload or {}
         reason = str(p.get("reason") or "Paused by user")
-        runtime_settings["run_queue_paused"] = True
+        rs_set("run_queue_paused", True)
         runs = sorted(repo.list_runs(limit=500), key=lambda r: int(r.get("id") or 0))
         running = [r for r in runs if str(r.get("status") or "") == "running"]
         target = None
@@ -634,7 +618,7 @@ def create_app() -> FastAPI:
                 )
                 cleared += 1
                 repo.add_run_log(run_id, "warn", "Pause request cleared by queue unpause (run continues).")
-        runtime_settings["run_queue_paused"] = False
+        rs_set("run_queue_paused", False)
         _recompute_run_queue_paused()
         return {
             "ok": True,
@@ -685,24 +669,25 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/settings/state")
     def get_settings_state() -> dict:
+        snap = rs_snapshot()
         writer_cfg = gh_sync.writer_config()
         lock_timeout = int(writer_cfg.get("lock_timeout_hours", 6) or 6)
         lock_info = gh_sync.get_lock(timeout_hours=lock_timeout)
         writer_users = [str(u.get("name") or "").strip() for u in (writer_cfg.get("users") or []) if str(u.get("name") or "").strip()]
         return {
-            "lm_base_url": runtime_settings["lm_base_url"],
-            "lm_api_key": runtime_settings["lm_api_key"],
-            "lm_model": runtime_settings["lm_model"],
-            "llm_timeout_sec": int(runtime_settings["llm_timeout_sec"]),
-            "llm_bulk_timeout_sec": int(runtime_settings["llm_bulk_timeout_sec"]),
-            "llm_bulk_resume_chars": int(runtime_settings["llm_bulk_resume_chars"]),
-            "ai_concurrency": int(runtime_settings["ai_concurrency"]),
-            "job_concurrency": int(runtime_settings["job_concurrency"]),
-            "ocr_enabled": bool(runtime_settings["ocr_enabled"]),
-            "local_lm_available": bool(runtime_settings["local_lm_available"]),
-            "write_mode": bool(runtime_settings["write_mode"]),
-            "write_mode_locked": bool(runtime_settings["write_mode_locked"]),
-            "run_queue_paused": bool(runtime_settings.get("run_queue_paused")),
+            "lm_base_url": snap["lm_base_url"],
+            "lm_api_key": snap["lm_api_key"],
+            "lm_model": snap["lm_model"],
+            "llm_timeout_sec": int(snap["llm_timeout_sec"]),
+            "llm_bulk_timeout_sec": int(snap["llm_bulk_timeout_sec"]),
+            "llm_bulk_resume_chars": int(snap["llm_bulk_resume_chars"]),
+            "ai_concurrency": int(snap["ai_concurrency"]),
+            "job_concurrency": int(snap["job_concurrency"]),
+            "ocr_enabled": bool(snap["ocr_enabled"]),
+            "local_lm_available": bool(snap["local_lm_available"]),
+            "write_mode": bool(snap["write_mode"]),
+            "write_mode_locked": bool(snap["write_mode_locked"]),
+            "run_queue_paused": bool(snap.get("run_queue_paused")),
             "writer_default_name": writer_cfg.get("default_name", ""),
             "writer_users": writer_users,
             "lock_timeout_hours": lock_timeout,
@@ -741,54 +726,55 @@ def create_app() -> FastAPI:
 
     @app.put("/v1/settings/runtime")
     def update_runtime_settings(payload: dict) -> dict:
-        if "lm_base_url" in payload:
-            runtime_settings["lm_base_url"] = str(payload.get("lm_base_url", "")).strip() or runtime_settings["lm_base_url"]
-        if "lm_api_key" in payload:
-            runtime_settings["lm_api_key"] = str(payload.get("lm_api_key", "")).strip() or runtime_settings["lm_api_key"]
-        if "lm_model" in payload:
-            runtime_settings["lm_model"] = str(payload.get("lm_model", "")).strip()
-        if "llm_timeout_sec" in payload:
-            try:
-                runtime_settings["llm_timeout_sec"] = max(1, int(payload.get("llm_timeout_sec")))
-            except Exception:
-                pass
-        if "llm_bulk_timeout_sec" in payload:
-            try:
-                runtime_settings["llm_bulk_timeout_sec"] = max(1, int(payload.get("llm_bulk_timeout_sec")))
-            except Exception:
-                pass
-        if "llm_bulk_resume_chars" in payload:
-            try:
-                runtime_settings["llm_bulk_resume_chars"] = max(1000, int(payload.get("llm_bulk_resume_chars")))
-            except Exception:
-                pass
-        if "ai_concurrency" in payload:
-            try:
-                runtime_settings["ai_concurrency"] = max(1, int(payload.get("ai_concurrency")))
-            except Exception:
-                pass
-        if "job_concurrency" in payload:
-            try:
-                runtime_settings["job_concurrency"] = max(1, int(payload.get("job_concurrency")))
-            except Exception:
-                pass
-        if "ocr_enabled" in payload:
-            runtime_settings["ocr_enabled"] = bool(payload.get("ocr_enabled"))
-        analysis.llm = AIEngine(
-            base_url=runtime_settings["lm_base_url"],
-            api_key=runtime_settings["lm_api_key"],
-            request_timeout_sec=runtime_settings["llm_timeout_sec"],
-            bulk_timeout_sec=runtime_settings["llm_bulk_timeout_sec"],
-            bulk_resume_chars=runtime_settings["llm_bulk_resume_chars"],
-            preferred_model=runtime_settings["lm_model"],
-        )
+        with _settings_lock:
+            if "lm_base_url" in payload:
+                runtime_settings["lm_base_url"] = str(payload.get("lm_base_url", "")).strip() or runtime_settings["lm_base_url"]
+            if "lm_api_key" in payload:
+                runtime_settings["lm_api_key"] = str(payload.get("lm_api_key", "")).strip() or runtime_settings["lm_api_key"]
+            if "lm_model" in payload:
+                runtime_settings["lm_model"] = str(payload.get("lm_model", "")).strip()
+            if "llm_timeout_sec" in payload:
+                try:
+                    runtime_settings["llm_timeout_sec"] = max(1, int(payload.get("llm_timeout_sec")))
+                except Exception:
+                    pass
+            if "llm_bulk_timeout_sec" in payload:
+                try:
+                    runtime_settings["llm_bulk_timeout_sec"] = max(1, int(payload.get("llm_bulk_timeout_sec")))
+                except Exception:
+                    pass
+            if "llm_bulk_resume_chars" in payload:
+                try:
+                    runtime_settings["llm_bulk_resume_chars"] = max(1000, int(payload.get("llm_bulk_resume_chars")))
+                except Exception:
+                    pass
+            if "ai_concurrency" in payload:
+                try:
+                    runtime_settings["ai_concurrency"] = max(1, int(payload.get("ai_concurrency")))
+                except Exception:
+                    pass
+            if "job_concurrency" in payload:
+                try:
+                    runtime_settings["job_concurrency"] = max(1, int(payload.get("job_concurrency")))
+                except Exception:
+                    pass
+            if "ocr_enabled" in payload:
+                runtime_settings["ocr_enabled"] = bool(payload.get("ocr_enabled"))
+            analysis.llm = AIEngine(
+                base_url=runtime_settings["lm_base_url"],
+                api_key=runtime_settings["lm_api_key"],
+                request_timeout_sec=runtime_settings["llm_timeout_sec"],
+                bulk_timeout_sec=runtime_settings["llm_bulk_timeout_sec"],
+                bulk_resume_chars=runtime_settings["llm_bulk_resume_chars"],
+                preferred_model=runtime_settings["lm_model"],
+            )
         return {"ok": True}
 
     @app.post("/v1/settings/test-connection")
     def test_connection(payload: dict | None = None) -> dict:
         p = payload or {}
-        url = str(p.get("lm_base_url") or runtime_settings["lm_base_url"])
-        key = str(p.get("lm_api_key") or runtime_settings["lm_api_key"])
+        url = str(p.get("lm_base_url") or rs_get("lm_base_url"))
+        key = str(p.get("lm_api_key") or rs_get("lm_api_key"))
         try:
             client = OpenAI(base_url=url, api_key=key)
             models = client.models.list()
@@ -800,8 +786,8 @@ def create_app() -> FastAPI:
     @app.post("/v1/settings/models")
     def list_models(payload: dict | None = None) -> dict:
         p = payload or {}
-        url = str(p.get("lm_base_url") or runtime_settings["lm_base_url"])
-        key = str(p.get("lm_api_key") or runtime_settings["lm_api_key"])
+        url = str(p.get("lm_base_url") or rs_get("lm_base_url"))
+        key = str(p.get("lm_api_key") or rs_get("lm_api_key"))
         try:
             client = OpenAI(base_url=url, api_key=key)
             models = client.models.list()
@@ -816,7 +802,7 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/settings/write-mode/enable")
     def enable_write_mode(payload: dict) -> dict:
-        if runtime_settings["write_mode_locked"]:
+        if rs_get("write_mode_locked"):
             raise HTTPException(status_code=403, detail="Write mode is locked by launcher/env.")
         ok, msg, _ = _pull_if_behind("enable_write_mode")
         if not ok:
@@ -826,14 +812,14 @@ def create_app() -> FastAPI:
         timeout_hours = int(writer_cfg.get("lock_timeout_hours", 6) or 6)
         lock = gh_sync.get_lock(timeout_hours=timeout_hours)
         if lock and isinstance(lock, dict) and lock.get("owner") == (writer_name or "unknown"):
-            runtime_settings["write_mode"] = True
-            runtime_settings["write_mode_warned"] = False
+            rs_set("write_mode", True)
+            rs_set("write_mode_warned", False)
             return {"ok": True, "message": "Write mode resumed (existing lock)."}
         ok, msg = gh_sync.acquire_lock(writer_name or "unknown", timeout_hours=timeout_hours)
         if not ok:
             raise HTTPException(status_code=409, detail=msg)
-        runtime_settings["write_mode"] = True
-        runtime_settings["write_mode_warned"] = False
+        rs_set("write_mode", True)
+        rs_set("write_mode_warned", False)
         return {"ok": True, "message": msg}
 
     @app.post("/v1/settings/write-mode/disable")
@@ -842,8 +828,8 @@ def create_app() -> FastAPI:
         ok, msg = gh_sync.release_lock(writer_name or "unknown")
         if not ok:
             raise HTTPException(status_code=409, detail=msg)
-        runtime_settings["write_mode"] = False
-        runtime_settings["write_mode_warned"] = False
+        rs_set("write_mode", False)
+        rs_set("write_mode_warned", False)
         return {"ok": True, "message": msg}
 
     @app.post("/v1/settings/write-mode/force-unlock")
@@ -852,13 +838,13 @@ def create_app() -> FastAPI:
         ok, msg = gh_sync.release_lock(writer_name or "unknown", force=True)
         if not ok:
             raise HTTPException(status_code=409, detail=msg)
-        runtime_settings["write_mode"] = False
-        runtime_settings["write_mode_warned"] = False
+        rs_set("write_mode", False)
+        rs_set("write_mode_warned", False)
         return {"ok": True, "message": msg}
 
     @app.post("/v1/settings/sync/push")
     def push_db() -> dict:
-        if not runtime_settings["write_mode"]:
+        if not rs_get("write_mode"):
             raise HTTPException(status_code=403, detail="Read-only mode: enable Write Mode to push.")
         ok, msg = gh_sync.push_db()
         if not ok:
@@ -887,7 +873,7 @@ def create_app() -> FastAPI:
         if active:
             raise HTTPException(status_code=409, detail="Cannot clear results while queue has active runs.")
         repo.reset_results_only()
-        runtime_settings["run_queue_paused"] = False
+        rs_set("run_queue_paused", False)
         _after_db_write("clear_results_only")
         return {"ok": True, "message": "Cleared matches and run history. Jobs/resumes/tags were kept."}
 

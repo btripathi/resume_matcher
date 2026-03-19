@@ -9,7 +9,9 @@ class DBManager:
         self._init_db()
 
     def get_connection(self):
-        return sqlite3.connect(self.db_path, timeout=30)
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
 
     def _init_db(self):
         conn = self.get_connection()
@@ -835,6 +837,17 @@ class DBManager:
         c.execute(
             "UPDATE job_runs SET result_json = ? WHERE id = ?",
             (json.dumps(result or {}), int(run_id)),
+        )
+        conn.commit()
+        conn.close()
+
+    def checkpoint_job_run(self, run_id, payload, result, progress, current_step):
+        """Atomically update payload, result, and progress in a single transaction."""
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE job_runs SET payload_json = ?, result_json = ?, progress = ?, current_step = ? WHERE id = ?",
+            (json.dumps(payload or {}), json.dumps(result or {}), int(progress), current_step, int(run_id)),
         )
         conn.commit()
         conn.close()

@@ -13,20 +13,6 @@ def _parse_tags(raw_tags: str | None) -> list[str]:
     return [t.strip() for t in str(raw_tags).split(",") if t.strip()]
 
 
-def _join_tags(tags: list[str]) -> str | None:
-    cleaned = []
-    seen = set()
-    for tag in tags:
-        value = tag.strip()
-        if not value:
-            continue
-        key = value.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        cleaned.append(value)
-    return ",".join(cleaned) if cleaned else None
-
 
 def _candidate_name_from_profile(profile_raw, fallback_name: str | None = None, resume_filename: str | None = None) -> str:
     parsed = {}
@@ -135,12 +121,12 @@ class Repository:
         }
 
     def add_job(self, filename: str, content: str, criteria: dict, tags: list[str]) -> dict:
-        self.db.add_job(filename, content, criteria, tags=_join_tags(tags))
+        self.db.add_job(filename, content, criteria, tags=self.db._join_tags(tags))
         created = self.db.get_job_by_filename(filename)
         return self.get_job(int(created["id"])) if created else {}
 
     def add_resume(self, filename: str, content: str, profile: dict, tags: list[str]) -> dict:
-        self.db.add_resume(filename, content, profile, tags=_join_tags(tags))
+        self.db.add_resume(filename, content, profile, tags=self.db._join_tags(tags))
         created = self.db.get_resume_by_filename(filename)
         return self.get_resume(int(created["id"])) if created else {}
 
@@ -233,7 +219,7 @@ class Repository:
         if criteria is not None:
             self.db.execute_query("UPDATE jobs SET criteria = ? WHERE id = ?", (criteria, int(job_id)))
         if tags is not None:
-            tags_val = _join_tags(tags)
+            tags_val = self.db._join_tags(tags)
             self.db.execute_query("UPDATE jobs SET tags = ? WHERE id = ?", (tags_val, int(job_id)))
             for t in tags or []:
                 if t.strip():
@@ -250,7 +236,7 @@ class Repository:
         if profile is not None:
             self.db.execute_query("UPDATE resumes SET profile = ? WHERE id = ?", (profile, int(resume_id)))
         if tags is not None:
-            tags_val = _join_tags(tags)
+            tags_val = self.db._join_tags(tags)
             self.db.execute_query("UPDATE resumes SET tags = ? WHERE id = ?", (tags_val, int(resume_id)))
             for t in tags or []:
                 if t.strip():
@@ -497,6 +483,9 @@ class Repository:
 
     def update_run_result(self, run_id: int, result: dict) -> None:
         self.db.update_job_run_result(run_id=run_id, result=result)
+
+    def checkpoint_run(self, run_id: int, payload: dict, result: dict, progress: int, current_step: str) -> None:
+        self.db.checkpoint_job_run(run_id=run_id, payload=payload, result=result, progress=progress, current_step=current_step)
 
     def complete_run(self, run_id: int, result: dict) -> None:
         self.db.complete_job_run(run_id=run_id, result=result)

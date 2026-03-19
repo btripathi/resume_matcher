@@ -56,6 +56,24 @@ class JobRunner:
             t.join(timeout=2.0)
         self._threads = []
 
+    def recompute_paused(self) -> bool:
+        """Check queue state and return whether the queue should be paused.
+
+        A queue is paused when any run is in the ``paused`` status or has a
+        pending pause request (``pause_requested`` flag or current step).
+        """
+        rows = self.repo.list_runs(limit=500)
+        for row in rows:
+            status = str(row.get("status") or "")
+            payload = row.get("payload") or {}
+            pause_requested = bool(payload.get("pause_requested")) if isinstance(payload, dict) else False
+            if status == "paused" or (
+                status == "running"
+                and (pause_requested or str(row.get("current_step") or "") == "pause_requested")
+            ):
+                return True
+        return False
+
     def _max_running(self) -> int:
         src = self.max_running_getter
         try:
@@ -745,7 +763,11 @@ class JobRunner:
         self._ensure_not_canceled(run_id)
         payload["deep_resume_from"] = int(idx)
         payload["deep_partial_details"] = list(details or [])
-        pct = 10 + int((max(0, min(idx, total)) / max(1, total)) * 85)
-        self.repo.update_run_payload(run_id=run_id, payload=payload)
-        self.repo.update_run_result(run_id=run_id, result={"deep_partial_details": payload["deep_partial_details"]})
-        self.repo.update_run_progress(run_id=run_id, progress=min(95, pct), current_step=f"deep_scan_{idx}_of_{total}")
+        pct = min(95, 10 + int((max(0, min(idx, total)) / max(1, total)) * 85))
+        self.repo.checkpoint_run(
+            run_id=run_id,
+            payload=payload,
+            result={"deep_partial_details": payload["deep_partial_details"]},
+            progress=pct,
+            current_step=f"deep_scan_{idx}_of_{total}",
+        )

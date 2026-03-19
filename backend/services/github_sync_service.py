@@ -6,9 +6,11 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from github import Github, GithubException
 
@@ -49,6 +51,10 @@ class GitHubSyncService:
     db_path: str
     remote_db_filename: str = "resume_matcher.db"
     lock_filename: str = "WRITE_LOCK.json"
+    auto_push_on_run: bool = field(
+        default_factory=lambda: os.getenv("RESUME_MATCHER_AUTO_PUSH_DB_ON_RUN", "true").strip().lower() in ("1", "true", "yes", "on")
+    )
+    _auto_push_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def _credentials(self) -> tuple[str | None, str | None]:
         secrets = _load_secrets()
@@ -401,3 +407,47 @@ class GitHubSyncService:
             return False, f"Error releasing lock: {exc}"
         except Exception as exc:
             return False, f"Error releasing lock: {exc}"
+
+    # ------------------------------------------------------------------
+    # Auto-push helpers (moved from app.py endpoint layer)
+    # ------------------------------------------------------------------
+
+    def auto_push_db(
+        self,
+        reason: str,
+        write_mode_getter: Callable[[], bool],
+    ) -> tuple[bool, str]:
+        """Push DB to GitHub if auto-push is enabled and we are in write mode.
+
+        Uses an internal lock to serialise concurrent push attempts from
+        different worker threads.  On a 409 conflict the method attempts one
+        pull-then-retry cycle before giving up.
+        """
+        if not self.auto_push_on_run:
+            return True, "Auto-push disabled by env."
+        if not write_mode_getter():
+            return True, "Read-only mode; auto-push skipped."
+        with self._auto_push_lock:
+            ok, msg = self.push_db()
+            if not ok and "409" in str(msg):
+                pull_ok, pull_msg, pulled = self.pull_if_behind()
+                if pull_ok:
+                    ok2, msg2 = self.push_db()
+                    ok, msg = ok2, (
+                        msg2 if ok2 else f"{msg2} (after pull: {pull_msg}{'; pulled' if pulled else ''})"
+                    )
+                else:
+                    msg = f"{msg} (pull retry failed: {pull_msg})"
+            print(f"[sync] auto-push after {reason}: {'ok' if ok else 'failed'}: {msg}")
+            return ok, msg
+
+    def maybe_auto_push_after_run(
+        self,
+        run_id: int,
+        status: str,
+        write_mode_getter: Callable[[], bool],
+    ) -> None:
+        """Push only after completed/failed terminal runs."""
+        if str(status) not in ("completed", "failed"):
+            return
+        self.auto_push_db(f"run {run_id} {status}", write_mode_getter)

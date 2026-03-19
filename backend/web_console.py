@@ -39,24 +39,36 @@ def render_console() -> HTMLResponse:
       padding: 22px 18px 36px;
     }
 
-    .info {
+    .status-bar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
       background: var(--info-bg);
       color: var(--info-text);
-      border-radius: 8px;
-      padding: 12px 14px;
-      font-size: 17px;
-      margin-bottom: 18px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
     }
-    .info.ok {
+    .status-chip.ok {
       background: #ecfdf3;
       color: #166534;
     }
-    .info.warn {
+    .status-chip.warn {
       background: #fffbeb;
       color: #92400e;
+    }
+    .status-chip.err {
+      background: #fef2f2;
+      color: #991b1b;
     }
 
     .title-row {
@@ -910,8 +922,10 @@ def render_console() -> HTMLResponse:
 </head>
 <body>
   <div class="shell">
-    <div class="info" id="topReadOnlyInfo">🔒 Read-only mode: changes are local only and will NOT sync to the shared DB. Enable Write Mode to share results.</div>
-    <div class="info" id="topLmInfo">🤖 Model server status will appear here.</div>
+    <div class="status-bar">
+      <span class="status-chip" id="topLmInfo">🤖 Model: checking...</span>
+      <span class="status-chip" id="topReadOnlyInfo">🔒 Sync: checking...</span>
+    </div>
 
     <div class="title-row">
       <h2 style="margin:0">🚀 TalentScout: Intelligent Resume Screening</h2>
@@ -2218,16 +2232,20 @@ def render_console() -> HTMLResponse:
     const s = state.settings || {};
     const writeMode = !!s.write_mode;
     const ghConfigured = !!s.github_configured;
-    const top = q('topReadOnlyInfo');
-    if (!top) return;
+    const el = q('topReadOnlyInfo');
+    if (!el) return;
+    el.className = 'status-chip';
     if (writeMode && !ghConfigured) {
-      top.textContent = '⚠️ Write mode active but GitHub sync is not configured. Changes are saved locally only. Add a secrets.toml with GitHub token to enable sync.';
+      el.classList.add('warn');
+      el.textContent = '⚠️ Sync: no GitHub config';
     } else if (writeMode) {
-      top.textContent = '✅ Write mode enabled: local changes will sync to shared DB.';
+      el.classList.add('ok');
+      el.textContent = '✅ Sync: active';
     } else if (!ghConfigured) {
-      top.textContent = 'ℹ️ Running locally. No GitHub sync configured — all changes stay on this machine.';
+      el.textContent = '💻 Sync: local only';
     } else {
-      top.textContent = '🔒 Read-only mode: changes are local only and will NOT sync to the shared DB. Enable Write Mode in Settings to share results.';
+      el.classList.add('warn');
+      el.textContent = '🔒 Sync: read-only';
     }
   }
 
@@ -2241,19 +2259,19 @@ def render_console() -> HTMLResponse:
     const usingLocalLm = normalized.includes('127.0.0.1:1234') || normalized.includes('localhost:1234');
     const localAvailable = !!s.local_lm_available;
 
-    el.className = 'info';
+    el.className = 'status-chip';
     if (usingLocalLm && !localAvailable) {
-      el.classList.add('warn');
-      el.textContent = '⚠️ Local model server is not available. Open Settings to set LM URL/API key for your remote API, then click Test Connection.';
+      el.classList.add('err');
+      el.textContent = '⚠️ AI: no model server';
       return;
     }
     if (!usingLocalLm) {
       el.classList.add('ok');
-      el.textContent = `✅ Remote model API configured: ${lmUrl || '(not set)'}. Use Settings → Test Connection to verify.`;
+      el.textContent = '✅ AI: remote server';
       return;
     }
     el.classList.add('ok');
-    el.textContent = '✅ Local model server detected.';
+    el.textContent = '✅ AI: local server';
   }
 
   function renderSettingsControls() {

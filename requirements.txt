@@ -9,3 +9,5 @@ Pillow
 pandas
 pdf2image
 PyGithub
+pytest
+httpx
