@@ -78,13 +78,10 @@ fi
 
 echo -e "\n${YELLOW}[4/4] Starting web app on http://localhost:8000 ...${NC}"
 if [[ "$WRITE_MODE" -eq 1 ]]; then
-  echo -e "${GREEN}Write mode enabled.${NC}"
+  echo -e "${GREEN}Write mode enabled (DB sync active from start).${NC}"
   export RESUME_MATCHER_WRITE_MODE=1
-  export RESUME_MATCHER_READ_ONLY=0
 else
-  echo -e "${YELLOW}Read-only mode enabled (use -write to allow DB updates).${NC}"
-  export RESUME_MATCHER_READ_ONLY=1
-  export RESUME_MATCHER_WRITE_MODE=0
+  echo -e "${YELLOW}Write mode off. Enable from Settings with username/password.${NC}"
 fi
 
 if [[ "$SMOKE_TEST" -eq 1 ]]; then

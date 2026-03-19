@@ -1,8 +1,8 @@
-#Python / Streamlit
+#Python
 
 pycache/
 *.pyc
-.streamlit/secrets.toml
+secrets.toml
 .venv
 venv/
 env/

@@ -951,14 +951,16 @@ def render_console() -> HTMLResponse:
                 <div class="settings-title">Write Mode</div>
                 <div class="settings-inline-status" id="setWriteModeStatus">Checking write mode status...</div>
                 <div class="settings-help" id="setWriteLockInfo">Write lock: unknown</div>
-                <input id="setWriterName" class="row" placeholder="Writer name" />
-                <div class="settings-help" id="setWriterUsersHint"></div>
-                <input id="setWriterPassword" class="row" type="password" placeholder="Write password" />
-                <div class="row2 row">
-                  <button class="settings-item" onclick="enableWriteMode()">Enable Write Mode</button>
-                  <button class="settings-item" onclick="disableWriteMode()">Disable / Release Lock</button>
+                <div id="writeModeControls">
+                  <input id="setWriterName" class="row" placeholder="Writer name" />
+                  <div class="settings-help" id="setWriterUsersHint"></div>
+                  <input id="setWriterPassword" class="row" type="password" placeholder="Write password" />
+                  <div class="row2 row">
+                    <button class="settings-item" onclick="enableWriteMode()">Enable Write Mode</button>
+                    <button class="settings-item" onclick="disableWriteMode()">Disable / Release Lock</button>
+                  </div>
+                  <button class="settings-item row" onclick="forceUnlockWriteMode()">Force Unlock (Admin)</button>
                 </div>
-                <button class="settings-item row" onclick="forceUnlockWriteMode()">Force Unlock (Admin)</button>
                 <div class="settings-action-msg" id="setWriteModeActionMsg"></div>
               </div>
               <div class="settings-section">
@@ -2213,12 +2215,19 @@ def render_console() -> HTMLResponse:
   }
 
   function updateReadOnlyInfo() {
-    const writeMode = !!(state.settings && state.settings.write_mode);
+    const s = state.settings || {};
+    const writeMode = !!s.write_mode;
+    const ghConfigured = !!s.github_configured;
     const top = q('topReadOnlyInfo');
-    if (writeMode) {
-      if (top) top.textContent = '✅ Write mode enabled: local changes can be pushed to shared DB.';
+    if (!top) return;
+    if (writeMode && !ghConfigured) {
+      top.textContent = '⚠️ Write mode active but GitHub sync is not configured. Changes are saved locally only. Add a secrets.toml with GitHub token to enable sync.';
+    } else if (writeMode) {
+      top.textContent = '✅ Write mode enabled: local changes will sync to shared DB.';
+    } else if (!ghConfigured) {
+      top.textContent = 'ℹ️ Running locally. No GitHub sync configured — all changes stay on this machine.';
     } else {
-      if (top) top.textContent = '🔒 Read-only mode: changes are local only and will NOT sync to the shared DB. Enable Write Mode to share results.';
+      top.textContent = '🔒 Read-only mode: changes are local only and will NOT sync to the shared DB. Enable Write Mode in Settings to share results.';
     }
   }
 
@@ -2280,22 +2289,28 @@ def render_console() -> HTMLResponse:
     }
     q('setWriteLockInfo').textContent = lockText;
 
+    const ghConfigured = !!s.github_configured;
     const statusEl = q('setWriteModeStatus');
     if (statusEl) {
       const lockOwner = lock && typeof lock === 'object' ? String(lock.owner || '').trim() : '';
-      if (s.write_mode) {
+      if (!ghConfigured) {
+        statusEl.className = 'settings-inline-status warn';
+        statusEl.textContent = 'GitHub sync not configured. Add a secrets.toml with token and repo to enable.';
+      } else if (s.write_mode) {
         statusEl.className = 'settings-inline-status ok';
         statusEl.textContent = lockOwner
           ? `Write Mode Active. Lock owner: ${lockOwner}.`
-          : 'Write Mode Active. You can push local changes.';
+          : 'Write Mode Active. Changes will sync to shared DB.';
       } else if (s.write_mode_locked) {
         statusEl.className = 'settings-inline-status err';
         statusEl.textContent = 'Write Mode Locked by environment.';
       } else {
         statusEl.className = 'settings-inline-status warn';
-        statusEl.textContent = 'Read-Only Mode. Enable Write Mode to allow push.';
+        statusEl.textContent = 'Read-Only Mode. Enter credentials to enable Write Mode.';
       }
     }
+    const wmControls = q('writeModeControls');
+    if (wmControls) wmControls.style.display = ghConfigured ? '' : 'none';
     updateReadOnlyInfo();
     updateLmInfo();
   }
@@ -2367,6 +2382,7 @@ def render_console() -> HTMLResponse:
   }
 
   async function enableWriteMode() {
+    setWriteModeActionMsg('⏳ Enabling write mode...', true);
     try {
       const r = await send('/v1/settings/write-mode/enable', 'POST', {
         writer_name: q('setWriterName').value.trim(),
@@ -2374,14 +2390,13 @@ def render_console() -> HTMLResponse:
       });
       await loadSettings();
       setWriteModeActionMsg(`✅ ${r.message || 'Write mode enabled.'}`, true);
-      setSettingsMsg(r.message || 'Write mode enabled.');
     } catch (e) {
       setWriteModeActionMsg(`❌ ${e.message}`, false);
-      setSettingsMsg(e.message, false);
     }
   }
 
   async function disableWriteMode() {
+    setWriteModeActionMsg('⏳ Disabling write mode...', true);
     try {
       const r = await send('/v1/settings/write-mode/disable', 'POST', {
         writer_name: q('setWriterName').value.trim(),
@@ -2389,14 +2404,13 @@ def render_console() -> HTMLResponse:
       });
       await loadSettings();
       setWriteModeActionMsg(`✅ ${r.message || 'Write mode disabled.'}`, true);
-      setSettingsMsg(r.message || 'Write mode disabled.');
     } catch (e) {
       setWriteModeActionMsg(`❌ ${e.message}`, false);
-      setSettingsMsg(e.message, false);
     }
   }
 
   async function forceUnlockWriteMode() {
+    setWriteModeActionMsg('⏳ Releasing lock...', true);
     try {
       const r = await send('/v1/settings/write-mode/force-unlock', 'POST', {
         writer_name: q('setWriterName').value.trim(),
@@ -2404,10 +2418,8 @@ def render_console() -> HTMLResponse:
       });
       await loadSettings();
       setWriteModeActionMsg(`✅ ${r.message || 'Lock released.'}`, true);
-      setSettingsMsg(r.message || 'Lock released.');
     } catch (e) {
       setWriteModeActionMsg(`❌ ${e.message}`, false);
-      setSettingsMsg(e.message, false);
     }
   }
 

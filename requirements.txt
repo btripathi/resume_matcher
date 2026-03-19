@@ -1,6 +1,6 @@
-streamlit
 fastapi
 uvicorn
+pydantic
 openai
 pypdf
 python-docx
@@ -8,6 +8,4 @@ pytesseract
 Pillow
 pandas
 pdf2image
-matplotlib
-matplotlib
 PyGithub

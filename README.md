@@ -19,26 +19,21 @@ A powerful recruiting tool that runs on your Mac (M1/M2/M3/M4) and can use eithe
 2.  **Python 3.10+** installed.
 3.  **Internet access** (script auto-installs Homebrew + dependencies if needed).
 
-## ⚡️ Quick Start (Web App)
+## ⚡️ Quick Start
 
 1.  **Clone this repository:**
-    \`\`\`bash
-    git clone https://github.com/your-username/resume-matcher.git
-    cd resume-matcher
-    \`\`\`
+    ```bash
+    git clone https://github.com/btripathi/resume_matcher.git
+    cd resume_matcher
+    ```
 
 2.  **Run the installer/launcher (installs deps + starts app):**
-    \`\`\`bash
+    ```bash
     chmod +x install_and_run.sh
     ./install_and_run.sh
-    \`\`\`
+    ```
 
-3.  **(Optional) Start in write mode:**
-    \`\`\`bash
-    ./install_and_run.sh --write
-    \`\`\`
-
-4.  **Configure model API (if local server is not running):**
+3.  **Configure model API (if local server is not running):**
     * Open **Settings** in the app.
     * Set **LM URL** and **API Key** for your remote OpenAI-compatible endpoint.
     * Click **Test Connection**, then **Save Config**.
@@ -46,63 +41,42 @@ A powerful recruiting tool that runs on your Mac (M1/M2/M3/M4) and can use eithe
 Open:
 - Web app: `http://localhost:8000/`
 - API docs: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+
+## 🔄 Write Mode & Shared DB Sync
+
+By default the app runs in **read-only mode** — all changes are saved to your local SQLite database only. To sync changes to a shared GitHub-hosted database:
+
+1.  Get a `secrets.toml` file from the admin (contains GitHub token + writer credentials).
+2.  Place it in the project root (it is gitignored).
+3.  Open **Settings** in the app → enter your writer name and password → click **Enable Write Mode**.
+
+Once enabled, local changes automatically push to the shared DB after each operation.
+
+Alternatively, start with write mode on from the command line (skips auth, useful for the admin):
+```bash
+./install_and_run.sh --write
+```
 
 ## ✅ Verify on a Clean Mac
 
-Use the built-in smoke test to validate a fresh setup end-to-end:
-
-\`\`\`bash
-chmod +x install_and_run.sh
+```bash
 ./install_and_run.sh --smoke-test
-\`\`\`
+```
 
-Expected result:
-- Script auto-installs Homebrew if missing.
-- Script installs `tesseract`, `poppler`, and Python packages.
-- Temporary server starts and `/health` check passes.
-- Script exits with success after verification.
+Expected: auto-installs dependencies, starts a temporary server, verifies `/health`, then exits.
 
 ## 🧱 Architecture
 
-This project runs as a backend service with a rich browser UI served at the root path.
-
-### Deploy to Render (Free)
-
-This repo includes a Render blueprint at `render.yaml`.
-
-1. Push latest `main` to GitHub.
-2. In Render, choose **New +** -> **Blueprint** and select this repo.
-3. Render will create the `resume-matcher` web service and deploy automatically.
-4. In Render service settings, set required secret env vars:
-   - `RESUME_MATCHER_LM_BASE_URL` (your model API base URL, e.g. `https://.../v1`)
-   - `RESUME_MATCHER_LM_API_KEY`
-   - `RESUME_MATCHER_GITHUB_TOKEN`
-   - `RESUME_MATCHER_GITHUB_REPO` (format: `owner/repo`)
-   - Optional writer auth from env:
-     - `RESUME_MATCHER_WRITER_NAME`
-     - `RESUME_MATCHER_WRITER_PASSWORD`
-     - `RESUME_MATCHER_WRITER_USERS_JSON` (JSON list like `[{"name":"admin","password":"..."}]`)
-
-Defaults in blueprint:
-- `RESUME_MATCHER_READ_ONLY=true` for safe public mode.
-- Health check path: `/health`
+FastAPI backend with a rich browser UI served at the root path.
 
 ### Available endpoints (v0.1)
 
 - `GET /health`
-- `GET /v1/jobs`
-- `POST /v1/jobs`
-- `GET /v1/resumes`
-- `POST /v1/resumes`
-- `POST /v1/matches/score`
-- `GET /v1/matches`
+- `GET /v1/jobs` / `POST /v1/jobs`
+- `GET /v1/resumes` / `POST /v1/resumes`
+- `POST /v1/matches/score` / `GET /v1/matches`
 - `POST /v1/runs` (durable background queue)
-- `GET /v1/runs`
-- `GET /v1/runs/{id}`
-- `GET /v1/runs/{id}/logs`
-
-See migration details in `docs/migration_to_mature_architecture.md`.
+- `GET /v1/runs` / `GET /v1/runs/{id}` / `GET /v1/runs/{id}/logs`
 
 ### Background jobs (survive browser refresh)
 
@@ -147,28 +121,4 @@ curl http://localhost:8000/v1/runs/<run_id>/logs
 * Use the **Rerun** or **Delete** buttons to fix specific entries.
 
 ## 🔒 Data Privacy Note
-This application uses a local SQLite database (`resume_matcher.db`) stored in the root folder. **Do not commit this file to GitHub** if it contains real candidate data (it is already added to `.gitignore`).
-
-## 📤 How to Push to GitHub
-
-If you are setting this up for the first time:
-
-1.  **Initialize Git:**
-    \`\`\`bash
-    git init
-    git add .
-    git commit -m "Initial commit"
-    \`\`\`
-
-2.  **Connect & Push:**
-    \`\`\`bash
-    git branch -M main
-    git remote add origin https://github.com/<username>/<repo>.git
-    git push -u origin main
-    \`\`\`
-
-**Troubleshooting: "Updates were rejected" Error**
-If you created the repo with a default README/License, you might get an error. You can force overwrite the remote files using:
-\`\`\`bash
-git push -f origin main
-\`\`\`
+This application uses a local SQLite database (`resume_matcher.db`) stored in the root folder. It is already in `.gitignore` — do not commit it if it contains real candidate data.

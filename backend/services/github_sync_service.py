@@ -14,7 +14,11 @@ from github import Github, GithubException
 
 
 def _load_secrets() -> dict:
-    secrets_path = Path(".streamlit") / "secrets.toml"
+    """Legacy fallback: read secrets from a local TOML file.
+
+    Primary config should come from environment variables.
+    """
+    secrets_path = Path("secrets.toml")
     if not secrets_path.exists():
         return {}
     try:
